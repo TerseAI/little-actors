@@ -1,4 +1,4 @@
-import { NotFoundError } from "modal"
+import { AlreadyExistsError, NotFoundError } from "modal"
 import type { ModalClient, SandboxCreateParams } from "modal"
 import assert from "node:assert/strict"
 import { test } from "node:test"
@@ -91,6 +91,7 @@ for (const [canonicalRegion, pool] of [
     test(`creates a public ${pool} V2 Modal sandbox with the host as its main process and reports provisioning timings`, async () => {
         let createOptions: SandboxCreateParams | undefined
         let usedLegacyCreate = false
+        let existingLookups = 0
         let tunnelLookups = 0
         const files = new Map<string, string>()
         let waitedForReadiness = false
@@ -133,6 +134,7 @@ for (const [canonicalRegion, pool] of [
             },
             sandboxes: {
                 async experimentalFromName() {
+                    existingLookups += 1
                     throw new NotFoundError("not found")
                 },
                 async experimentalCreate(_app: unknown, _image: unknown, options: SandboxCreateParams) {
@@ -149,6 +151,7 @@ for (const [canonicalRegion, pool] of [
 
         const handle = await provider.ensureHost({ ...request(), canonicalRegion })
 
+        assert.equal(existingLookups, 0, "a new host must not be looked up before creation")
         assert.deepEqual(handle, {
             hostId: "host.v1.project-1.00000000-0000-4000-8000-000000000001",
             route: "https://host.example.com",
@@ -159,11 +162,9 @@ for (const [canonicalRegion, pool] of [
                 reused: false,
                 startedAtMs: 0,
                 resourcesResolvedAtMs: 0,
-                existingHostCheckedAtMs: 0,
                 sandboxScheduledAtMs: 0,
                 hostReadyObservedAtMs: 0,
                 routeReadAtMs: 0,
-                metadataWrittenAtMs: 0,
                 completedAtMs: 0
             }
         })
@@ -185,13 +186,344 @@ for (const [canonicalRegion, pool] of [
         assert.equal(createOptions?.env?.DURABLE_OBJECT_HOST_PRIVATE_HOSTNAME, undefined)
         assert.equal(createOptions?.env?.DURABLE_OBJECT_HOST_ROUTE_FILE, undefined)
         assert.equal(createOptions?.env?.DURABLE_OBJECT_HOST_PUBLIC_ROUTE_FILE, "/tmp/durable-object-route")
+        assert.equal(createOptions?.env?.DURABLE_OBJECT_HOST_METADATA_FILE, "/tmp/durable-object-host.json")
         assert.equal(createOptions?.env?.MODAL_TOKEN_ID, undefined)
         assert.equal(files.get("/tmp/durable-object-route"), "https://host.example.com")
-        assert.match(files.get("/tmp/durable-object-host.json") ?? "", /host\.v1\.project-1/u)
+        assert.deepEqual([...files.keys()], ["/tmp/durable-object-route"], "the host publishes its own metadata locally")
         assert.equal(waitedForReadiness, true)
         assert.equal(tunnelLookups, 1)
     })
 }
+
+test("a creation collision reuses the existing host only after readiness", async () => {
+    const calls: string[] = []
+    const existing = {
+        hostId: "host.v1.project-1.revision-1.existing",
+        route: "https://existing.example.com",
+        canonicalRegion: request().canonicalRegion
+    }
+    const sandbox = {
+        sandboxId: "sb-existing",
+        async poll() {
+            return null
+        },
+        async exec(command: string[]) {
+            calls.push("metadata")
+            assert.match(command[2], /test -f \/tmp\/durable-object-ready.*test -s \/tmp\/durable-object-host\.json/u)
+            return {
+                stdout: {
+                    async readText() {
+                        return JSON.stringify(existing)
+                    }
+                },
+                async wait() {
+                    return 0
+                }
+            }
+        },
+        async terminate() {
+            throw new Error("a healthy host must not be terminated")
+        }
+    }
+    const client = {
+        apps: {
+            async fromName() {
+                return { name: "durable-object-hosts" }
+            }
+        },
+        images: {
+            async fromId() {
+                return { imageId: "im-actor" }
+            }
+        },
+        sandboxes: {
+            async experimentalCreate() {
+                calls.push("create")
+                throw new AlreadyExistsError("exists")
+            },
+            async experimentalFromName() {
+                calls.push("lookup")
+                return sandbox
+            }
+        }
+    }
+
+    const handle = await new ModalSandboxProvider({ client: client as unknown as ModalClient }).ensureHost(request())
+
+    assert.deepEqual(calls, ["create", "lookup", "metadata"])
+    assert.equal(handle.hostId, existing.hostId)
+    assert.equal(handle.route, existing.route)
+    assert.equal(handle.provisioning?.reused, true)
+})
+
+test("a failed existing host is terminated and replaced after a creation collision", async () => {
+    const calls: string[] = []
+    const failed = {
+        sandboxId: "sb-failed",
+        async poll() {
+            return null
+        },
+        async exec() {
+            return {
+                stdout: {
+                    async readText() {
+                        return ""
+                    }
+                },
+                async wait() {
+                    return 1
+                }
+            }
+        },
+        async terminate() {
+            calls.push("terminate")
+        }
+    }
+    const replacement = {
+        sandboxId: "sb-replacement",
+        async tunnels() {
+            return { 7101: { url: "https://replacement.example.com" } }
+        },
+        async waitUntilReady() {},
+        filesystem: {
+            async writeText(_contents: string, path: string) {
+                assert.equal(path, "/tmp/durable-object-route")
+            }
+        }
+    }
+    let creates = 0
+    const client = {
+        apps: {
+            async fromName() {
+                return { name: "durable-object-hosts" }
+            }
+        },
+        images: {
+            async fromId() {
+                return { imageId: "im-actor" }
+            }
+        },
+        sandboxes: {
+            async experimentalCreate() {
+                calls.push("create")
+                if (++creates === 1) throw new AlreadyExistsError("exists")
+                return replacement
+            },
+            async experimentalFromName() {
+                calls.push("lookup")
+                return failed
+            }
+        }
+    }
+
+    const handle = await new ModalSandboxProvider({ client: client as unknown as ModalClient }).ensureHost(request())
+
+    assert.deepEqual(calls, ["create", "lookup", "terminate", "create"])
+    assert.equal(handle.route, "https://replacement.example.com")
+    assert.equal(handle.provisioning?.reused, false)
+})
+
+test("independent providers racing to create a host return the same ready identity", { timeout: 2_000 }, async () => {
+    let observeCollision: () => void = () => {}
+    const collision = new Promise<void>(resolve => {
+        observeCollision = resolve
+    })
+    let publishMetadata: (document: string) => void = () => {}
+    const metadata = new Promise<string>(resolve => {
+        publishMetadata = resolve
+    })
+    let owner: SandboxCreateParams | undefined
+    let creates = 0
+    let lookups = 0
+    const names: string[] = []
+    const sandbox = {
+        sandboxId: "sb-shared",
+        async poll() {
+            return null
+        },
+        async tunnels() {
+            return { 7101: { url: "https://shared.example.com" } }
+        },
+        async waitUntilReady() {
+            await collision
+            publishMetadata(JSON.stringify({ hostId: owner?.env?.DURABLE_OBJECT_HOST_ID, route: "https://shared.example.com", canonicalRegion: request().canonicalRegion }))
+        },
+        filesystem: {
+            async writeText(_contents: string, path: string) {
+                assert.equal(path, "/tmp/durable-object-route")
+            }
+        },
+        async exec() {
+            observeCollision()
+            return {
+                stdout: {
+                    async readText() {
+                        return metadata
+                    }
+                },
+                async wait() {
+                    await metadata
+                    return 0
+                }
+            }
+        },
+        async terminate() {
+            assert.fail("concurrent creation must not terminate the winning host")
+        }
+    }
+    const client = {
+        apps: {
+            async fromName() {
+                return { name: "durable-object-hosts" }
+            }
+        },
+        images: {
+            async fromId() {
+                return { imageId: "im-actor" }
+            }
+        },
+        sandboxes: {
+            async experimentalCreate(_app: unknown, _image: unknown, options: SandboxCreateParams) {
+                creates += 1
+                names.push(options.name ?? "")
+                if (owner) throw new AlreadyExistsError("exists")
+                owner = options
+                return sandbox
+            },
+            async experimentalFromName() {
+                lookups += 1
+                return sandbox
+            }
+        }
+    }
+    const providers = [new ModalSandboxProvider({ client: client as unknown as ModalClient }), new ModalSandboxProvider({ client: client as unknown as ModalClient })]
+
+    const handles = await Promise.all(providers.map((provider, index) => provider.ensureHost({ ...request(), hostId: `host.v1.project-1.revision-1.candidate-${index}` })))
+
+    assert.equal(creates, 2)
+    assert.equal(lookups, 1)
+    assert.equal(names[0], names[1])
+    assert.equal(handles[0].hostId, handles[1].hostId)
+    assert.equal(handles[0].route, handles[1].route)
+    assert.deepEqual(handles.map(handle => handle.provisioning?.reused).sort(), [false, true])
+})
+
+test("creation errors other than name collisions are not looked up or retried", async () => {
+    let creates = 0
+    const client = {
+        apps: {
+            async fromName() {
+                return { name: "durable-object-hosts" }
+            }
+        },
+        images: {
+            async fromId() {
+                return { imageId: "im-actor" }
+            }
+        },
+        sandboxes: {
+            async experimentalCreate() {
+                creates += 1
+                throw new Error("API unavailable")
+            },
+            async experimentalFromName() {
+                assert.fail("only name collisions should trigger a lookup")
+            }
+        }
+    }
+    const provider = new ModalSandboxProvider({ client: client as unknown as ModalClient })
+
+    await assert.rejects(provider.ensureHost(request()), /API unavailable/u)
+    assert.equal(creates, 1)
+})
+
+test("a failed status lookup does not terminate or replace an existing host", async () => {
+    let creates = 0
+    const client = {
+        apps: {
+            async fromName() {
+                return { name: "durable-object-hosts" }
+            }
+        },
+        images: {
+            async fromId() {
+                return { imageId: "im-actor" }
+            }
+        },
+        sandboxes: {
+            async experimentalCreate() {
+                creates += 1
+                throw new AlreadyExistsError("exists")
+            },
+            async experimentalFromName() {
+                return {
+                    async poll() {
+                        throw new Error("status API unavailable")
+                    },
+                    async terminate() {
+                        assert.fail("an unknown host status must not trigger termination")
+                    }
+                }
+            }
+        }
+    }
+    const provider = new ModalSandboxProvider({ client: client as unknown as ModalClient })
+
+    await assert.rejects(provider.ensureHost(request()), /status API unavailable/u)
+    assert.equal(creates, 1)
+})
+
+test("private hosts publish metadata locally without provider filesystem writes", async () => {
+    let ready = false
+    let options: SandboxCreateParams | undefined
+    const sandbox = {
+        sandboxId: "sb-private",
+        async waitUntilReady() {
+            ready = true
+        },
+        filesystem: {
+            async readText(path: string) {
+                assert.equal(ready, true)
+                assert.equal(path, "/tmp/durable-object-route")
+                return "http://[fd00::1]:7101\n"
+            },
+            async writeText() {
+                assert.fail("the host owns metadata publication")
+            }
+        }
+    }
+    const client = {
+        apps: {
+            async fromName() {
+                return { name: "durable-object-hosts" }
+            }
+        },
+        images: {
+            async fromId() {
+                return { imageId: "im-actor" }
+            }
+        },
+        sandboxes: {
+            async experimentalCreate(_app: unknown, _image: unknown, params: SandboxCreateParams) {
+                options = params
+                return sandbox
+            },
+            async experimentalFromName() {
+                assert.fail("new hosts need no lookup")
+            }
+        }
+    }
+    const provider = new ModalSandboxProvider({
+        client: client as unknown as ModalClient,
+        catalog: { "north-america-east": { modal: { regions: ["us-east4"], cloud: "gcp", privateNetwork: true } } }
+    })
+
+    const handle = await provider.ensureHost(request())
+
+    assert.equal(handle.route, "http://[fd00::1]:7101")
+    assert.equal(options?.env?.DURABLE_OBJECT_HOST_METADATA_FILE, "/tmp/durable-object-host.json")
+    assert.equal(options?.env?.DURABLE_OBJECT_HOST_ROUTE_FILE, "/tmp/durable-object-route")
+})
 
 test("retrieves the public HTTP/2 route only when requested", async () => {
     let tunnelLookups = 0

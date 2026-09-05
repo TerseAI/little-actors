@@ -1,4 +1,3 @@
-import { once } from "node:events"
 import { performance } from "node:perf_hooks"
 import type { Readable, Writable } from "node:stream"
 
@@ -6,46 +5,39 @@ import type { SandboxProvider, SandboxProviderCommand } from "./types.js"
 
 const MAX_COMMAND_BYTES = 1024 * 1024
 
-async function runProviderCommands(input: Readable, output: Writable, createProvider: () => Promise<SandboxProvider>): Promise<void> {
-    let provider: SandboxProvider | undefined
-    for await (const document of commandDocuments(input)) {
-        const startedAt = performance.now()
-        let response: unknown
-        try {
-            const command = JSON.parse(document) as SandboxProviderCommand
-            const inputParsedAtMs = elapsedMs(startedAt)
-            provider ??= await createProvider()
-            const sdkLoadedAtMs = elapsedMs(startedAt)
-            const result = await execute(provider, command, startedAt, inputParsedAtMs, sdkLoadedAtMs)
-            response = { status: "success", result }
-        } catch (error) {
-            response = { status: "failure", error: error instanceof Error ? error.message : String(error) }
-        }
-        const encoded = JSON.stringify(response)
-        if (Buffer.byteLength(encoded) >= MAX_COMMAND_BYTES) throw new Error("provider response is too large")
-        if (!output.write(`${encoded}\n`)) await once(output, "drain")
+async function runProviderCommand(input: Readable, output: Writable, createProvider: () => Promise<SandboxProvider>): Promise<void> {
+    const startedAt = performance.now()
+    const document = await readCommand(input)
+    let response: unknown
+    try {
+        const command = JSON.parse(document) as SandboxProviderCommand
+        const inputParsedAtMs = elapsedMs(startedAt)
+        const provider = await createProvider()
+        const sdkLoadedAtMs = elapsedMs(startedAt)
+        const result = await execute(provider, command, startedAt, inputParsedAtMs, sdkLoadedAtMs)
+        response = { status: "success", result }
+    } catch (error) {
+        response = { status: "failure", error: error instanceof Error ? error.message : String(error) }
     }
+    await writeResponse(output, response)
 }
 
-async function* commandDocuments(input: Readable): AsyncGenerator<string> {
+async function readCommand(input: Readable): Promise<string> {
     input.setEncoding("utf8")
-    let buffer = ""
+    let document = ""
     for await (const chunk of input) {
-        buffer += String(chunk)
-        let newline: number
-        while ((newline = buffer.indexOf("\n")) !== -1) {
-            const document = buffer.slice(0, newline)
-            checkSize(document)
-            buffer = buffer.slice(newline + 1)
-            yield document
-        }
-        checkSize(buffer)
+        document += String(chunk)
+        if (Buffer.byteLength(document) > MAX_COMMAND_BYTES) throw new Error("provider command exceeds " + MAX_COMMAND_BYTES + " bytes")
     }
-    if (buffer) throw new Error("incomplete provider command")
+    return document
 }
 
-function checkSize(document: string): void {
-    if (Buffer.byteLength(document) > MAX_COMMAND_BYTES) throw new Error(`provider command exceeds ${MAX_COMMAND_BYTES} bytes`)
+async function writeResponse(output: Writable, response: unknown): Promise<void> {
+    const encoded = JSON.stringify(response)
+    if (Buffer.byteLength(encoded) >= MAX_COMMAND_BYTES) throw new Error("provider response is too large")
+    await new Promise<void>((resolve, reject) => {
+        output.write(encoded + "\n", error => (error ? reject(error) : resolve()))
+    })
 }
 
 async function execute(provider: SandboxProvider, command: SandboxProviderCommand, startedAt: number, inputParsedAtMs: number, sdkLoadedAtMs: number): Promise<unknown> {
@@ -75,4 +67,4 @@ function elapsedMs(startedAt: number): number {
     return Math.max(0, Math.round(performance.now() - startedAt))
 }
 
-export { runProviderCommands }
+export { runProviderCommand }

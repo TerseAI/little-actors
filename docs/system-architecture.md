@@ -17,7 +17,7 @@ trusted backend
 |                                     |                                     |
 |                              HostProvisioner                              |
 |                                     |                                     |
-| command sandbox provider ---------->+----> Modal Sandbox V2 (GCP pools)   |
+| sandbox provider --------->+----> Modal Sandbox V2 (GCP pools)   |
 |   JSON host handle / lazy public gRPC route | current filesystem API      |
 |                                               |                           |
 | internal gRPC API <-------- host JWT ---------+----> Rust actor host       |
@@ -33,17 +33,6 @@ trusted backend
           +---- trusted backend              v
                                 regional GCS immutable snapshots
 ```
-
-The Rust and Node gRPC contracts both come from `proto/durable_object.proto`.
-The npm build generates TypeScript client types and bundles that schema for
-`@grpc/proto-loader` to construct the client and codecs.
-
-Sandbox providers use one persistent protocol: newline-delimited JSON commands
-on stdin and success/failure envelopes on stdout. The control plane pools up to
-two processes per provider, independent of the executable name. Each process
-loads its SDK once. Cancelled exchanges and malformed, oversized, or truncated
-responses discard the process; command failures leave it available for reuse.
-Provider logs go to stderr.
 
 ## Invocation telemetry
 

@@ -53,8 +53,14 @@ pub struct ActorHostConfig {
     pub lease_duration: Duration,
     pub renew_every: Duration,
     pub host_idle_timeout: Duration,
+    metadata: Option<HostMetadataFile>,
     startup_started_at: Instant,
     configuration_loaded_at_ms: f64,
+}
+
+struct HostMetadataFile {
+    path: PathBuf,
+    canonical_region: String,
 }
 
 impl ActorHostConfig {
@@ -171,6 +177,7 @@ impl ActorHostConfig {
         );
         let route_file = get("DURABLE_OBJECT_HOST_ROUTE_FILE").map(PathBuf::from);
         let public_route_file = get("DURABLE_OBJECT_HOST_PUBLIC_ROUTE_FILE").map(PathBuf::from);
+        let metadata = HostMetadataFile::from_lookup(&mut get)?;
         ensure!(
             public_route_file.is_none()
                 || (host_route.is_none() && private_hostname.is_none() && route_file.is_none()),
@@ -233,9 +240,28 @@ impl ActorHostConfig {
             lease_duration,
             renew_every,
             host_idle_timeout,
+            metadata,
             configuration_loaded_at_ms: startup_started_at.elapsed().as_secs_f64() * 1_000.0,
             startup_started_at,
         })
+    }
+}
+
+impl HostMetadataFile {
+    fn from_lookup(get: &mut impl FnMut(&str) -> Option<String>) -> Result<Option<Self>> {
+        let Some(path) = get("DURABLE_OBJECT_HOST_METADATA_FILE") else {
+            return Ok(None);
+        };
+        ensure!(
+            !path.is_empty(),
+            "DURABLE_OBJECT_HOST_METADATA_FILE must not be empty"
+        );
+        let canonical_region = required(get, "DURABLE_OBJECT_REGION")?;
+        crate::placement::validate_region(&canonical_region)?;
+        Ok(Some(Self {
+            path: path.into(),
+            canonical_region,
+        }))
     }
 }
 
@@ -355,12 +381,33 @@ async fn bind_host(
             .await
             .with_context(|| format!("write actor host route to {}", path.display()))?;
     }
+    write_host_metadata(config, &route).await?;
     *route_resolved_at_ms = Some(started_at.elapsed().as_secs_f64() * 1_000.0);
     let endpoint = HostEndpoint {
         id: config.host_id.clone(),
         route: route.clone(),
     };
     Ok((listener, route, endpoint))
+}
+
+async fn write_host_metadata(config: &ActorHostConfig, route: &str) -> Result<()> {
+    let Some(metadata) = &config.metadata else {
+        return Ok(());
+    };
+    let document = serde_json::to_vec(&serde_json::json!({
+        "hostId": config.host_id,
+        "route": route,
+        "canonicalRegion": metadata.canonical_region,
+    }))?;
+    let temporary = metadata
+        .path
+        .with_extension(format!("{}.tmp", uuid::Uuid::new_v4()));
+    tokio::fs::write(&temporary, document)
+        .await
+        .context("write actor host metadata")?;
+    tokio::fs::rename(&temporary, &metadata.path)
+        .await
+        .context("publish actor host metadata")
 }
 
 struct HostStartupTimings {
@@ -592,6 +639,75 @@ mod tests {
         );
         assert_eq!(config.host_idle_timeout, Duration::from_secs(300));
         Ok(())
+    }
+
+    #[tokio::test]
+    async fn host_publishes_complete_metadata_before_dependencies_are_ready() -> Result<()> {
+        let directory = tempfile::tempdir()?;
+        let path = directory.path().join("host.json");
+        let mut values = values();
+        values.insert("DURABLE_OBJECT_HOST_BIND".into(), "127.0.0.1:0".into());
+        values.insert(
+            "DURABLE_OBJECT_HOST_METADATA_FILE".into(),
+            path.display().to_string(),
+        );
+        values.insert("DURABLE_OBJECT_REGION".into(), "north-america-east".into());
+        values.insert(
+            "DURABLE_OBJECT_HOST_ROUTE".into(),
+            "https://host.example.com".into(),
+        );
+        let config = ActorHostConfig::from_lookup(|name| values.get(name).cloned())?;
+        let (_, route, _) = bind_host(&config, Instant::now(), &mut None, &mut None).await?;
+        let metadata: serde_json::Value = serde_json::from_slice(&tokio::fs::read(&path).await?)?;
+        assert_eq!(
+            metadata,
+            serde_json::json!({
+                "hostId": config.host_id,
+                "route": route,
+                "canonicalRegion": "north-america-east",
+            })
+        );
+        let handle: crate::sandbox::ActorHostHandle = serde_json::from_value(metadata)?;
+        assert_eq!(handle.host_id, config.host_id);
+        assert_eq!(std::fs::read_dir(directory.path())?.count(), 1);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn metadata_publication_failure_prevents_host_readiness() -> Result<()> {
+        let directory = tempfile::tempdir()?;
+        let mut values = values();
+        values.insert(
+            "DURABLE_OBJECT_HOST_METADATA_FILE".into(),
+            directory
+                .path()
+                .join("missing/host.json")
+                .display()
+                .to_string(),
+        );
+        values.insert("DURABLE_OBJECT_REGION".into(), "north-america-east".into());
+        let config = ActorHostConfig::from_lookup(|name| values.get(name).cloned())?;
+        assert!(
+            bind_host(&config, Instant::now(), &mut None, &mut None)
+                .await
+                .is_err()
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn host_metadata_requires_a_valid_region() {
+        for region in [None, Some(""), Some("bad/region")] {
+            let mut values = values();
+            values.insert(
+                "DURABLE_OBJECT_HOST_METADATA_FILE".into(),
+                "/tmp/host.json".into(),
+            );
+            if let Some(region) = region {
+                values.insert("DURABLE_OBJECT_REGION".into(), region.into());
+            }
+            assert!(ActorHostConfig::from_lookup(|name| values.get(name).cloned()).is_err());
+        }
     }
 
     #[tokio::test]

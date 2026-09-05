@@ -21,6 +21,7 @@ import type {
 
 const hostPort = 7101
 const hostRouteFile = "/tmp/durable-object-route"
+const hostMetadataFile = "/tmp/durable-object-host.json"
 const readyFile = "/tmp/durable-object-ready"
 const hostStderrFile = "/tmp/durable-object-host.stderr"
 const maximumSandboxLifetimeMs = 24 * 60 * 60 * 1000
@@ -127,24 +128,18 @@ class ModalSandboxProvider implements SandboxProvider {
         const placement = modalPlacement(request.canonicalRegion, this.options.catalog)
         const [app, image] = await Promise.all([this.modal.apps.fromName(this.appName, { createIfMissing: true }), this.modal.images.fromId(request.imageRef)])
         this.mark(phases, "resourcesResolvedAtMs", startedAt)
-        const existing = await this.existing(app, name)
-        this.mark(phases, "existingHostCheckedAtMs", startedAt)
-        if (existing) {
-            const handle = await this.reuse(existing, request.canonicalRegion, startedAt, phases)
+        for (let attempt = 0; attempt < 2; attempt += 1) {
+            const acquired = await this.createSandbox(request, name, app, image, placement)
+            this.mark(phases, "sandboxScheduledAtMs", startedAt)
+            if (!acquired.reused) return this.activate(acquired.sandbox, request, placement, startedAt, phases)
+            const handle = await this.reuse(acquired.sandbox, request.canonicalRegion, startedAt, phases)
             if (handle) return handle
         }
-
-        const acquired = await this.createSandbox(request, name, app, image, placement)
-        this.mark(phases, "sandboxScheduledAtMs", startedAt)
-        if (acquired.reused) {
-            const handle = await this.reuse(acquired.sandbox, request.canonicalRegion, startedAt, phases)
-            if (!handle) throw new Error("concurrent Modal V2 host could not be reused")
-            return handle
-        }
-        return this.activate(acquired.sandbox, request, placement, startedAt, phases)
+        throw new Error("concurrent Modal V2 host could not be reused")
     }
 
     private async reuse(sandbox: Sandbox, canonicalRegion: string, startedAt: number, phases: ProvisioningPhases): Promise<ActorHostHandle | undefined> {
+        if ((await sandbox.poll()) !== null) return undefined
         try {
             const handle = await this.readHandle(sandbox, canonicalRegion)
             this.mark(phases, "hostReadyObservedAtMs", startedAt)
@@ -174,30 +169,18 @@ class ModalSandboxProvider implements SandboxProvider {
             return { sandbox, reused: false }
         } catch (error) {
             if (!(error instanceof AlreadyExistsError)) throw error
-            const raced = (await this.existing(app, name)) ?? (await this.modal.sandboxes.experimentalFromName(this.appName, name))
+            const raced = await this.modal.sandboxes.experimentalFromName(app.name ?? this.appName, name)
             return { sandbox: raced, reused: true }
         }
     }
 
     private async activate(sandbox: Sandbox, request: EnsureHostRequest, placement: ReturnType<typeof modalPlacement>, startedAt: number, phases: ProvisioningPhases): Promise<ActorHostHandle> {
         const handle = placement.privateNetwork ? await this.startPrivate(sandbox, request, startedAt, phases) : await this.startPublic(sandbox, request, startedAt, phases)
-        await writeMetadata(sandbox, handle)
-        this.mark(phases, "metadataWrittenAtMs", startedAt)
         return this.withProvisioning(handle, sandbox, false, startedAt, phases)
     }
 
-    private async existing(app: App, name: string): Promise<Sandbox | undefined> {
-        try {
-            const sandbox = await this.modal.sandboxes.experimentalFromName(app.name ?? this.appName, name)
-            return (await sandbox.poll()) === null ? sandbox : undefined
-        } catch (error) {
-            if (error instanceof NotFoundError) return undefined
-            throw error
-        }
-    }
-
     private async readHandle(sandbox: Sandbox, canonicalRegion: string): Promise<ActorHostHandle> {
-        const process = await sandbox.exec(["sh", "-c", "for i in $(seq 1 1200); do test -s /tmp/durable-object-host.json && exec cat /tmp/durable-object-host.json; sleep 0.05; done; exit 1"], {
+        const process = await sandbox.exec(["sh", "-c", `for i in $(seq 1 1200); do test -f ${readyFile} && test -s ${hostMetadataFile} && exec cat ${hostMetadataFile}; sleep 0.05; done; exit 1`], {
             stdout: "pipe",
             stderr: "pipe"
         })
@@ -271,6 +254,7 @@ function hostEnvironment(request: EnsureHostRequest, privateNetwork: boolean): R
         DURABLE_OBJECT_CODE_REVISION: request.codeRevision,
         DURABLE_OBJECT_EXECUTOR_SOCKET: "/tmp/durable-object-executor.sock",
         DURABLE_OBJECT_HOST_READY_FILE: readyFile,
+        DURABLE_OBJECT_HOST_METADATA_FILE: hostMetadataFile,
         DURABLE_OBJECT_HOST_BIND: `${privateNetwork ? "[::]" : "0.0.0.0"}:${hostPort}`,
         DURABLE_OBJECT_ACTOR_IDLE_TIMEOUT_MS: String(request.actorIdleTimeoutMs),
         DURABLE_OBJECT_HOST_IDLE_TIMEOUT_MS: String(request.hostIdleTimeoutMs),
@@ -316,10 +300,6 @@ function validateTerminateHostsRequest(request: TerminateHostsRequest, catalog?:
 function resourceName(kind: string, namespaceId: string, codeRevision: string, canonicalRegion: string): string {
     const digest = createHash("sha256").update(namespaceId).update("\0").update(codeRevision).update("\0").update(canonicalRegion).digest("hex").slice(0, 32)
     return `do-${kind}-${digest}`
-}
-
-async function writeMetadata(sandbox: Sandbox, handle: ActorHostHandle): Promise<void> {
-    await writeFile(sandbox, "/tmp/durable-object-host.json", JSON.stringify(handle))
 }
 
 async function writeFile(sandbox: Sandbox, path: string, contents: string): Promise<void> {

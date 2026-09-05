@@ -1,6 +1,6 @@
 {
     "name": "little-durable-objects",
-    "version": "0.1.17",
+    "version": "0.1.18",
     "description": "Provider-neutral durable objects for sandbox compute",
     "type": "module",
     "license": "MIT",

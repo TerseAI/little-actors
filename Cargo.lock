@@ -1540,7 +1540,7 @@ checksum = "47d9d19d1d6efa0109d2f65ff4c85cddd50bd572e5a00127ab10987290bcefae"
 
 [[package]]
 name = "little-durable-objects"
-version = "0.1.17"
+version = "0.1.18"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1548,7 +1548,6 @@ dependencies = [
  "axum",
  "base64",
  "bytes",
- "deadpool",
  "deadpool-postgres",
  "futures-util",
  "google-cloud-auth",

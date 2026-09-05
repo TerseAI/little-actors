@@ -1,6 +1,6 @@
 [package]
 name = "little-durable-objects"
-version = "0.1.17"
+version = "0.1.18"
 edition = "2024"
 rust-version = "1.89"
 default-run = "little-durable-objects"
@@ -40,7 +40,6 @@ native-tls = "0.2"
 postgres-native-tls = "0.5"
 tokio-postgres = "0.7"
 deadpool-postgres = "0.14"
-deadpool = { version = "0.13", features = ["rt_tokio_1"] }
 moka = { version = "0.12", features = ["future"] }
 
 [build-dependencies]

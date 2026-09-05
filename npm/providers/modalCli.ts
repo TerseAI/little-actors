@@ -1,12 +1,13 @@
 #!/usr/bin/env node
 import { stdin, stdout } from "node:process"
 
-import { runProviderCommands } from "./commandProcess.js"
+import { runProviderCommand } from "./commandProcess.js"
 
-runProviderCommands(stdin, stdout, async () => {
+runProviderCommand(stdin, stdout, async () => {
     const { ModalSandboxProvider } = await import("./modal.js")
     return new ModalSandboxProvider()
-}).catch(error => {
-    process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`)
-    process.exitCode = 1
-})
+}).then(
+    // SDK connections can keep the process alive after its reply has been flushed.
+    () => process.exit(0),
+    error => process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`, () => process.exit(1))
+)
