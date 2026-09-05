@@ -21,9 +21,3 @@ test("npm publishes the downloaded tarball as a filesystem path", () => {
 
     assert.match(workflow, /npm publish \.\/dist-tarballs\/\*\.tgz --access public/)
 })
-
-test("user-facing image references match the release registry", () => {
-    for (const path of ["README.md", "docs/releasing.md", "docs/system-architecture.md"]) {
-        assert.doesNotMatch(read(path), /GHCR|ghcr\.io/, path)
-    }
-})

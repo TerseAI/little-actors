@@ -48,8 +48,9 @@ pub struct ControlPlaneService {
     placements: Arc<dyn ObjectPlacementStore>,
     storage_urls: Arc<dyn StorageUrlSigner>,
     auth: ActorJwtVerifier,
-    host_token_issuer: Option<ActorJwtIssuer>,
-    routing: Option<RoutingDependencies>,
+    host_token_issuer: ActorJwtIssuer,
+    registry: Arc<dyn AdminRegistry>,
+    provisioner: Option<Arc<dyn HostProvisioner>>,
     public_routes: Cache<(HostId, String), String>,
     socket_targets: Cache<(ActorKey, HostId, String, i64), Arc<WorkflowActorTarget>>,
     host_channels: Cache<String, Channel>,
@@ -57,26 +58,24 @@ pub struct ControlPlaneService {
     socket_authenticator: Option<Arc<dyn super::socket_auth::SocketAuthenticator>>,
 }
 
-#[derive(Clone)]
-struct RoutingDependencies {
-    registry: Arc<dyn AdminRegistry>,
-    provisioner: Option<Arc<dyn HostProvisioner>>,
-}
-
 impl ControlPlaneService {
-    pub fn new(
+    pub(crate) fn new(
         leases: Arc<dyn HostLeaseStore>,
         placements: Arc<dyn ObjectPlacementStore>,
         storage_urls: Arc<dyn StorageUrlSigner>,
         auth: ActorJwtVerifier,
+        registry: Arc<dyn AdminRegistry>,
+        issuer: ActorJwtIssuer,
+        provisioner: Option<Arc<dyn HostProvisioner>>,
     ) -> Self {
         Self {
             leases,
             placements,
             storage_urls,
             auth,
-            host_token_issuer: None,
-            routing: None,
+            host_token_issuer: issuer,
+            registry,
+            provisioner,
             public_routes: Cache::builder()
                 .max_capacity(1024)
                 .time_to_live(Duration::from_secs(60))
@@ -92,20 +91,6 @@ impl ControlPlaneService {
             socket_events: None,
             socket_authenticator: None,
         }
-    }
-
-    pub(crate) fn with_routing(
-        mut self,
-        registry: Arc<dyn AdminRegistry>,
-        issuer: ActorJwtIssuer,
-        provisioner: Option<Arc<dyn HostProvisioner>>,
-    ) -> Self {
-        self.host_token_issuer = Some(issuer);
-        self.routing = Some(RoutingDependencies {
-            registry,
-            provisioner,
-        });
-        self
     }
 
     pub(crate) fn with_socket_event_sink(
@@ -166,11 +151,7 @@ impl ControlPlaneService {
     }
 
     pub(super) fn warm_deployment_image(&self, spec: HostLaunchSpec, region: String) {
-        let Some(provisioner) = self
-            .routing
-            .as_ref()
-            .and_then(|routing| routing.provisioner.clone())
-        else {
+        let Some(provisioner) = self.provisioner.clone() else {
             return;
         };
         if !self.storage_urls.regions().contains(&region) {
@@ -214,11 +195,7 @@ impl ControlPlaneService {
     }
 
     async fn terminate_deployment_hosts(&self, spec: &HostLaunchSpec) {
-        let Some(provisioner) = self
-            .routing
-            .as_ref()
-            .and_then(|routing| routing.provisioner.as_ref())
-        else {
+        let Some(provisioner) = self.provisioner.as_ref() else {
             return;
         };
         let started_at = Instant::now();
@@ -443,21 +420,17 @@ impl ControlPlaneService {
         if let Some(timings) = timings.as_deref_mut() {
             timings.state_url_signed_at_ms = Some(timings.elapsed_ms());
         }
-        let issued = self
-            .host_token_issuer
-            .as_ref()
-            .context("JWT issuer is not configured")?
-            .issue_invocation_target(
-                actor,
-                &target.lease.id,
-                &target.lease.session_id,
-                &target.spec.code_revision,
-                &target.placement.home_region,
-                target.placement.owner_epoch,
-                target.placement.state_version,
-                &state_read_url,
-                principal.expires_at,
-            )?;
+        let issued = self.host_token_issuer.issue_invocation_target(
+            actor,
+            &target.lease.id,
+            &target.lease.session_id,
+            &target.spec.code_revision,
+            &target.placement.home_region,
+            target.placement.owner_epoch,
+            target.placement.state_version,
+            &state_read_url,
+            principal.expires_at,
+        )?;
         if let Some(timings) = timings.as_deref_mut() {
             timings.invocation_token_issued_at_ms = Some(timings.elapsed_ms());
         }
@@ -486,9 +459,8 @@ impl ControlPlaneService {
     }
 
     fn provisioner(&self) -> Result<&Arc<dyn HostProvisioner>> {
-        self.routing
+        self.provisioner
             .as_ref()
-            .and_then(|routing| routing.provisioner.as_ref())
             .context("sandbox provider is not configured")
     }
 
@@ -768,11 +740,7 @@ impl ControlPlaneService {
         storage_region: &str,
         mut timings: Option<&mut TargetResolutionTimings>,
     ) -> Result<RoutedActor> {
-        let routing = self
-            .routing
-            .as_ref()
-            .context("actor routing is not configured")?;
-        let spec = routing
+        let spec = self
             .registry
             .launch_spec(&actor.namespace_id)
             .await?
@@ -796,10 +764,7 @@ impl ControlPlaneService {
                 return Ok(target);
             }
             let region = self.target_region(current.as_ref(), storage_region)?;
-            let provisioner = routing
-                .provisioner
-                .as_ref()
-                .context("sandbox provider is not configured")?;
+            let provisioner = self.provisioner()?;
             let lease = provisioner.ensure_host(&spec, &region).await?;
             if let Some(timings) = timings.as_deref_mut() {
                 timings.host_ensured_at_ms = Some(timings.elapsed_ms());
@@ -831,12 +796,8 @@ impl ControlPlaneService {
         {
             return Ok(None);
         }
-        let issuer = self
-            .host_token_issuer
-            .as_ref()
-            .context("JWT issuer is not configured")?;
         Ok(Some(
-            issuer
+            self.host_token_issuer
                 .issue_host(
                     &principal.scope.namespace_id,
                     &principal.host_id,
@@ -1189,7 +1150,7 @@ mod tests {
         actor::ActorScope,
         actor_state::ActorStorageKey,
         host_leases::{HostLeaseRegistry, HostLeaseRequest, HostLeaseStatus},
-        placement::LocalObjectPlacementStore,
+        placement::testing::LocalObjectPlacementStore,
     };
     use aws_lc_rs::{rand::SystemRandom, signature::Ed25519KeyPair};
     use base64::{Engine, engine::general_purpose::STANDARD};
@@ -1389,8 +1350,6 @@ mod tests {
             Arc::new(LocalObjectPlacementStore::default()),
             Arc::new(FakeStorageUrls),
             auth,
-        )
-        .with_routing(
             registry,
             issuer,
             Some(Arc::new(FakeRetiringProvisioner {
@@ -1436,12 +1395,15 @@ mod tests {
         let placements = Arc::new(LocalObjectPlacementStore::default());
         let registry = Arc::new(LocalAdminRegistry::default());
         let (warmed_tx, mut warmed_rx) = tokio::sync::mpsc::unbounded_channel();
-        let service = ControlPlaneService::new(leases, placements, Arc::new(FakeStorageUrls), auth)
-            .with_routing(
-                registry,
-                issuer,
-                Some(Arc::new(FakeWarmProvisioner { warmed: warmed_tx })),
-            );
+        let service = ControlPlaneService::new(
+            leases,
+            placements,
+            Arc::new(FakeStorageUrls),
+            auth,
+            registry,
+            issuer,
+            Some(Arc::new(FakeWarmProvisioner { warmed: warmed_tx })),
+        );
         let spec = HostLaunchSpec {
             namespace_id: "project-1".into(),
             code_revision: "revision-1".into(),
@@ -1477,6 +1439,9 @@ mod tests {
             Arc::new(LocalObjectPlacementStore::default()),
             Arc::new(FakeStorageUrls),
             auth,
+            Arc::new(LocalAdminRegistry::default()),
+            issuer,
+            None,
         )
         .with_socket_event_sink(Some(Arc::new(FakeSocketEventSink {
             delivered: delivered_tx,
@@ -1556,8 +1521,15 @@ mod tests {
         let provisioner = Arc::new(FakeRouteProvisioner {
             routes: Mutex::new(Vec::new()),
         });
-        let service = ControlPlaneService::new(leases, placements, Arc::new(FakeStorageUrls), auth)
-            .with_routing(registry, issuer.clone(), Some(provisioner.clone()));
+        let service = ControlPlaneService::new(
+            leases,
+            placements,
+            Arc::new(FakeStorageUrls),
+            auth,
+            registry,
+            issuer.clone(),
+            Some(provisioner.clone()),
+        );
 
         let target = service
             .resolve_workflow_target(
@@ -1798,6 +1770,9 @@ mod tests {
             Arc::new(LocalObjectPlacementStore::default()),
             Arc::new(FakeStorageUrls),
             auth,
+            Arc::new(LocalAdminRegistry::default()),
+            issuer,
+            None,
         );
         let actor = ActorKey {
             namespace_id: "project-1".into(),
@@ -1847,7 +1822,6 @@ mod tests {
                 },
             },
             connections: vec![],
-            state: None,
         };
         service
             .dispatch_socket_event(&principal, invocation("first"))

@@ -1,12 +1,8 @@
 use anyhow::{Context, Result, ensure};
 use async_trait::async_trait;
+use bytes::Bytes;
 
 use crate::storage_urls::STATE_CONTENT_TYPE;
-
-#[derive(Debug)]
-pub struct LoadedState {
-    pub bytes: Vec<u8>,
-}
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum StateWrite {
@@ -16,7 +12,7 @@ pub enum StateWrite {
 
 #[async_trait]
 pub trait StateTransport: Send + Sync {
-    async fn read(&self, signed_url: &str) -> Result<LoadedState>;
+    async fn read(&self, signed_url: &str) -> Result<Bytes>;
     async fn write(&self, signed_url: &str, bytes: Vec<u8>) -> Result<StateWrite>;
 }
 
@@ -35,7 +31,7 @@ impl HttpStateTransport {
 
 #[async_trait]
 impl StateTransport for HttpStateTransport {
-    async fn read(&self, signed_url: &str) -> Result<LoadedState> {
+    async fn read(&self, signed_url: &str) -> Result<Bytes> {
         validate_url(signed_url)?;
         let response = self
             .client
@@ -48,13 +44,10 @@ impl StateTransport for HttpStateTransport {
             "actor-state read failed with HTTP {}",
             response.status()
         );
-        let bytes = response
+        response
             .bytes()
             .await
-            .context("read actor-state response body")?;
-        Ok(LoadedState {
-            bytes: bytes.to_vec(),
-        })
+            .context("read actor-state response body")
     }
 
     async fn write(&self, signed_url: &str, bytes: Vec<u8>) -> Result<StateWrite> {

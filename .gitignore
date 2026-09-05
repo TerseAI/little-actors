@@ -2,7 +2,9 @@ node_modules/
 npm/node_modules/
 npm/dist/
 npm/.test-dist/
+npm/generated/
 target/
+.artifacts/
 .env
 .env.*
 !.env.example

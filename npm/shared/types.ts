@@ -105,54 +105,35 @@ const actorSessionServerMessageSchema = z.discriminatedUnion("type", [
     })
 ])
 
-class JsonActorStateSerializer {
-    clone(value: unknown, label: string): JsonValue {
-        return this.cloneValue(value, label)
-    }
+function snapshotActorState(instance: object): JsonObject {
+    const state = Object.fromEntries(Object.keys(instance).map(key => [key, Reflect.get(instance, key)]))
+    return cloneJsonObject(state, "actor state")
+}
 
-    snapshot(instance: object): JsonObject {
-        const state = Object.fromEntries(Object.keys(instance).map(key => [key, Reflect.get(instance, key)]))
-        return this.cloneObject(state, "actor state")
-    }
+function hydrateActorState(instance: object, state: JsonObject): void {
+    const restored = cloneJsonObject(state, "actor state")
+    Object.keys(instance).forEach(key => {
+        if (!Reflect.deleteProperty(instance, key)) throw new ActorSerializationError(`actor field ${key} cannot be restored`)
+    })
+    Object.entries(restored).forEach(([key, value]) => {
+        Object.defineProperty(instance, key, { configurable: true, enumerable: true, writable: true, value })
+    })
+}
 
-    hydrate(instance: object, state: JsonObject): void {
-        const restored = this.cloneObject(state, "actor state")
-        Object.keys(instance).forEach(key => {
-            if (!Reflect.deleteProperty(instance, key)) throw new ActorSerializationError(`actor field ${key} cannot be restored`)
-        })
-        Object.entries(restored).forEach(([key, value]) => {
-            Object.defineProperty(instance, key, {
-                configurable: true,
-                enumerable: true,
-                writable: true,
-                value
-            })
-        })
-    }
+function cloneJsonObject(value: unknown, label: string): JsonObject {
+    const cloned = cloneJson(value, label)
+    if (!isJsonObject(cloned)) throw new ActorSerializationError(`${label} must be a JSON object`)
+    return cloned
+}
 
-    private cloneObject(value: unknown, label: string): JsonObject {
-        const cloned = this.cloneValue(value, label)
-        if (!isJsonObject(cloned)) throw new ActorSerializationError(`${label} must be a JSON object`)
-        return cloned
-    }
-
-    private cloneValue(value: unknown, label: string): JsonValue {
-        const encoded = this.encode(value, label)
-        const decoded: unknown = JSON.parse(encoded)
-        const result = jsonValueSchema.safeParse(decoded)
-        if (!result.success) throw new ActorSerializationError(`${label} must be JSON serializable`)
-        return result.data
-    }
-
-    private encode(value: unknown, label: string): string {
-        try {
-            const encoded = JSON.stringify(value)
-            if (encoded === undefined) throw new ActorSerializationError(`${label} must be JSON serializable`)
-            return encoded
-        } catch (error) {
-            if (error instanceof ActorSerializationError) throw error
-            throw new ActorSerializationError(`${label} must be JSON serializable`, { cause: error })
-        }
+function cloneJson(value: unknown, label: string): JsonValue {
+    try {
+        const encoded = JSON.stringify(value)
+        if (encoded === undefined) throw new ActorSerializationError(`${label} must be JSON serializable`)
+        return JSON.parse(encoded) as JsonValue
+    } catch (error) {
+        if (error instanceof ActorSerializationError) throw error
+        throw new ActorSerializationError(`${label} must be JSON serializable`, { cause: error })
     }
 }
 
@@ -252,7 +233,7 @@ type SocketEffect =
     | { readonly type: "set_metadata"; readonly connection_id: string; readonly metadata: JsonValue }
     | { readonly type: "set_tags"; readonly connection_id: string; readonly tags: readonly string[] }
 
-export { JsonActorStateSerializer, errorMessage, failedReply, parseActorSessionServerMessage, parseSocketEffects, validateActorComponent }
+export { cloneJson, hydrateActorState, snapshotActorState, errorMessage, failedReply, parseActorSessionServerMessage, parseSocketEffects, validateActorComponent }
 export type {
     ActorExecutorCommand,
     ActorExecutorReply,

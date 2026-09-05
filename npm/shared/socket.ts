@@ -1,5 +1,5 @@
 import { ActorProtocolError } from "./errors.js"
-import { JsonActorStateSerializer } from "./types.js"
+import { cloneJson } from "./types.js"
 import type { JsonValue, SocketConnection, SocketEffect, SocketMessage } from "./types.js"
 
 type ActorSocketState = "connecting" | "open" | "closed"
@@ -36,7 +36,6 @@ interface ActorConnectionEventMap {
     readonly error: { readonly type: "error" }
 }
 
-const serializer = new JsonActorStateSerializer()
 const scopes = new WeakMap<object, ActorSocketScope>()
 
 class ActorSocketScope {
@@ -102,7 +101,7 @@ class RuntimeActorSocket<Metadata = JsonValue> implements ActorSocket<Metadata> 
     }
 
     set metadata(value: Metadata) {
-        const metadata = serializer.clone(value, "socket metadata")
+        const metadata = cloneJson(value, "socket metadata")
         this.metadataValue = metadata as Metadata
         this.effects.push({ type: "set_metadata", connection_id: this.id, metadata })
     }

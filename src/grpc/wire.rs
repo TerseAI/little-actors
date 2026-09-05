@@ -22,18 +22,6 @@ impl TryFrom<proto::InvokeActorRequest> for ActorInvocation {
     }
 }
 
-impl From<ActorInvocation> for proto::InvokeActorRequest {
-    fn from(invocation: ActorInvocation) -> Self {
-        Self {
-            request_id: invocation.request_id,
-            actor: Some(proto::ActorKey::from(invocation.actor)),
-            method: invocation.method,
-            args_json: serde_json::to_vec(&invocation.args)
-                .expect("validated JSON actor arguments must serialize"),
-        }
-    }
-}
-
 impl From<proto::ActorKey> for ActorKey {
     fn from(actor: proto::ActorKey) -> Self {
         Self {
@@ -120,7 +108,6 @@ impl TryFrom<proto::HostSocketEventRequest> for ActorSocketInvocation {
                 .context("actor socket event is not valid JSON")?,
             connections: serde_json::from_slice(&request.connections_json)
                 .context("actor socket connections are not valid JSON")?,
-            state: None,
         })
     }
 }

@@ -1,9 +1,9 @@
 import assert from "node:assert/strict"
 import { test } from "node:test"
 
+import { runWithActorClientForTests } from "../../fixtures/actorClient.js"
 import { Actor, registerActorClass } from "../../shared/actor.js"
 import type { ActorConnection, ActorSocket } from "../../shared/socket.js"
-import { runWithActorClientForTests } from "../../workflow/client.js"
 
 import { ActorRuntime } from "./runtime.js"
 

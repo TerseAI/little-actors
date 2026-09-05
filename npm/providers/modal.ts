@@ -23,7 +23,6 @@ const hostPort = 7101
 const hostRouteFile = "/tmp/durable-object-route"
 const readyFile = "/tmp/durable-object-ready"
 const hostStderrFile = "/tmp/durable-object-host.stderr"
-const hostExitedFile = "/tmp/durable-object-host-exited"
 const maximumSandboxLifetimeMs = 24 * 60 * 60 * 1000
 const modalPrivateHostname = "i6pn.modal.local"
 
@@ -181,10 +180,10 @@ class ModalSandboxProvider implements SandboxProvider {
     }
 
     private async activate(sandbox: Sandbox, request: EnsureHostRequest, placement: ReturnType<typeof modalPlacement>, startedAt: number, phases: ProvisioningPhases): Promise<ActorHostHandle> {
-        const started = placement.privateNetwork ? await this.startPrivate(sandbox, request, startedAt, phases) : await this.startPublic(sandbox, request, startedAt, phases)
-        await writeMetadata(sandbox, started.handle)
+        const handle = placement.privateNetwork ? await this.startPrivate(sandbox, request, startedAt, phases) : await this.startPublic(sandbox, request, startedAt, phases)
+        await writeMetadata(sandbox, handle)
         this.mark(phases, "metadataWrittenAtMs", startedAt)
-        return this.withProvisioning(started.handle, sandbox, false, startedAt, phases)
+        return this.withProvisioning(handle, sandbox, false, startedAt, phases)
     }
 
     private async existing(app: App, name: string): Promise<Sandbox | undefined> {
@@ -209,23 +208,23 @@ class ModalSandboxProvider implements SandboxProvider {
         return handle
     }
 
-    private async startPrivate(sandbox: Sandbox, request: EnsureHostRequest, startedAt: number, phases: ProvisioningPhases): Promise<StartedHost> {
+    private async startPrivate(sandbox: Sandbox, request: EnsureHostRequest, startedAt: number, phases: ProvisioningPhases): Promise<ActorHostHandle> {
         await this.waitForReady(sandbox)
         this.mark(phases, "hostReadyObservedAtMs", startedAt)
         const route = await sandbox.filesystem.readText(hostRouteFile)
         this.mark(phases, "routeReadAtMs", startedAt)
         if (!route) throw new Error("Modal durable-object host did not publish its private route")
-        return { handle: { hostId: request.hostId, route: route.trim(), canonicalRegion: request.canonicalRegion } }
+        return { hostId: request.hostId, route: route.trim(), canonicalRegion: request.canonicalRegion }
     }
 
-    private async startPublic(sandbox: Sandbox, request: EnsureHostRequest, startedAt: number, phases: ProvisioningPhases): Promise<StartedHost> {
+    private async startPublic(sandbox: Sandbox, request: EnsureHostRequest, startedAt: number, phases: ProvisioningPhases): Promise<ActorHostHandle> {
         const route = (await sandbox.tunnels())[hostPort]?.url
         if (!route) throw new Error("Modal did not create the durable-object HTTP/2 tunnel")
         await writeFile(sandbox, hostRouteFile, route)
         this.mark(phases, "routeReadAtMs", startedAt)
         await this.waitForReady(sandbox)
         this.mark(phases, "hostReadyObservedAtMs", startedAt)
-        return { handle: { hostId: request.hostId, route, canonicalRegion: request.canonicalRegion } }
+        return { hostId: request.hostId, route, canonicalRegion: request.canonicalRegion }
     }
 
     private async waitForReady(sandbox: Sandbox): Promise<void> {
@@ -286,8 +285,8 @@ function hostEnvironment(request: EnsureHostRequest, privateNetwork: boolean): R
 }
 
 function hostCommand(binaryPath: string): string[] {
-    const bootstrap = '"$1" 2>"$2"; status=$?; printf \'%s\n\' "$status" >"$3"; if ! test -f "$4"; then sleep 60; fi; exit "$status"'
-    return ["sh", "-c", bootstrap, "durable-object-host-bootstrap", binaryPath, hostStderrFile, hostExitedFile, readyFile]
+    const bootstrap = '"$1" 2>"$2"; status=$?; if ! test -f "$3"; then sleep 60; fi; exit "$status"'
+    return ["sh", "-c", bootstrap, "durable-object-host-bootstrap", binaryPath, hostStderrFile, readyFile]
 }
 
 function validateEnsureRequest(request: EnsureHostRequest): void {
@@ -329,10 +328,6 @@ async function writeFile(sandbox: Sandbox, path: string, contents: string): Prom
 
 function elapsedMs(startedAt: number, finishedAt: number): number {
     return Math.max(0, Math.round(finishedAt - startedAt))
-}
-
-interface StartedHost {
-    readonly handle: ActorHostHandle
 }
 
 export { ModalSandboxProvider }

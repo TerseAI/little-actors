@@ -42,7 +42,6 @@ tokio-postgres = "0.7"
 deadpool-postgres = "0.14"
 deadpool = { version = "0.13", features = ["rt_tokio_1"] }
 moka = { version = "0.12", features = ["future"] }
-tempfile = "3"
 
 [build-dependencies]
 protoc-bin-vendored = "3"
@@ -50,4 +49,5 @@ tonic-prost-build = "0.14"
 
 [dev-dependencies]
 futures-util = "0.3"
+tempfile = "3"
 tokio-tungstenite = "0.29"

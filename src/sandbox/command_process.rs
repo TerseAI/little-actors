@@ -71,7 +71,6 @@ impl Manager for ProviderProcessManager {
 
     async fn create(&self) -> Result<ProviderProcess> {
         let mut child = Command::new(&self.command)
-            .arg("--serve")
             .env_clear()
             .envs(&self.environment)
             .stdin(Stdio::piped())

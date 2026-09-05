@@ -7,7 +7,7 @@ import { createInterface } from "node:readline"
 import { test } from "node:test"
 import { fileURLToPath } from "node:url"
 
-import { jsonFitsWithinBytes } from "./session.js"
+import { serializeWithinBytes } from "./session.js"
 import { ActorWorkerSupervisor } from "./worker/supervisor.js"
 
 test("discovers actors only inside the first execution Worker", { timeout: 5_000 }, async () => {
@@ -62,14 +62,30 @@ test("a stalled actor import times out and closes the Worker", { timeout: 1_000 
     assert.equal(closed, 1)
 })
 
-test("checks JSON message sizes before serialization", () => {
-    const values = [null, true, 12.5, "plain", 'quote\"slash\\', "emoji 😀", "\ud800", ["nested"], { nested: { value: "ok" } }]
+test("serializes JSON within exact UTF-8 byte limits", () => {
+    const values = [null, true, 12.5, 1e30, "plain", 'quote\"slash\\', "中", "日本語", "€", "emoji 😀", "\ud800", ["nested"], { 日本語: { value: "中" } }]
     for (const value of values) {
         const bytes = Buffer.byteLength(JSON.stringify(value))
-        assert.equal(jsonFitsWithinBytes(value, bytes), true)
-        assert.equal(jsonFitsWithinBytes(value, bytes - 1), false)
+        assert.equal(serializeWithinBytes(value, bytes), JSON.stringify(value))
+        assert.equal(serializeWithinBytes(value, bytes - 1), undefined)
     }
-    assert.equal(jsonFitsWithinBytes("x".repeat(1024), 100), false)
+    assert.equal(serializeWithinBytes("x".repeat(1024), 100), undefined)
+})
+
+test("oversized serialization stops before visiting the rest of a reply", () => {
+    let visitedState = false
+    const value = {
+        result: "x".repeat(1024),
+        get state() {
+            visitedState = true
+            return {}
+        }
+    }
+    assert.equal(serializeWithinBytes(value, 100), undefined)
+    assert.equal(visitedState, false)
+    const circular = { self: {} }
+    circular.self = circular
+    assert.equal(serializeWithinBytes(circular, 100), undefined)
 })
 
 test("the actor session carries only owned execution commands", async t => {

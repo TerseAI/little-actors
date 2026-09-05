@@ -1,26 +1,18 @@
 import WebSocket from "ws"
 import { z } from "zod"
 
-import { ActorConfigurationError, ActorInvocationError, ActorProtocolError } from "../shared/errors.js"
+import { ActorInvocationError, ActorProtocolError } from "../shared/errors.js"
 import { currentActorInvocation } from "../shared/invocationContext.js"
 import { socketMessage } from "../shared/socket.js"
 import type { ActorConnection, ActorSocketMessage } from "../shared/socket.js"
 import { LatencyTimeline, stderrTelemetry } from "../shared/telemetry.js"
 import type { TelemetrySink } from "../shared/telemetry.js"
-import { JsonActorStateSerializer, validateActorComponent } from "../shared/types.js"
+import { cloneJson, validateActorComponent } from "../shared/types.js"
 import type { JsonValue, SocketEffect } from "../shared/types.js"
 
 import { GrpcActorHostTransport } from "./actorHostGrpc.js"
 import type { ActorHostTarget, ActorHostTransport, DirectActorInvocation } from "./actorHostGrpc.js"
-import { configuredSettings, validateOrigin } from "./clientSettings.js"
-
-const namespaceIdSchema = z.string().regex(/^[A-Za-z0-9._-]+$/u)
-const remoteSettingsSchema = z.object({
-    DURABLE_OBJECT_TOKEN: z.string().trim().min(1),
-    DURABLE_OBJECT_NAMESPACE_ID: namespaceIdSchema,
-    DURABLE_OBJECT_CONTROL_PLANE_URL: z.string().url(),
-    DURABLE_OBJECT_SOCKET_GATEWAY_URL: z.string().url().optional()
-})
+import { configuredSettings } from "./clientSettings.js"
 
 const errorDocumentSchema = z.object({
     error: z.object({
@@ -42,7 +34,6 @@ const actorHostTargetSchema = z.object({
 const TARGET_EXPIRATION_SAFETY_MS = 5_000
 
 class RemoteActorClient {
-    private readonly serializer = new JsonActorStateSerializer()
     private settingsValue: RemoteActorSettings | undefined
     private readonly environment: NodeJS.ProcessEnv
     private readonly fetchRequest: typeof globalThis.fetch
@@ -102,7 +93,7 @@ class RemoteActorClient {
             actorType: validateActorComponent("actor type", actorType),
             actorId: validateActorComponent("actor ID", actorId)
         }
-        const attachment = this.serializer.clone(metadata, "socket metadata")
+        const attachment = cloneJson(metadata, "socket metadata")
         if (Buffer.byteLength(JSON.stringify(attachment)) > 64 * 1024) throw new ActorProtocolError("socket metadata must not exceed 64 KiB")
         return this.connectWebSocket(socketUrl(this.settings.socketGatewayUrl, this.settings.namespaceId, actor.actorType, actor.actorId), this.settings.token, attachment)
     }
@@ -226,19 +217,17 @@ class RemoteActorClient {
 
     private get settings(): RemoteActorSettings {
         if (this.settingsValue !== undefined) return this.settingsValue
-        const result = remoteSettingsSchema.safeParse(this.environment)
-        if (!result.success) throw new ActorConfigurationError(`remote actor settings are invalid: ${result.error.message}`)
-        this.settingsValue = {
-            token: result.data.DURABLE_OBJECT_TOKEN,
-            namespaceId: result.data.DURABLE_OBJECT_NAMESPACE_ID,
-            controlPlaneUrl: validateOrigin(result.data.DURABLE_OBJECT_CONTROL_PLANE_URL),
-            socketGatewayUrl: validateOrigin(result.data.DURABLE_OBJECT_SOCKET_GATEWAY_URL ?? result.data.DURABLE_OBJECT_CONTROL_PLANE_URL)
-        }
+        this.settingsValue = configuredSettings({
+            token: this.environment.DURABLE_OBJECT_TOKEN,
+            namespaceId: this.environment.DURABLE_OBJECT_NAMESPACE_ID,
+            controlPlaneUrl: this.environment.DURABLE_OBJECT_CONTROL_PLANE_URL,
+            socketGatewayUrl: this.environment.DURABLE_OBJECT_SOCKET_GATEWAY_URL
+        })
         return this.settingsValue
     }
 
     private jsonArguments(args: readonly unknown[]): readonly JsonValue[] {
-        const value = this.serializer.clone(args, "actor arguments")
+        const value = cloneJson(args, "actor arguments")
         if (!Array.isArray(value)) throw new ActorProtocolError("actor arguments must be a JSON array")
         return value
     }

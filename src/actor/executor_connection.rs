@@ -34,8 +34,6 @@ pub struct ActorMethodInvocation {
     pub actor: ActorKey,
     pub method: String,
     pub args: Vec<Value>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub state: Option<Value>,
     pub connections: Vec<ActorSocketConnection>,
 }
 
@@ -82,8 +80,6 @@ pub struct ActorSocketInvocation {
     pub actor: ActorKey,
     pub event: ActorSocketEvent,
     pub connections: Vec<ActorSocketConnection>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub state: Option<Value>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -141,29 +137,16 @@ pub enum ActorSocketOutcome {
 pub trait ActorExecutor: Send + Sync {
     fn supports(&self, actor_type: &str) -> bool;
 
-    async fn invoke(&self, invocation: ActorMethodInvocation) -> Result<ActorMethodOutcome>;
-
-    async fn invoke_with_state(
+    async fn invoke(
         &self,
-        mut invocation: ActorMethodInvocation,
+        invocation: ActorMethodInvocation,
         state: Option<&Value>,
-    ) -> Result<ActorMethodOutcome> {
-        invocation.state = state.cloned();
-        self.invoke(invocation).await
-    }
-
-    async fn handle_socket_with_state(
-        &self,
-        mut invocation: ActorSocketInvocation,
-        state: Option<&Value>,
-    ) -> Result<ActorSocketOutcome> {
-        invocation.state = state.cloned();
-        self.handle_socket(invocation).await
-    }
+    ) -> Result<ActorMethodOutcome>;
 
     async fn handle_socket(
         &self,
         _invocation: ActorSocketInvocation,
+        _state: Option<&Value>,
     ) -> Result<ActorSocketOutcome> {
         Ok(ActorSocketOutcome::Failed(ActorInvocationFailure {
             code: "socket_not_supported".into(),
@@ -308,17 +291,11 @@ impl ActorExecutor for JsActorExecutor {
         self.actor_types.contains(actor_type)
     }
 
-    async fn invoke(&self, mut invocation: ActorMethodInvocation) -> Result<ActorMethodOutcome> {
-        let state = invocation.state.take();
-        self.invoke_with_state(invocation, state.as_ref()).await
-    }
-
-    async fn invoke_with_state(
+    async fn invoke(
         &self,
-        mut invocation: ActorMethodInvocation,
+        invocation: ActorMethodInvocation,
         state: Option<&Value>,
     ) -> Result<ActorMethodOutcome> {
-        invocation.state = None;
         match self
             .exchange_with_state(ExecutorCommand::Invoke(invocation), state)
             .await?
@@ -349,19 +326,9 @@ impl ActorExecutor for JsActorExecutor {
 
     async fn handle_socket(
         &self,
-        mut invocation: ActorSocketInvocation,
-    ) -> Result<ActorSocketOutcome> {
-        let state = invocation.state.take();
-        self.handle_socket_with_state(invocation, state.as_ref())
-            .await
-    }
-
-    async fn handle_socket_with_state(
-        &self,
-        mut invocation: ActorSocketInvocation,
+        invocation: ActorSocketInvocation,
         state: Option<&Value>,
     ) -> Result<ActorSocketOutcome> {
-        invocation.state = None;
         match self
             .exchange_with_state(ExecutorCommand::WebsocketEvent(invocation), state)
             .await?
@@ -735,18 +702,20 @@ mod tests {
         let shutdown = CancellationToken::new();
         let connection_task = tokio::spawn(connection.run(shutdown.clone()));
         let outcome = executor
-            .invoke(ActorMethodInvocation {
-                request_id: "request-1".into(),
-                actor: ActorKey {
-                    namespace_id: "namespace-1".into(),
-                    actor_type: "counter".into(),
-                    actor_id: "counter-1".into(),
+            .invoke(
+                ActorMethodInvocation {
+                    request_id: "request-1".into(),
+                    actor: ActorKey {
+                        namespace_id: "namespace-1".into(),
+                        actor_type: "counter".into(),
+                        actor_id: "counter-1".into(),
+                    },
+                    method: "increment".into(),
+                    args: vec![json!(2)],
+                    connections: Vec::new(),
                 },
-                method: "increment".into(),
-                args: vec![json!(2)],
-                state: None,
-                connections: Vec::new(),
-            })
+                None,
+            )
             .await?;
         assert_eq!(
             outcome,
@@ -757,27 +726,29 @@ mod tests {
             }
         );
         let socket_outcome = executor
-            .handle_socket(ActorSocketInvocation {
-                request_id: "socket-request-1".into(),
-                actor: ActorKey {
-                    namespace_id: "namespace-1".into(),
-                    actor_type: "counter".into(),
-                    actor_id: "counter-1".into(),
-                },
-                event: ActorSocketEvent::Connect {
-                    connection: ActorSocketConnection {
+            .handle_socket(
+                ActorSocketInvocation {
+                    request_id: "socket-request-1".into(),
+                    actor: ActorKey {
+                        namespace_id: "namespace-1".into(),
+                        actor_type: "counter".into(),
+                        actor_id: "counter-1".into(),
+                    },
+                    event: ActorSocketEvent::Connect {
+                        connection: ActorSocketConnection {
+                            id: "socket-1".into(),
+                            metadata: json!({ "userId": "user-1" }),
+                            tags: Vec::new(),
+                        },
+                    },
+                    connections: vec![ActorSocketConnection {
                         id: "socket-1".into(),
                         metadata: json!({ "userId": "user-1" }),
                         tags: Vec::new(),
-                    },
+                    }],
                 },
-                connections: vec![ActorSocketConnection {
-                    id: "socket-1".into(),
-                    metadata: json!({ "userId": "user-1" }),
-                    tags: Vec::new(),
-                }],
-                state: Some(json!({ "count": 2 })),
-            })
+                Some(&json!({ "count": 2 })),
+            )
             .await?;
         assert_eq!(
             socket_outcome,
@@ -838,18 +809,20 @@ mod tests {
         let invoke = async {
             for count in [9, 10] {
                 let outcome = executor
-                    .invoke(ActorMethodInvocation {
-                        request_id: format!("request-{count}"),
-                        actor: ActorKey {
-                            namespace_id: "test".into(),
-                            actor_type: "counter".into(),
-                            actor_id: "one".into(),
+                    .invoke(
+                        ActorMethodInvocation {
+                            request_id: format!("request-{count}"),
+                            actor: ActorKey {
+                                namespace_id: "test".into(),
+                                actor_type: "counter".into(),
+                                actor_id: "one".into(),
+                            },
+                            method: "increment".into(),
+                            args: vec![],
+                            connections: vec![],
                         },
-                        method: "increment".into(),
-                        args: vec![],
-                        connections: vec![],
-                        state: Some(json!({"count":count})),
-                    })
+                        Some(&json!({"count":count})),
+                    )
                     .await?;
                 assert!(
                     matches!(outcome, ActorMethodOutcome::Completed {result, ..} if result == json!(count + 1))
@@ -874,18 +847,20 @@ mod tests {
         let shutdown = CancellationToken::new();
         let connection_task = tokio::spawn(connection.run(shutdown.clone()));
         let outcome = executor
-            .invoke(ActorMethodInvocation {
-                request_id: "request-1".into(),
-                actor: ActorKey {
-                    namespace_id: "namespace-1".into(),
-                    actor_type: "counter".into(),
-                    actor_id: "counter-1".into(),
+            .invoke(
+                ActorMethodInvocation {
+                    request_id: "request-1".into(),
+                    actor: ActorKey {
+                        namespace_id: "namespace-1".into(),
+                        actor_type: "counter".into(),
+                        actor_id: "counter-1".into(),
+                    },
+                    method: "accept".into(),
+                    args: vec![json!("x".repeat(MAX_ACTOR_EXECUTOR_MESSAGE_BYTES))],
+                    connections: Vec::new(),
                 },
-                method: "accept".into(),
-                args: vec![json!("x".repeat(MAX_ACTOR_EXECUTOR_MESSAGE_BYTES))],
-                state: None,
-                connections: Vec::new(),
-            })
+                None,
+            )
             .await?;
 
         assert!(matches!(

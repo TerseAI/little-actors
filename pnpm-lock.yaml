@@ -17,15 +17,18 @@ importers:
 
   npm:
     dependencies:
+      '@discoveryjs/json-ext':
+        specifier: ^1.1.0
+        version: 1.1.0
       '@grpc/grpc-js':
         specifier: ^1.14.4
         version: 1.14.4
+      '@grpc/proto-loader':
+        specifier: ^0.8.1
+        version: 0.8.1
       modal:
         specifier: ^0.10.0
         version: 0.10.0
-      protobufjs:
-        specifier: ^7.6.6
-        version: 7.6.6
       tsx:
         specifier: ^4.0.0
         version: 4.23.13
@@ -36,9 +39,6 @@ importers:
         specifier: ^4.3.6
         version: 4.5.4
     devDependencies:
-      '@grpc/proto-loader':
-        specifier: ^0.8.1
-        version: 0.8.1
       '@types/node':
         specifier: ^22.0.0
         version: 22.20.1
@@ -117,6 +117,10 @@ packages:
     resolution: {integrity: sha512-dI+9P7cfWxkTQ+oE+7Aa6onEn92PHgfWXZivjNheCRmTBDBf2fx6RyTi0cmgpYLnD1KLZK9ZYrMxaPZ4oiXhGA==}
     cpu: [x64]
     os: [win32]
+
+  '@discoveryjs/json-ext@1.1.0':
+    resolution: {integrity: sha512-Xc3VhU02wqZ1HvHRJUwL09HkZSTvidqY5Ya0NXBSYOxAp+Ln9dcJr9fySI+CkONzP3PekQo9WdzCv0PGER/mOA==}
+    engines: {node: '>=14.17.0'}
 
   '@esbuild/aix-ppc64@0.28.2':
     resolution: {integrity: sha512-XExcO+dvLKvVtNTibSTBej1NCAbaGhWn9Ww1ZPx80qsahhPFe/8jgWP0IchNe0F3HwkU7n8ejhH8bjonqht8mQ==}
@@ -615,6 +619,8 @@ snapshots:
 
   '@cbor-extract/cbor-extract-win32-x64@2.2.2':
     optional: true
+
+  '@discoveryjs/json-ext@1.1.0': {}
 
   '@esbuild/aix-ppc64@0.28.2':
     optional: true

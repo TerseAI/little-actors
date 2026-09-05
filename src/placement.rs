@@ -1,4 +1,5 @@
-use std::{collections::HashMap, sync::Mutex};
+#[cfg(test)]
+pub(crate) mod testing;
 
 use anyhow::{Context, Result, ensure};
 use async_trait::async_trait;
@@ -53,107 +54,6 @@ pub trait ObjectPlacementStore: Send + Sync {
     ) -> Result<PlacementClaim>;
 
     async fn commit_state(&self, request: &StateCommitRequest) -> Result<StateCommit>;
-}
-
-#[derive(Default)]
-pub struct LocalObjectPlacementStore {
-    placements: Mutex<HashMap<ActorStorageKey, ObjectPlacement>>,
-}
-
-#[async_trait]
-impl ObjectPlacementStore for LocalObjectPlacementStore {
-    async fn get(&self, object: &ActorStorageKey) -> Result<Option<ObjectPlacement>> {
-        Ok(self
-            .placements
-            .lock()
-            .map_err(|_| anyhow::anyhow!("object placement lock poisoned"))?
-            .get(object)
-            .cloned())
-    }
-
-    async fn claim(
-        &self,
-        object: &ActorStorageKey,
-        expected: Option<&ObjectPlacement>,
-        owner: &HostId,
-        home_region: &str,
-    ) -> Result<PlacementClaim> {
-        validate_region(home_region)?;
-        let mut placements = self
-            .placements
-            .lock()
-            .map_err(|_| anyhow::anyhow!("object placement lock poisoned"))?;
-        match placements.get(object) {
-            None if expected.is_none() => {
-                let placement = ObjectPlacement {
-                    object: object.clone(),
-                    owner: owner.clone(),
-                    owner_epoch: 1,
-                    home_region: home_region.to_owned(),
-                    state_version: 0,
-                    state_object: None,
-                    last_request_id: None,
-                };
-                placements.insert(object.clone(), placement.clone());
-                Ok(PlacementClaim::Acquired(placement))
-            }
-            Some(current) if expected == Some(current) => {
-                ensure!(
-                    current.home_region == home_region,
-                    "object home region cannot change"
-                );
-                if &current.owner == owner {
-                    return Ok(PlacementClaim::Current(current.clone()));
-                }
-                let placement = ObjectPlacement {
-                    object: object.clone(),
-                    owner: owner.clone(),
-                    owner_epoch: current
-                        .owner_epoch
-                        .checked_add(1)
-                        .context("object owner epoch overflow")?,
-                    home_region: home_region.to_owned(),
-                    state_version: current.state_version,
-                    state_object: current.state_object.clone(),
-                    last_request_id: current.last_request_id.clone(),
-                };
-                placements.insert(object.clone(), placement.clone());
-                Ok(PlacementClaim::Acquired(placement))
-            }
-            Some(current) => Ok(PlacementClaim::Current(current.clone())),
-            None => anyhow::bail!("expected object placement no longer exists"),
-        }
-    }
-
-    async fn commit_state(&self, request: &StateCommitRequest) -> Result<StateCommit> {
-        validate_state_commit(request)?;
-        let mut placements = self
-            .placements
-            .lock()
-            .map_err(|_| anyhow::anyhow!("object placement lock poisoned"))?;
-        let current = placements
-            .get(&request.object)
-            .cloned()
-            .context("actor placement does not exist")?;
-        if is_replayed_commit(&current, request) {
-            return Ok(StateCommit::Committed(current));
-        }
-        if current.owner != request.owner
-            || current.owner_epoch != request.owner_epoch
-            || current.state_version != request.expected_version
-        {
-            return Ok(StateCommit::Current(current));
-        }
-        let mut committed = current;
-        committed.state_version = committed
-            .state_version
-            .checked_add(1)
-            .context("actor state version overflow")?;
-        committed.state_object = Some(request.state_object.clone());
-        committed.last_request_id = Some(request.request_id.clone());
-        placements.insert(request.object.clone(), committed.clone());
-        Ok(StateCommit::Committed(committed))
-    }
 }
 
 pub struct PostgresObjectPlacementStore {
@@ -365,60 +265,4 @@ pub fn validate_region(region: &str) -> Result<()> {
         "sandbox region is invalid"
     );
     Ok(())
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[tokio::test]
-    async fn claims_once_and_increments_epoch_on_transfer() -> Result<()> {
-        let store = LocalObjectPlacementStore::default();
-        let object = ActorStorageKey::new("object.v1.project.Counter.one");
-        let first = match store
-            .claim(&object, None, &HostId::new("host-a"), "us-east")
-            .await?
-        {
-            PlacementClaim::Acquired(placement) => placement,
-            claim => anyhow::bail!("unexpected claim: {claim:?}"),
-        };
-        assert_eq!(first.owner_epoch, 1);
-
-        let second = match store
-            .claim(&object, Some(&first), &HostId::new("host-b"), "us-east")
-            .await?
-        {
-            PlacementClaim::Acquired(placement) => placement,
-            claim => anyhow::bail!("unexpected claim: {claim:?}"),
-        };
-        assert_eq!(second.owner, HostId::new("host-b"));
-        assert_eq!(second.owner_epoch, 2);
-        assert_eq!(second.home_region, "us-east");
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn stale_claim_observes_the_current_owner() -> Result<()> {
-        let store = LocalObjectPlacementStore::default();
-        let object = ActorStorageKey::new("object.v1.project.Counter.one");
-        let PlacementClaim::Acquired(first) = store
-            .claim(&object, None, &HostId::new("host-a"), "us-east")
-            .await?
-        else {
-            anyhow::bail!("first claim was not acquired")
-        };
-        let PlacementClaim::Acquired(second) = store
-            .claim(&object, Some(&first), &HostId::new("host-b"), "us-east")
-            .await?
-        else {
-            anyhow::bail!("second claim was not acquired")
-        };
-        assert_eq!(
-            store
-                .claim(&object, Some(&first), &HostId::new("host-c"), "us-east",)
-                .await?,
-            PlacementClaim::Current(second)
-        );
-        Ok(())
-    }
 }

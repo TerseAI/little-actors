@@ -1,11 +1,15 @@
-import { Client, Metadata, credentials } from "@grpc/grpc-js"
-import protobuf from "protobufjs"
+import { Metadata, credentials, loadPackageDefinition } from "@grpc/grpc-js"
+import { loadSync } from "@grpc/proto-loader"
+import { fileURLToPath } from "node:url"
 
+import type { ProtoGrpcType } from "../generated/durable_object.js"
+import type { ActorHostServiceClient } from "../generated/durable_object/v1/ActorHostService.js"
+import type { HostInvokeActorRequest } from "../generated/durable_object/v1/HostInvokeActorRequest.js"
+import type { InvokeActorReply__Output } from "../generated/durable_object/v1/InvokeActorReply.js"
 import { ActorProtocolError } from "../shared/errors.js"
 import { parseSocketEffects } from "../shared/types.js"
 import type { JsonValue, SocketEffect } from "../shared/types.js"
 
-const { Field, OneOf, Type } = protobuf
 const MAX_MESSAGE_BYTES = 32 * 1024 * 1024
 
 interface ActorHostTarget {
@@ -36,7 +40,7 @@ interface ActorHostTransport {
 }
 
 class GrpcActorHostTransport implements ActorHostTransport {
-    private readonly clients = new Map<string, Client>()
+    private readonly clients = new Map<string, ActorHostServiceClient>()
 
     async invoke(target: ActorHostTarget, invocation: DirectActorInvocation): Promise<ActorHostReply> {
         const metadata = new Metadata()
@@ -60,12 +64,12 @@ class GrpcActorHostTransport implements ActorHostTransport {
         return decodeReply(reply)
     }
 
-    private client(route: string): Client {
+    private client(route: string): ActorHostServiceClient {
         const existing = this.clients.get(route)
         if (existing) return existing
         const url = actorHostUrl(route)
         const address = url.port ? url.host : `${url.hostname}:${url.protocol === "https:" ? 443 : 80}`
-        const client = new Client(address, url.protocol === "https:" ? credentials.createSsl() : credentials.createInsecure(), {
+        const client = new ActorHostClient(address, url.protocol === "https:" ? credentials.createSsl() : credentials.createInsecure(), {
             "grpc.max_receive_message_length": MAX_MESSAGE_BYTES,
             "grpc.max_send_message_length": MAX_MESSAGE_BYTES
         })
@@ -74,9 +78,9 @@ class GrpcActorHostTransport implements ActorHostTransport {
     }
 }
 
-function unaryRequest(client: Client, request: HostInvokeActorRequest, metadata: Metadata): Promise<InvokeActorReply> {
+function unaryRequest(client: ActorHostServiceClient, request: HostInvokeActorRequest, metadata: Metadata): Promise<InvokeActorReply__Output> {
     return new Promise((resolve, reject) => {
-        client.makeUnaryRequest("/durable_object.v1.ActorHostService/Invoke", serializeHostRequest, deserializeHostReply, request, metadata, (error, reply) => {
+        client.invoke(request, metadata, (error, reply) => {
             if (error) reject(error)
             else if (reply) resolve(reply)
             else reject(new ActorProtocolError("actor host gRPC response was empty"))
@@ -84,7 +88,7 @@ function unaryRequest(client: Client, request: HostInvokeActorRequest, metadata:
     })
 }
 
-function decodeReply(reply: InvokeActorReply): ActorHostReply {
+function decodeReply(reply: InvokeActorReply__Output): ActorHostReply {
     if (reply.completed) {
         return {
             type: "completed",
@@ -113,63 +117,14 @@ function actorHostUrl(route: string): URL {
     return url
 }
 
-const actorKeyType = new Type("ActorKey")
-    .add(new Field("namespaceId", 1, "string"))
-    .add(new Field("actorType", 2, "string"))
-    .add(new Field("actorId", 3, "string"))
-const invocationType = new Type("InvokeActorRequest")
-    .add(new Field("requestId", 1, "string"))
-    .add(new Field("actor", 2, "ActorKey"))
-    .add(new Field("method", 3, "string"))
-    .add(new Field("argsJson", 4, "bytes"))
-    .add(actorKeyType)
-const hostRequestType = new Type("HostInvokeActorRequest")
-    .add(new Field("invocation", 1, "InvokeActorRequest"))
-    .add(new Field("ownerEpoch", 2, "uint64"))
-    .add(new Field("stateReadUrl", 3, "string"))
-    .add(new Field("stateVersion", 4, "uint64"))
-    .add(invocationType)
-const completedType = new Type("ActorCompleted").add(new Field("resultJson", 1, "bytes")).add(new Field("socketEffectsJson", 2, "bytes"))
-const failedType = new Type("ActorFailed").add(new Field("code", 1, "string")).add(new Field("message", 2, "string"))
-const rerouteType = new Type("Reroute")
-const replyType = new Type("InvokeActorReply")
-    .add(new Field("completed", 1, "ActorCompleted"))
-    .add(new Field("failed", 2, "ActorFailed"))
-    .add(new Field("reroute", 3, "Reroute"))
-    .add(new OneOf("result", ["completed", "failed", "reroute"]))
-    .add(completedType)
-    .add(failedType)
-    .add(rerouteType)
-
-function serializeHostRequest(request: HostInvokeActorRequest): Buffer {
-    return Buffer.from(hostRequestType.encode(request).finish())
-}
-
-function deserializeHostReply(bytes: Buffer): InvokeActorReply {
-    return replyType.decode(bytes) as unknown as InvokeActorReply
-}
-
-interface HostInvokeActorRequest {
-    readonly invocation: {
-        readonly requestId: string
-        readonly actor: {
-            readonly namespaceId: string
-            readonly actorType: string
-            readonly actorId: string
-        }
-        readonly method: string
-        readonly argsJson: Uint8Array
-    }
-    readonly ownerEpoch: number
-    readonly stateVersion: number
-    readonly stateReadUrl: string
-}
-
-interface InvokeActorReply {
-    readonly completed?: { readonly resultJson: Uint8Array; readonly socketEffectsJson: Uint8Array }
-    readonly failed?: { readonly code: string; readonly message: string }
-    readonly reroute?: Record<string, never>
-}
+const definition = loadPackageDefinition(
+    loadSync(fileURLToPath(new URL("../generated/durable_object.proto", import.meta.url)), {
+        defaults: true,
+        longs: Number,
+        oneofs: true
+    })
+) as unknown as ProtoGrpcType
+const ActorHostClient = definition.durable_object.v1.ActorHostService
 
 export { GrpcActorHostTransport }
 export type { ActorHostReply, ActorHostTarget, ActorHostTransport, DirectActorInvocation }

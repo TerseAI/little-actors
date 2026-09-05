@@ -1,7 +1,7 @@
 import assert from "node:assert/strict"
 import { test } from "node:test"
 
-import { runWithActorClientForTests } from "../workflow/client.js"
+import { runWithActorClientForTests } from "../fixtures/actorClient.js"
 
 import { Actor } from "./actor.js"
 

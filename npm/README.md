@@ -68,7 +68,9 @@ DURABLE_OBJECT_CONTROL_PLANE_URL
 
 The control plane selects one sandbox provider globally. For Modal, set `DURABLE_OBJECT_SANDBOX_PROVIDER=modal`; optionally override its executable with `DURABLE_OBJECT_SANDBOX_COMMAND`.
 
-The `little-durable-objects-modal` executable reads one host-provisioning or disposable image-warmup command from stdin, uses `MODAL_TOKEN_ID` and `MODAL_TOKEN_SECRET` through the Modal TypeScript SDK, and writes one JSON result to stdout. The Rust control plane invokes it locally; no provider HTTP server is required.
+Every provider executable runs persistently, reading one JSON command per line from stdin and writing one JSON response per line to stdout. Responses are `{ "status": "success", "result": ... }` or `{ "status": "failure", "error": "..." }`. Logs go to stderr. The control plane reuses a pool of up to two processes regardless of the executable name.
+
+The `little-durable-objects-modal` executable handles host lifecycle and disposable image-warmup commands through the Modal TypeScript SDK, using `MODAL_TOKEN_ID` and `MODAL_TOKEN_SECRET`. The Rust control plane runs it locally and reuses each process across commands.
 
 Actor hosts conventionally load `src/durable-objects.ts`. See the [runtime repository](https://github.com/TerseAI/little-durable-objects) for backend configuration, the REST admin API, authentication, and lifecycle behavior.
 

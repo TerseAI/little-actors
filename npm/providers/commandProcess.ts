@@ -6,9 +6,9 @@ import type { SandboxProvider, SandboxProviderCommand } from "./types.js"
 
 const MAX_COMMAND_BYTES = 1024 * 1024
 
-async function runProviderCommands(input: Readable, output: Writable, createProvider: () => Promise<SandboxProvider>, persistent: boolean): Promise<void> {
+async function runProviderCommands(input: Readable, output: Writable, createProvider: () => Promise<SandboxProvider>): Promise<void> {
     let provider: SandboxProvider | undefined
-    for await (const document of commandDocuments(input, persistent)) {
+    for await (const document of commandDocuments(input)) {
         const startedAt = performance.now()
         let response: unknown
         try {
@@ -17,9 +17,8 @@ async function runProviderCommands(input: Readable, output: Writable, createProv
             provider ??= await createProvider()
             const sdkLoadedAtMs = elapsedMs(startedAt)
             const result = await execute(provider, command, startedAt, inputParsedAtMs, sdkLoadedAtMs)
-            response = persistent ? { status: "success", result } : result
+            response = { status: "success", result }
         } catch (error) {
-            if (!persistent) throw error
             response = { status: "failure", error: error instanceof Error ? error.message : String(error) }
         }
         const encoded = JSON.stringify(response)
@@ -28,26 +27,21 @@ async function runProviderCommands(input: Readable, output: Writable, createProv
     }
 }
 
-async function* commandDocuments(input: Readable, persistent: boolean): AsyncGenerator<string> {
+async function* commandDocuments(input: Readable): AsyncGenerator<string> {
     input.setEncoding("utf8")
     let buffer = ""
     for await (const chunk of input) {
         buffer += String(chunk)
-        if (persistent) {
-            let newline: number
-            while ((newline = buffer.indexOf("\n")) !== -1) {
-                const document = buffer.slice(0, newline)
-                checkSize(document)
-                buffer = buffer.slice(newline + 1)
-                yield document
-            }
+        let newline: number
+        while ((newline = buffer.indexOf("\n")) !== -1) {
+            const document = buffer.slice(0, newline)
+            checkSize(document)
+            buffer = buffer.slice(newline + 1)
+            yield document
         }
         checkSize(buffer)
     }
-    if (buffer) {
-        if (persistent) throw new Error("incomplete provider command")
-        yield buffer
-    }
+    if (buffer) throw new Error("incomplete provider command")
 }
 
 function checkSize(document: string): void {

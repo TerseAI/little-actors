@@ -1,16 +1,11 @@
 use std::{
     collections::HashMap,
-    process::Stdio,
     time::{Duration, Instant},
 };
 
 use anyhow::{Context, Result, ensure};
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
-use tokio::{
-    io::{AsyncRead, AsyncReadExt, AsyncWriteExt},
-    process::Command,
-};
 
 use crate::host::HostId;
 
@@ -139,9 +134,7 @@ pub struct HostSandboxRuntimeConfig {
 
 pub struct CommandSandboxProvider {
     provider_name: String,
-    command: String,
-    environment: HashMap<String, String>,
-    processes: Option<deadpool::managed::Pool<command_process::ProviderProcessManager>>,
+    processes: deadpool::managed::Pool<command_process::ProviderProcessManager>,
 }
 
 impl CommandSandboxProvider {
@@ -161,19 +154,9 @@ impl CommandSandboxProvider {
         if let Ok(path) = std::env::var("PATH") {
             environment.entry("PATH".into()).or_insert(path);
         }
-        let processes = if std::path::Path::new(&command)
-            .file_name()
-            .is_some_and(|name| name == "little-durable-objects-modal")
-        {
-            Some(command_process::pool(command.clone(), environment.clone())?)
-        } else {
-            None
-        };
         Ok(Self {
             provider_name,
-            command,
-            environment,
-            processes,
+            processes: command_process::pool(command, environment)?,
         })
     }
 }
@@ -253,79 +236,11 @@ impl CommandSandboxProvider {
         started_at: Instant,
         timings: &mut ProviderCommandTimings,
     ) -> Result<Reply> {
-        if let Some(processes) = &self.processes {
-            let command = ProviderCommand { operation, request };
-            let execution = command_process::exchange(processes, &command, started_at, timings);
-            return tokio::time::timeout(PROVIDER_REQUEST_TIMEOUT, execution)
-                .await
-                .context("sandbox provider command timed out; outcome may be unknown")?;
-        }
-        let mut child = Command::new(&self.command)
-            .env_clear()
-            .envs(&self.environment)
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .kill_on_drop(true)
-            .spawn()
-            .with_context(|| {
-                format!(
-                    "start {} sandbox command {:?}",
-                    self.provider_name, self.command
-                )
-            })?;
-        timings.spawned_at_ms = Some(elapsed_ms(started_at));
-        let document = serde_json::to_vec(&ProviderCommand { operation, request })?;
-        let mut stdin = child
-            .stdin
-            .take()
-            .with_context(|| format!("open {} sandbox command stdin", self.provider_name))?;
-        stdin
-            .write_all(&document)
+        let command = ProviderCommand { operation, request };
+        let execution = command_process::exchange(&self.processes, &command, started_at, timings);
+        tokio::time::timeout(PROVIDER_REQUEST_TIMEOUT, execution)
             .await
-            .with_context(|| format!("write {} sandbox command request", self.provider_name))?;
-        stdin
-            .shutdown()
-            .await
-            .with_context(|| format!("close {} sandbox command stdin", self.provider_name))?;
-        timings.request_written_at_ms = Some(elapsed_ms(started_at));
-        drop(stdin);
-        let stdout = child
-            .stdout
-            .take()
-            .with_context(|| format!("open {} sandbox command stdout", self.provider_name))?;
-        let stderr = child
-            .stderr
-            .take()
-            .with_context(|| format!("open {} sandbox command stderr", self.provider_name))?;
-        let execution = async {
-            let wait = async {
-                child
-                    .wait()
-                    .await
-                    .with_context(|| format!("wait for {} sandbox command", self.provider_name))
-            };
-            tokio::try_join!(
-                wait,
-                read_bounded_output(stdout, MAX_PROVIDER_OUTPUT_BYTES, "stdout"),
-                read_bounded_output(stderr, MAX_PROVIDER_OUTPUT_BYTES, "stderr"),
-            )
-        };
-        let (status, stdout, stderr) = tokio::time::timeout(PROVIDER_REQUEST_TIMEOUT, execution)
-            .await
-            .with_context(|| format!("{} sandbox command timed out", self.provider_name))??;
-        timings.process_completed_at_ms = Some(elapsed_ms(started_at));
-        ensure!(
-            status.success(),
-            "{} sandbox command failed with {}: {}",
-            self.provider_name,
-            status,
-            String::from_utf8_lossy(&stderr).trim()
-        );
-        let response = serde_json::from_slice(&stdout)
-            .with_context(|| format!("decode {} sandbox command response", self.provider_name))?;
-        timings.response_decoded_at_ms = Some(elapsed_ms(started_at));
-        Ok(response)
+            .context("sandbox provider command timed out; outcome may be unknown")?
     }
 }
 
@@ -377,24 +292,6 @@ fn elapsed_ms(started_at: Instant) -> u64 {
     u64::try_from(started_at.elapsed().as_millis()).unwrap_or(u64::MAX)
 }
 
-async fn read_bounded_output(
-    reader: impl AsyncRead + Unpin,
-    max_bytes: usize,
-    label: &str,
-) -> Result<Vec<u8>> {
-    let mut output = Vec::new();
-    reader
-        .take((max_bytes + 1) as u64)
-        .read_to_end(&mut output)
-        .await
-        .with_context(|| format!("read sandbox command {label}"))?;
-    ensure!(
-        output.len() <= max_bytes,
-        "sandbox command {label} exceeds {max_bytes} bytes"
-    );
-    Ok(output)
-}
-
 #[derive(Serialize)]
 struct ProviderCommand<'a, Request> {
     operation: &'a str,
@@ -440,34 +337,24 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn provider_output_is_bounded_while_reading() {
-        let error = read_bounded_output(tokio::io::repeat(b'x'), 32, "stdout")
-            .await
-            .expect_err("unbounded provider output should fail");
-        assert!(error.to_string().contains("stdout exceeds 32 bytes"));
-    }
-
-    #[tokio::test]
-    async fn builtin_provider_reuses_its_process_and_discards_cancelled_exchanges() -> Result<()> {
+    async fn provider_reuses_arbitrarily_named_executables_and_discards_cancelled_exchanges()
+    -> Result<()> {
         use std::os::unix::fs::PermissionsExt;
         let directory = tempfile::tempdir()?;
-        let path = directory.path().join("little-durable-objects-modal");
+        let path = directory.path().join("custom-provider.js");
         std::fs::write(
             &path,
             r#"#!/usr/bin/env node
 const readline = require('node:readline');
 let sequence = 0;
-async function reply(command, persistent) {
+async function reply(command) {
+  if (command.request.oversized) { process.stdout.write('x'.repeat(1024 * 1024 + 1)); return; }
+  if (command.request.fail) { process.stdout.write(JSON.stringify({status: 'failure', error: 'test failure'}) + '\n'); return; }
   if (command.request.delay) await new Promise(resolve => setTimeout(resolve, command.request.delay));
   const result = { pid: process.pid, sequence: ++sequence };
-  process.stdout.write(JSON.stringify(persistent ? { status: 'success', result } : result) + '\n');
+  process.stdout.write(JSON.stringify({ status: 'success', result }) + '\n');
 }
-if (process.argv.includes('--serve')) {
-  (async () => { for await (const line of readline.createInterface({input: process.stdin})) await reply(JSON.parse(line), true); })();
-} else {
-  let input = ''; process.stdin.on('data', chunk => input += chunk);
-  process.stdin.on('end', () => reply(JSON.parse(input), false));
-}
+(async () => { for await (const line of readline.createInterface({input: process.stdin})) await reply(JSON.parse(line)); })();
 "#,
         )?;
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o700))?;
@@ -480,6 +367,13 @@ if (process.argv.includes('--serve')) {
         let second: serde_json::Value = provider.execute("test", &serde_json::json!({})).await?;
         assert_eq!(first["pid"], second["pid"]);
         assert_eq!(second["sequence"], 2);
+        let error = provider
+            .execute::<_, serde_json::Value>("test", &serde_json::json!({"fail": true}))
+            .await
+            .expect_err("provider failure must propagate");
+        assert!(error.to_string().contains("test failure"));
+        let recovered: serde_json::Value = provider.execute("test", &serde_json::json!({})).await?;
+        assert_eq!(first["pid"], recovered["pid"]);
         assert!(
             tokio::time::timeout(
                 Duration::from_millis(50),
@@ -492,6 +386,13 @@ if (process.argv.includes('--serve')) {
         let next: serde_json::Value = provider.execute("test", &serde_json::json!({})).await?;
         assert_ne!(first["pid"], next["pid"]);
         assert_eq!(next["sequence"], 1);
+        let error = provider
+            .execute::<_, serde_json::Value>("test", &serde_json::json!({"oversized": true}))
+            .await
+            .expect_err("unbounded provider output must fail");
+        assert!(error.to_string().contains("stdout exceeds"));
+        let recovered: serde_json::Value = provider.execute("test", &serde_json::json!({})).await?;
+        assert_ne!(next["pid"], recovered["pid"]);
         let request = serde_json::json!({"delay": 50});
         let (one, two, three) = tokio::try_join!(
             provider.execute::<_, serde_json::Value>("test", &request),

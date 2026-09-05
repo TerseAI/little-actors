@@ -3,11 +3,10 @@ import { Actor, bindActorIdentity } from "../../shared/actor.js"
 import { ActorProtocolError } from "../../shared/errors.js"
 import { runInActorInvocation } from "../../shared/invocationContext.js"
 import { decodeSocketMessage, runWithActorSockets } from "../../shared/socket.js"
-import { JsonActorStateSerializer, errorMessage, failedReply } from "../../shared/types.js"
+import { cloneJson, errorMessage, failedReply, hydrateActorState, snapshotActorState } from "../../shared/types.js"
 import type { ActorExecutorCommand, ActorExecutorReply, InvokeCommand, JsonObject, JsonValue, SocketEffect, WebSocketEventCommand } from "../../shared/types.js"
 
 class ActorRuntime {
-    private readonly serializer = new JsonActorStateSerializer()
     private instance: Actor | undefined
     private identity: ActorIdentity | undefined
 
@@ -33,11 +32,11 @@ class ActorRuntime {
             const operation = await runWithActorSockets(instance, command.connections ?? [], async () =>
                 runInActorInvocation(async () => Reflect.apply(method, instance, command.args) as Promise<unknown>)
             )
-            const result: JsonValue = operation.value === undefined ? null : this.serializer.clone(operation.value, "actor result")
+            const result: JsonValue = operation.value === undefined ? null : cloneJson(operation.value, "actor result")
             return {
                 type: "invoked",
                 result,
-                state: this.serializer.snapshot(instance),
+                state: snapshotActorState(instance),
                 ...(operation.effects.length === 0 ? {} : { effects: operation.effects })
             }
         } catch (error) {
@@ -59,7 +58,7 @@ class ActorRuntime {
                 const args = lifecycleArguments(command, scope)
                 await runInActorInvocation(async () => Reflect.apply(method, instance, args) as Promise<unknown>)
             })
-            const state = this.serializer.snapshot(instance)
+            const state = snapshotActorState(instance)
             return { type: "websocket_handled", state, effects: socketEffects(command, state, operation.effects) }
         } catch (error) {
             this.reset()
@@ -89,7 +88,7 @@ class ActorRuntime {
     private createInstance(identity: ActorIdentity, state: JsonValue | null): Actor {
         const instance = Reflect.construct(this.definition.actorClass, []) as Actor
         bindActorIdentity(instance, identity.actorId)
-        if (state !== null) this.serializer.hydrate(instance, persistedState(state))
+        if (state !== null) hydrateActorState(instance, persistedState(state))
         this.identity = identity
         this.instance = instance
         return instance

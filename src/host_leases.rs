@@ -1,5 +1,3 @@
-#[cfg(test)]
-mod local;
 mod postgres;
 
 use crate::host::HostId;

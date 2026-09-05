@@ -75,20 +75,6 @@ impl ActorHostService for ActorHostGrpcService {
             .map_err(|error| {
                 Status::unavailable(format!("actor socket event failed: {error:#}"))
             })?;
-        let result = match result {
-            crate::host::ActorSocketExecutionResult::Handled { effects } => {
-                ActorExecutionResult::Completed {
-                    result: serde_json::Value::Null,
-                    effects,
-                }
-            }
-            crate::host::ActorSocketExecutionResult::Failed { failure } => {
-                ActorExecutionResult::Failed { failure }
-            }
-            crate::host::ActorSocketExecutionResult::HostUnavailable => {
-                ActorExecutionResult::HostUnavailable
-            }
-        };
         Ok(Response::new(InvokeActorReply::from(result)))
     }
 }

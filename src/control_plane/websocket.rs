@@ -305,7 +305,6 @@ async fn dispatch(
         actor: actor.clone(),
         event,
         connections,
-        state: None,
     };
     match state
         .service

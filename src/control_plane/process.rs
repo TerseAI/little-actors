@@ -124,10 +124,17 @@ async fn control_plane_routes(config: ControlPlaneProcessConfig) -> Result<tonic
         .map(|auth| super::socket_auth::HttpSocketAuthenticator::new(auth.url, auth.token))
         .transpose()?
         .map(|auth| Arc::new(auth) as Arc<dyn super::socket_auth::SocketAuthenticator>);
-    let service = ControlPlaneService::new(leases, placements, storage_urls, auth)
-        .with_routing(registry.clone(), issuer.clone(), provisioner)
-        .with_socket_event_sink(socket_events)
-        .with_socket_authenticator(socket_authenticator);
+    let service = ControlPlaneService::new(
+        leases,
+        placements,
+        storage_urls,
+        auth,
+        registry.clone(),
+        issuer.clone(),
+        provisioner,
+    )
+    .with_socket_event_sink(socket_events)
+    .with_socket_authenticator(socket_authenticator);
     let admin = super::admin::AdminService::new(config.admin_token, registry, issuer)?;
     let public_api = super::public_api::router(service.clone(), admin);
     let internal_api = service.into_internal_service();

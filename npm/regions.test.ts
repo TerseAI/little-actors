@@ -1,35 +1,27 @@
 import assert from "node:assert/strict"
 import { test } from "node:test"
 
-import { canonicalRegionForModal, modalPlacement } from "./regions.js"
+import { modalPlacement } from "./regions.js"
 
 test("canonical regions map Modal placement", () => {
     assert.deepEqual(modalPlacement("north-america-east"), {
         regions: ["us-east"],
-        cloud: "gcp",
-        observedPlacements: ["gcp:us-east*"]
+        cloud: "gcp"
     })
-    assert.equal(canonicalRegionForModal("CLOUD_PROVIDER_GCP", "us-east4"), "north-america-east")
-    assert.equal(canonicalRegionForModal("GCP", "US-EAST4-A"), "north-america-east")
 })
 
-for (const [region, pool, observedRegion] of [
-    ["north-america-central", "us-central", "us-central2"],
-    ["north-america-west", "us-west", "us-west2"]
+for (const [region, pool] of [
+    ["north-america-central", "us-central"],
+    ["north-america-west", "us-west"]
 ] as const) {
     test(`${region} uses a broad GCP pool with public routing`, () => {
         assert.deepEqual(modalPlacement(region), {
             regions: [pool],
-            cloud: "gcp",
-            observedPlacements: [`gcp:${pool}*`]
+            cloud: "gcp"
         })
-        assert.equal(canonicalRegionForModal("CLOUD_PROVIDER_GCP", observedRegion), region)
-        assert.equal(canonicalRegionForModal("GCP", `${observedRegion.toUpperCase()}-A`), region)
-        assert.equal(canonicalRegionForModal("aws", observedRegion), undefined)
     })
 }
 
-test("an unknown provider placement does not silently select a home", () => {
-    assert.equal(canonicalRegionForModal("aws", "us-east-1"), undefined)
+test("an unknown canonical region has no Modal placement", () => {
     assert.throws(() => modalPlacement("unconfigured"), /has no Modal placement/u)
 })

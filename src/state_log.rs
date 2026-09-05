@@ -45,10 +45,6 @@ impl StateSnapshot {
         Ok(serde_json::to_vec(self)?)
     }
 
-    pub fn replay(&self, request_id: &str) -> Option<&Value> {
-        (self.request_id == request_id).then_some(&self.result)
-    }
-
     fn validate(&self) -> Result<()> {
         ensure!(
             self.state_version > 0,

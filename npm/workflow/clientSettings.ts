@@ -2,8 +2,6 @@ import { z } from "zod"
 
 import { ActorConfigurationError } from "../shared/errors.js"
 
-import type { DurableObjectsClientOptions } from "./remoteClient.js"
-
 const clientOptionsSchema = z.object({
     token: z.string().trim().min(1),
     namespaceId: z.string().regex(/^[A-Za-z0-9._-]+$/u),
@@ -11,7 +9,7 @@ const clientOptionsSchema = z.object({
     socketGatewayUrl: z.string().url().optional()
 })
 
-function configuredSettings(options: DurableObjectsClientOptions) {
+function configuredSettings(options: unknown) {
     const result = clientOptionsSchema.safeParse(options)
     if (!result.success) throw new ActorConfigurationError(`durable-object client settings are invalid: ${result.error.message}`)
     const controlPlaneUrl = validateOrigin(result.data.controlPlaneUrl)
@@ -31,4 +29,4 @@ function validateOrigin(origin: string): string {
     return url.origin
 }
 
-export { configuredSettings, validateOrigin }
+export { configuredSettings }

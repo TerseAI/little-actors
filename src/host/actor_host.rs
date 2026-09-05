@@ -22,7 +22,7 @@ use crate::{
     actor_state::{ActorExecutionAdmission, ActorExecutionLocks, ActorStorageKey},
     control_plane::ControlPlaneClient,
     state_log::StateSnapshot,
-    state_transport::{LoadedState, StateTransport, StateWrite},
+    state_transport::{StateTransport, StateWrite},
     storage_urls::StateWriteTicket,
 };
 
@@ -170,7 +170,7 @@ impl ActorHost {
         owner_epoch: u64,
         state_version: u64,
         state_read_url: String,
-    ) -> Result<ActorSocketExecutionResult> {
+    ) -> Result<ActorExecutionResult> {
         let persistence = ActorInvocation {
             request_id: invocation.request_id.clone(),
             actor: invocation.actor.clone(),
@@ -188,7 +188,7 @@ impl ActorHost {
                 &mut timings,
             )
             .await;
-        self.log_socket_invocation(&persistence, &timings, &outcome);
+        self.log_invocation(&persistence, &timings, &outcome);
         outcome
     }
 
@@ -200,25 +200,25 @@ impl ActorHost {
         state_read_url: &str,
         persistence: &ActorInvocation,
         timings: &mut InvocationTimings,
-    ) -> Result<ActorSocketExecutionResult> {
+    ) -> Result<ActorExecutionResult> {
         let disconnecting = matches!(
             &invocation.event,
             crate::actor::ActorSocketEvent::Disconnect { .. }
         );
         if let Some(result) = self.validate_operation(persistence, disconnecting)? {
-            return Ok(ActorSocketExecutionResult::from_actor_result(result));
+            return Ok(result);
         }
         let _activity = ActivityGuard::begin(self);
         let object = invocation.actor.storage_key();
         let _execution = match self.executions.admit(&object).await? {
             ActorExecutionAdmission::Acquired(guard) => guard,
             ActorExecutionAdmission::Full => {
-                return Ok(ActorSocketExecutionResult::HostUnavailable);
+                return Ok(ActorExecutionResult::HostUnavailable);
             }
         };
         timings.queue_admitted_at_ms = Some(timings.elapsed_ms());
         if !disconnecting && !self.accepting.load(Ordering::SeqCst) {
-            return Ok(ActorSocketExecutionResult::HostUnavailable);
+            return Ok(ActorExecutionResult::HostUnavailable);
         }
 
         let mut cached = self
@@ -230,7 +230,7 @@ impl ActorHost {
             .is_err()
         {
             self.store_cached_state(object, cached)?;
-            return Ok(ActorSocketExecutionResult::Failed {
+            return Ok(ActorExecutionResult::Failed {
                 failure: ActorInvocationFailure::outcome_unknown_after_execution(),
             });
         }
@@ -241,12 +241,15 @@ impl ActorHost {
             Ok(outcome) => outcome,
             Err(result) => {
                 self.store_cached_state(object, cached)?;
-                return Ok(ActorSocketExecutionResult::from_actor_result(result));
+                return Ok(result);
             }
         };
         if cached.state.as_ref() == Some(&next_state) {
             self.store_cached_state(object, cached)?;
-            return Ok(ActorSocketExecutionResult::Handled { effects });
+            return Ok(ActorExecutionResult::Completed {
+                result: Value::Null,
+                effects,
+            });
         }
         let published = self
             .publish_result(
@@ -263,11 +266,12 @@ impl ActorHost {
         }
         self.store_cached_state(object, cached)?;
         match published {
-            Ok(ActorExecutionResult::Completed { .. }) => {
-                Ok(ActorSocketExecutionResult::Handled { effects })
-            }
-            Ok(result) => Ok(ActorSocketExecutionResult::from_actor_result(result)),
-            Err(_) => Ok(ActorSocketExecutionResult::Failed {
+            Ok(ActorExecutionResult::Completed { .. }) => Ok(ActorExecutionResult::Completed {
+                result: Value::Null,
+                effects,
+            }),
+            Ok(result) => Ok(result),
+            Err(_) => Ok(ActorExecutionResult::Failed {
                 failure: ActorInvocationFailure::outcome_unknown_after_execution(),
             }),
         }
@@ -392,7 +396,7 @@ impl ActorHost {
             .await
             .context("load actor state")?;
         timings.state_downloaded_at_ms = Some(timings.elapsed_ms());
-        let cached = CachedActorState::from_loaded(owner_epoch, state_version, loaded)?;
+        let cached = CachedActorState::from_loaded(owner_epoch, state_version, &loaded)?;
         timings.state_decoded_at_ms = Some(timings.elapsed_ms());
         Ok(cached)
     }
@@ -421,13 +425,12 @@ impl ActorHost {
     ) -> std::result::Result<(Value, Value, Vec<ActorSocketEffect>), ActorExecutionResult> {
         let outcome = self
             .executor
-            .invoke_with_state(
+            .invoke(
                 ActorMethodInvocation {
                     request_id: invocation.request_id.clone(),
                     actor: invocation.actor.clone(),
                     method: invocation.method.clone(),
                     args: invocation.args.clone(),
-                    state: None,
                     connections,
                 },
                 state,
@@ -472,11 +475,7 @@ impl ActorHost {
         state: Option<&Value>,
     ) -> std::result::Result<(Value, Vec<ActorSocketEffect>), ActorExecutionResult> {
         let actor = invocation.actor.clone();
-        match self
-            .executor
-            .handle_socket_with_state(invocation, state)
-            .await
-        {
+        match self.executor.handle_socket(invocation, state).await {
             Ok(ActorSocketOutcome::Handled { state, effects }) => {
                 match validate_socket_effects(&effects) {
                     Ok(()) => Ok((state, effects)),
@@ -698,30 +697,6 @@ impl ActorHost {
         }
     }
 
-    fn log_socket_invocation(
-        &self,
-        invocation: &ActorInvocation,
-        timings: &InvocationTimings,
-        outcome: &Result<ActorSocketExecutionResult>,
-    ) {
-        match outcome {
-            Ok(result) => self.log_invocation_result(
-                invocation,
-                timings,
-                socket_execution_outcome(result),
-                socket_execution_failure_code(result).unwrap_or(""),
-                None,
-            ),
-            Err(error) => self.log_invocation_result(
-                invocation,
-                timings,
-                "host_error",
-                "",
-                Some(format!("{error:#}")),
-            ),
-        }
-    }
-
     fn log_invocation_result(
         &self,
         invocation: &ActorInvocation,
@@ -820,24 +795,6 @@ impl ActorHost {
     }
 }
 
-pub(crate) enum ActorSocketExecutionResult {
-    Handled { effects: Vec<ActorSocketEffect> },
-    Failed { failure: ActorInvocationFailure },
-    HostUnavailable,
-}
-
-impl ActorSocketExecutionResult {
-    fn from_actor_result(result: ActorExecutionResult) -> Self {
-        match result {
-            ActorExecutionResult::Completed { effects, .. } => Self::Handled { effects },
-            ActorExecutionResult::Failed { failure } => Self::Failed { failure },
-            ActorExecutionResult::Reroute | ActorExecutionResult::HostUnavailable => {
-                Self::HostUnavailable
-            }
-        }
-    }
-}
-
 fn socket_event_name(event: &crate::actor::ActorSocketEvent) -> &'static str {
     match event {
         crate::actor::ActorSocketEvent::Connect { .. } => "onConnect",
@@ -874,8 +831,8 @@ impl CachedActorState {
         }
     }
 
-    fn from_loaded(owner_epoch: u64, state_version: u64, loaded: LoadedState) -> Result<Self> {
-        let snapshot = StateSnapshot::decode(&loaded.bytes)?;
+    fn from_loaded(owner_epoch: u64, state_version: u64, loaded: &[u8]) -> Result<Self> {
+        let snapshot = StateSnapshot::decode(loaded)?;
         ensure!(
             snapshot.state_version == state_version,
             "actor snapshot version does not match its state head"
@@ -978,21 +935,6 @@ fn actor_execution_failure_code(result: &ActorExecutionResult) -> Option<&str> {
     }
 }
 
-fn socket_execution_outcome(result: &ActorSocketExecutionResult) -> &'static str {
-    match result {
-        ActorSocketExecutionResult::Handled { .. } => "completed",
-        ActorSocketExecutionResult::Failed { .. } => "failed",
-        ActorSocketExecutionResult::HostUnavailable => "host_unavailable",
-    }
-}
-
-fn socket_execution_failure_code(result: &ActorSocketExecutionResult) -> Option<&str> {
-    match result {
-        ActorSocketExecutionResult::Failed { failure } => Some(&failure.code),
-        _ => None,
-    }
-}
-
 fn elapsed_ms(started_at: Instant) -> f64 {
     started_at.elapsed().as_secs_f64() * 1_000.0
 }
@@ -1056,11 +998,13 @@ mod tests {
             actor_type == "Counter"
         }
 
-        async fn invoke(&self, invocation: ActorMethodInvocation) -> Result<ActorMethodOutcome> {
+        async fn invoke(
+            &self,
+            _invocation: ActorMethodInvocation,
+            state: Option<&Value>,
+        ) -> Result<ActorMethodOutcome> {
             self.invocations.fetch_add(1, Ordering::Relaxed);
-            let count = invocation
-                .state
-                .as_ref()
+            let count = state
                 .and_then(|state| state.get("count"))
                 .and_then(Value::as_u64)
                 .unwrap_or(0)
@@ -1074,11 +1018,10 @@ mod tests {
 
         async fn handle_socket(
             &self,
-            invocation: ActorSocketInvocation,
+            _invocation: ActorSocketInvocation,
+            state: Option<&Value>,
         ) -> Result<ActorSocketOutcome> {
-            let count = invocation
-                .state
-                .as_ref()
+            let count = state
                 .and_then(|state| state.get("count"))
                 .and_then(Value::as_u64)
                 .unwrap_or(0)
@@ -1101,7 +1044,11 @@ mod tests {
             true
         }
 
-        async fn invoke(&self, _invocation: ActorMethodInvocation) -> Result<ActorMethodOutcome> {
+        async fn invoke(
+            &self,
+            _invocation: ActorMethodInvocation,
+            _state: Option<&Value>,
+        ) -> Result<ActorMethodOutcome> {
             Ok(ActorMethodOutcome::Failed(ActorInvocationFailure {
                 code: "resource_exhausted".into(),
                 message: "actor session message is too large".into(),
@@ -1115,7 +1062,11 @@ mod tests {
             true
         }
 
-        async fn invoke(&self, _invocation: ActorMethodInvocation) -> Result<ActorMethodOutcome> {
+        async fn invoke(
+            &self,
+            _invocation: ActorMethodInvocation,
+            _state: Option<&Value>,
+        ) -> Result<ActorMethodOutcome> {
             Ok(ActorMethodOutcome::Completed {
                 result: Value::Null,
                 state: json!({ "count": 1 }),
@@ -1182,7 +1133,7 @@ mod tests {
 
     #[async_trait]
     impl StateTransport for FakeStateTransport {
-        async fn read(&self, _signed_url: &str) -> Result<LoadedState> {
+        async fn read(&self, _signed_url: &str) -> Result<bytes::Bytes> {
             self.reads.fetch_add(1, Ordering::Relaxed);
             anyhow::bail!("new actor should not read storage")
         }
@@ -1336,27 +1287,40 @@ mod tests {
             state.clone(),
         );
 
+        let invocation = |request_id: &str| ActorSocketInvocation {
+            request_id: request_id.into(),
+            actor: actor.clone(),
+            event: crate::actor::ActorSocketEvent::Connect {
+                connection: connection.clone(),
+            },
+            connections: Vec::new(),
+        };
         let result = host
-            .handle_socket_event(
-                ActorSocketInvocation {
-                    request_id: "socket-request-1".into(),
-                    actor,
-                    event: crate::actor::ActorSocketEvent::Connect { connection },
-                    connections: Vec::new(),
-                    state: None,
-                },
-                1,
-                0,
-                String::new(),
-            )
+            .handle_socket_event(invocation("committed"), 1, 0, String::new())
             .await?;
 
         assert!(matches!(
             result,
-            ActorSocketExecutionResult::Handled { ref effects } if effects.len() == 1
+            ActorExecutionResult::Completed { result: Value::Null, ref effects } if effects.len() == 1
         ));
         assert_eq!(state.writes.lock().unwrap().len(), 1);
         assert_eq!(*authority.commits.lock().unwrap(), [0]);
+
+        authority.commit_failures.store(1, Ordering::SeqCst);
+        let failed = host
+            .handle_socket_event(invocation("failed"), 1, 0, String::new())
+            .await?;
+        assert!(
+            matches!(failed, ActorExecutionResult::Failed { failure } if failure.code == "outcome_unknown")
+        );
+
+        host.drain(Duration::from_secs(1)).await?;
+        assert_eq!(
+            host.handle_socket_event(invocation("drained"), 1, 0, String::new())
+                .await?,
+            ActorExecutionResult::HostUnavailable
+        );
+        assert_eq!(state.writes.lock().unwrap().len(), 2);
         Ok(())
     }
 

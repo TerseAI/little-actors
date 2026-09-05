@@ -8,6 +8,8 @@ async function checkPackage() {
     if (metadata.license !== "MIT") throw new Error("package license must be MIT")
     for (const entry of Object.values(metadata.exports)) await checkExport(entry)
     for (const path of Object.values(metadata.bin)) await access(path)
+    await access("dist/generated/durable_object.proto")
+    await import("../dist/workflow/actorHostGrpc.js")
     await Promise.all(metadata.files.filter(path => !path.includes("dist")).map(path => access(path)))
 }
 
