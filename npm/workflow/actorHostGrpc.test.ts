@@ -1,4 +1,4 @@
-import { Server, ServerCredentials, loadPackageDefinition } from "@grpc/grpc-js"
+import { Server, ServerCredentials, loadPackageDefinition, status } from "@grpc/grpc-js"
 import type { ServerUnaryCall, ServiceClientConstructor, sendUnaryData } from "@grpc/grpc-js"
 import { loadSync } from "@grpc/proto-loader"
 import assert from "node:assert/strict"
@@ -101,7 +101,25 @@ test("direct transport rejects structurally invalid socket effects", async () =>
     }
 })
 
-function actorHostServer(reply: HostReply): Server {
+test("only transport authentication rejections are safe to retry", async () => {
+    for (const code of [status.UNAUTHENTICATED, status.UNAVAILABLE, status.DEADLINE_EXCEEDED]) {
+        const server = actorHostServer({ completed: { resultJson: Buffer.from("null"), socketEffectsJson: Buffer.from("[]") }, result: "completed" }, code)
+        const port = await listen(server)
+        const transport = new GrpcActorHostTransport()
+        try {
+            const request = transport.invoke(
+                { route: `http://127.0.0.1:${port}`, token: "expired", ownerEpoch: 1, stateVersion: 0, stateReadUrl: "", expiresAtMs: 1 },
+                { requestId: "one", namespaceId: "project", actorType: "Counter", actorId: "one", method: "get", args: [] }
+            )
+            if (code === status.UNAUTHENTICATED) assert.deepEqual(await request, { type: "unauthenticated" })
+            else await assert.rejects(request)
+        } finally {
+            server.forceShutdown()
+        }
+    }
+})
+
+function actorHostServer(reply: HostReply, errorCode?: number): Server {
     const server = new Server()
     const definition = loadPackageDefinition(
         loadSync(resolve("../proto/durable_object.proto"), {
@@ -112,6 +130,7 @@ function actorHostServer(reply: HostReply): Server {
     ) as unknown as GrpcPackages
     server.addService(definition.durable_object.v1.ActorHostService.service, {
         invoke(_call: ServerUnaryCall<HostRequest, HostReply>, callback: sendUnaryData<HostReply>) {
+            if (errorCode !== undefined) return callback({ code: errorCode, message: "rejected" })
             callback(null, reply)
         }
     })

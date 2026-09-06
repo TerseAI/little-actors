@@ -94,6 +94,7 @@ The host below is the same object host shown above.
 
 ```text
 Workflow starts with its token, namespace, and service URLs in environment variables.
+Start/resume   <-- fresh workflow token, up to 24h --- Application server
 
 Workflow       -- find host + project access token --> Central service
 Workflow       <-- host address + limited call token - Central service
@@ -115,6 +116,14 @@ The workflow SDK reads `DURABLE_OBJECT_TOKEN`, `DURABLE_OBJECT_NAMESPACE_ID`, an
 `DURABLE_OBJECT_SOCKET_GATEWAY_URL` when the socket gateway has a separate origin;
 otherwise it uses the control-plane URL. The application server supplies these
 variables before starting the workflow.
+
+Workflow tokens last up to 24 hours, bounded by the configured JWT maximum and
+the execution deadline plus 30 seconds of grace. They are not renewed. Each
+start or resume gets a fresh token. Host credentials retain their 30-minute
+lifetime. Direct call tickets last at most 60 seconds; the SDK checks expiry
+using real time, independent of the workflow's replay clock. If a host rejects
+a ticket during authentication, the SDK resolves a new target and retries once.
+It does not retry ambiguous transport failures or failures from actor code.
 
 Workflows keep host addresses until their call tokens near expiry or the host
 asks them to find a new address. A new object prefers the region in the caller's

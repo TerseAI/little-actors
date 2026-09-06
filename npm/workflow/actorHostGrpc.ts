@@ -1,4 +1,4 @@
-import { Metadata, credentials, loadPackageDefinition } from "@grpc/grpc-js"
+import { Metadata, credentials, loadPackageDefinition, status } from "@grpc/grpc-js"
 import { loadSync } from "@grpc/proto-loader"
 import { fileURLToPath } from "node:url"
 
@@ -34,6 +34,7 @@ type ActorHostReply =
     | { readonly type: "completed"; readonly result: unknown; readonly effects: readonly SocketEffect[] }
     | { readonly type: "failed"; readonly code: string; readonly message: string }
     | { readonly type: "reroute" }
+    | { readonly type: "unauthenticated" }
 
 interface ActorHostTransport {
     invoke(target: ActorHostTarget, invocation: DirectActorInvocation): Promise<ActorHostReply>
@@ -60,8 +61,14 @@ class GrpcActorHostTransport implements ActorHostTransport {
             stateVersion: target.stateVersion,
             stateReadUrl: target.stateReadUrl
         }
-        const reply = await unaryRequest(this.client(target.route), request, metadata)
-        return decodeReply(reply)
+        try {
+            const reply = await unaryRequest(this.client(target.route), request, metadata)
+            return decodeReply(reply)
+        } catch (error) {
+            // The host authenticates before dispatching any actor code.
+            if (error instanceof Error && "code" in error && error.code === status.UNAUTHENTICATED) return { type: "unauthenticated" }
+            throw error
+        }
     }
 
     private client(route: string): ActorHostServiceClient {

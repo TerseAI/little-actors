@@ -1,12 +1,99 @@
 import assert from "node:assert/strict"
 import { createServer } from "node:http"
 import type { Server, ServerResponse } from "node:http"
+import { performance } from "node:perf_hooks"
 import { test } from "node:test"
 
 import { ActorInvocationError } from "../shared/errors.js"
 import type { ActorConnection } from "../shared/socket.js"
 
 import { RemoteActorClient } from "./remoteClient.js"
+
+test("target expiry uses real time even when workflow Date.now is frozen", async () => {
+    const originalNow = Date.now
+    let resolutions = 0
+    const usedTokens: string[] = []
+    Date.now = () => 1
+    try {
+        const client = new RemoteActorClient(
+            { token: "workflow-token", namespaceId: "project", controlPlaneUrl: "https://control.example.com" },
+            {
+                telemetry: () => {},
+                fetch: async () =>
+                    Response.json({
+                        route: "https://host.example.com",
+                        token: `target-${++resolutions}`,
+                        ownerEpoch: 1,
+                        stateVersion: 0,
+                        stateReadUrl: "",
+                        expiresAtMs: Math.floor(performance.timeOrigin + performance.now()) + 1_000
+                    }),
+                actorHost: {
+                    async invoke(target) {
+                        usedTokens.push(target.token)
+                        return { type: "completed", result: null, effects: [] }
+                    }
+                }
+            }
+        )
+        await client.invoke("Counter", "one", "get", [])
+        await client.invoke("Counter", "one", "get", [])
+        assert.deepEqual(usedTokens, ["target-1", "target-2"])
+    } finally {
+        Date.now = originalNow
+    }
+})
+
+test("refreshes a rejected actor ticket once using the same invocation ID", async () => {
+    let resolutions = 0
+    let calls = 0
+    let rejectAll = false
+    const client = new RemoteActorClient(
+        { token: "workflow-token", namespaceId: "project", controlPlaneUrl: "https://control.example.com" },
+        {
+            telemetry: () => {},
+            requestId: () => "same-request",
+            fetch: async () => Response.json({ route: "https://host.example.com", token: `target-${++resolutions}`, ownerEpoch: 1, stateVersion: 0, stateReadUrl: "", expiresAtMs: 4_000_000_000_000 }),
+            actorHost: {
+                async invoke(_target, invocation) {
+                    calls++
+                    assert.equal(invocation.requestId, "same-request")
+                    if (calls === 1 || rejectAll) return { type: "unauthenticated" }
+                    return { type: "completed", result: 7, effects: [] }
+                }
+            }
+        }
+    )
+    assert.equal(await client.invoke("Counter", "one", "increment", [1]), 7)
+    assert.equal(resolutions, 2)
+    assert.equal(calls, 2)
+    rejectAll = true
+    await assert.rejects(client.invoke("Counter", "one", "increment", [1]), error => error instanceof ActorInvocationError && error.code === "unauthenticated")
+    assert.equal(calls, 4)
+    assert.equal(resolutions, 3)
+})
+
+test("does not retry ambiguous host failures or actor-method authentication errors", async () => {
+    for (const ambiguous of [true, false]) {
+        let calls = 0
+        const client = new RemoteActorClient(
+            { token: "workflow-token", namespaceId: "project", controlPlaneUrl: "https://control.example.com" },
+            {
+                telemetry: () => {},
+                fetch: async () => Response.json({ route: "https://host.example.com", token: "target", ownerEpoch: 1, stateVersion: 0, stateReadUrl: "", expiresAtMs: 4_000_000_000_000 }),
+                actorHost: {
+                    async invoke() {
+                        calls++
+                        if (ambiguous) throw new Error("connection lost")
+                        return { type: "failed", code: "unauthenticated", message: "actor method failed" }
+                    }
+                }
+            }
+        )
+        await assert.rejects(client.invoke("Counter", "one", "increment", [1]), error => error instanceof ActorInvocationError && error.code === (ambiguous ? "outcome_unknown" : "unauthenticated"))
+        assert.equal(calls, 1)
+    }
+})
 
 test("remote actor client resolves once and invokes the actor host directly", async () => {
     let resolutions = 0

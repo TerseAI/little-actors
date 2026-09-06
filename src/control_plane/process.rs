@@ -16,7 +16,7 @@ use super::{ActorJwtVerifier, ControlPlaneService};
 const DEFAULT_JWT_ISSUER: &str = "durable-object-control-plane";
 const DEFAULT_AUTHORITY_AUDIENCE: &str = "durable-object-authority";
 const DEFAULT_INVOCATION_AUDIENCE: &str = "durable-object-invoke";
-const DEFAULT_JWT_TTL_SECONDS: u64 = 1_800;
+const DEFAULT_JWT_TTL_SECONDS: u64 = 86_400;
 const DEFAULT_ACTOR_IDLE_TIMEOUT_MS: u64 = 60_000;
 const DEFAULT_HOST_IDLE_TIMEOUT_MS: u64 = 300_000;
 const MAX_IDLE_TIMEOUT_MS: u64 = 86_400_000;
@@ -396,6 +396,7 @@ mod tests {
             config.storage.standard_buckets["us-east"],
             "actor-state-test"
         );
+        assert_eq!(config.jwt_max_lifetime, Duration::from_secs(86_400));
         Ok(())
     }
 

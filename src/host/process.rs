@@ -181,7 +181,7 @@ impl ActorHostConfig {
         let invocation_jwt_audience = get("DURABLE_OBJECT_INVOKE_JWT_AUDIENCE")
             .unwrap_or_else(|| "durable-object-invoke".into());
         let jwt_max_lifetime =
-            duration_seconds(&mut get, "DURABLE_OBJECT_JWT_MAX_TTL_SECONDS", 1_800)?;
+            duration_seconds(&mut get, "DURABLE_OBJECT_JWT_MAX_TTL_SECONDS", 86_400)?;
         let lease_duration = duration_ms(&mut get, "DURABLE_OBJECT_LEASE_MS", 30_000)?;
         let renew_every = duration_ms(&mut get, "DURABLE_OBJECT_RENEW_MS", 10_000)?;
         let host_idle_timeout = duration_ms(
@@ -603,6 +603,7 @@ mod tests {
             PathBuf::from("/tmp/durable-object-executor.sock")
         );
         assert_eq!(config.host_idle_timeout, Duration::from_secs(300));
+        assert_eq!(config.jwt_max_lifetime, Duration::from_secs(86_400));
         Ok(())
     }
 

@@ -1,3 +1,4 @@
+import { performance } from "node:perf_hooks"
 import WebSocket from "ws"
 import { z } from "zod"
 
@@ -50,7 +51,8 @@ class RemoteActorClient {
         this.fetchRequest = dependencies.fetch ?? globalThis.fetch
         this.requestId = dependencies.requestId ?? (() => globalThis.crypto.randomUUID())
         this.actorHost = dependencies.actorHost ?? new GrpcActorHostTransport()
-        this.now = dependencies.now ?? Date.now
+        // Workflow runtimes can replace Date.now with replayable logical time.
+        this.now = dependencies.now ?? (() => performance.timeOrigin + performance.now())
         this.monotonicNow = dependencies.monotonicNow ?? (() => performance.now())
         this.telemetry = dependencies.telemetry ?? stderrTelemetry
         this.connectWebSocket = dependencies.connectWebSocket ?? openWebSocket
@@ -120,6 +122,10 @@ class RemoteActorClient {
                 return reply.result
             }
             if (reply.type === "failed") throw new ActorInvocationError(reply.code, invocation.requestId, reply.message)
+            if (reply.type === "unauthenticated" && !retryReroute) {
+                this.targets.delete(actorKey(invocation.actorType, invocation.actorId))
+                throw new ActorInvocationError("unauthenticated", invocation.requestId, "actor host rejected the refreshed invocation ticket")
+            }
             if (!retryReroute) throw new ActorInvocationError("unavailable", invocation.requestId, "actor ownership changed repeatedly before execution")
             this.targets.delete(actorKey(invocation.actorType, invocation.actorId))
             const rerouted = await this.target(invocation, timeline)

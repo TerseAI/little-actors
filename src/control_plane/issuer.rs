@@ -20,6 +20,8 @@ use crate::{
 };
 
 const WORKFLOW_DEADLINE_GRACE: Duration = Duration::from_secs(30);
+const MAX_WORKFLOW_LIFETIME: Duration = Duration::from_secs(86_400);
+const HOST_TOKEN_TTL: Duration = Duration::from_secs(1_800);
 const INVOCATION_TARGET_TTL: Duration = Duration::from_secs(60);
 
 #[derive(Clone)]
@@ -117,7 +119,9 @@ impl ActorJwtIssuer {
             deadline_unix_ms > now_ms,
             "workflow deadline must be in the future"
         );
-        let maximum_expiration = now_ms.saturating_add(duration_millis(self.max_lifetime)?);
+        let maximum_expiration = now_ms.saturating_add(duration_millis(
+            self.max_lifetime.min(MAX_WORKFLOW_LIFETIME),
+        )?);
         let requested_expiration =
             deadline_unix_ms.saturating_add(duration_millis(WORKFLOW_DEADLINE_GRACE)?);
         let expires_at_ms = requested_expiration.min(maximum_expiration);
@@ -152,7 +156,8 @@ impl ActorJwtIssuer {
         region: &str,
     ) -> Result<IssuedActorToken> {
         let now_ms = unix_millis()?;
-        let expires_at_ms = now_ms.saturating_add(duration_millis(self.max_lifetime)?);
+        let expires_at_ms =
+            now_ms.saturating_add(duration_millis(self.max_lifetime.min(HOST_TOKEN_TTL))?);
         self.issue(ActorJwtClaims {
             iss: self.issuer.clone(),
             aud: vec![
@@ -277,6 +282,27 @@ mod tests {
 
     use super::*;
     use crate::control_plane::{ActorJwtVerifier, ActorTokenPurpose};
+
+    #[test]
+    fn workflow_tokens_never_outlive_twenty_four_hours() -> Result<()> {
+        let pkcs8 = Ed25519KeyPair::generate_pkcs8(&SystemRandom::new())?;
+        let issuer = ActorJwtIssuer::from_base64_pkcs8(
+            &STANDARD.encode(pkcs8.as_ref()),
+            "test-key",
+            "issuer",
+            "authority",
+            "invocation",
+            Duration::from_secs(172_800),
+        )?;
+        let before = unix_millis()?;
+        let issued =
+            issuer.issue_workflow("project", "run", "us-central1", before + 172_800_000)?;
+        assert!(issued.expires_at_ms >= before + 86_399_000);
+        assert!(issued.expires_at_ms <= unix_millis()? + 86_400_000);
+        let short = issuer.issue_workflow("project", "run", "us-central1", before + 60_000)?;
+        assert!(short.expires_at_ms <= before + 90_000);
+        Ok(())
+    }
 
     #[test]
     fn issued_workflow_tokens_round_trip_through_the_public_key_set() -> Result<()> {
