@@ -1,6 +1,8 @@
 # little-durable-objects
 
-A small, provider-neutral durable-object runtime. Modal is the first sandbox provider; immutable actor-state snapshots live in regional GCS buckets, while placement and each actor's current state head live in Postgres.
+A multi-tenant durable-object runtime that is provider neutral.
+
+Initial implementation uses Modal as the dataplane sandbox provider. Actor-state snapshots use regional GCS buckets, which provide the durability guarantee. PostgreSQL manages leases and current state head.
 
 ## Install
 
@@ -38,7 +40,7 @@ cargo install little-durable-objects --locked
     export DURABLE_OBJECT_CONTROL_PLANE_BIND=0.0.0.0:7100
     export DURABLE_OBJECT_CONTROL_PLANE_URL=https://objects.example.com
     export DURABLE_OBJECT_JWT_SIGNING_KEY="$(openssl genpkey -algorithm Ed25519 -outform DER | base64 | tr -d '\n')"
-    export DURABLE_OBJECT_ADMIN_TOKEN="$(openssl rand -hex 32)"
+    export DURABLE_OBJECT_API_KEY="$(openssl rand -hex 32)"
     export DURABLE_OBJECT_SANDBOX_PROVIDER=modal
     export DURABLE_OBJECT_SANDBOX_COMMAND="$PWD/target/release/little-durable-objects-modal-go"
     export MODAL_TOKEN_ID=...
@@ -60,14 +62,14 @@ cargo install little-durable-objects --locked
     }
     ```
 
-5. From your trusted backend, call the JSON API using `Authorization: Bearer $DURABLE_OBJECT_ADMIN_TOKEN`:
+5. From your trusted backend, call the JSON API using `Authorization: Bearer $DURABLE_OBJECT_API_KEY`:
 
     ```text
     PUT  /v1/namespaces/{namespaceId}/deployment
-    POST /v1/namespaces/{namespaceId}/workflow-tokens
+    POST /v1/namespaces/{namespaceId}/session-scoped-token
     ```
 
-6. Set the workflow's environment before its first actor call. Use the issued workflow token, never the admin token:
+6. Set the workflow's environment before its first actor call. Use the issued session token, never the API key:
 
     ```sh
     export DURABLE_OBJECT_TOKEN='<issued-workflow-token>'

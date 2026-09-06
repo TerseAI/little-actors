@@ -9,7 +9,7 @@ Application server (outside this repository)
     | start workflow sandbox without placement constraints
     | read MODAL_REGION; pass it unchanged when requesting its token
     | project setup + issue workflow access tokens
-    | web requests + admin secret
+    | web requests + DURABLE_OBJECT_API_KEY
     v
 +---------------------- Central service (Rust) ------------------------+
 | Register project code and issue access tokens                        |
@@ -95,6 +95,7 @@ The host below is the same object host shown above.
 ```text
 Workflow starts with its token, namespace, and service URLs in environment variables.
 Start/resume   <-- fresh workflow token, up to 24h --- Application server
+Application server -- POST session-scoped-token + API key --> Central service
 
 Workflow       -- find host + project access token --> Central service
 Workflow       <-- host address + limited call token - Central service
@@ -116,6 +117,10 @@ The workflow SDK reads `DURABLE_OBJECT_TOKEN`, `DURABLE_OBJECT_NAMESPACE_ID`, an
 `DURABLE_OBJECT_SOCKET_GATEWAY_URL` when the socket gateway has a separate origin;
 otherwise it uses the control-plane URL. The application server supplies these
 variables before starting the workflow.
+
+`DURABLE_OBJECT_API_KEY` is shared by the application server and central service
+for deployment registration, session token issuance, and socket event/auth callbacks.
+Callback URLs remain optional. The API key never belongs in workflows or browsers.
 
 Workflow tokens last up to 24 hours, bounded by the configured JWT maximum and
 the execution deadline plus 30 seconds of grace. They are not renewed. Each

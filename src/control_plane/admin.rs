@@ -55,23 +55,23 @@ pub(crate) trait AdminRegistry: Send + Sync {
 
 #[derive(Clone)]
 pub(crate) struct AdminService {
-    token: String,
+    api_key: String,
     registry: std::sync::Arc<dyn AdminRegistry>,
     issuer: ActorJwtIssuer,
 }
 
 impl AdminService {
     pub(crate) fn new(
-        token: String,
+        api_key: String,
         registry: std::sync::Arc<dyn AdminRegistry>,
         issuer: ActorJwtIssuer,
     ) -> Result<Self> {
         ensure!(
-            !token.is_empty() && token.trim() == token,
-            "admin token is invalid"
+            !api_key.is_empty() && api_key.trim() == api_key,
+            "API key is invalid"
         );
         Ok(Self {
-            token,
+            api_key,
             registry,
             issuer,
         })
@@ -84,7 +84,7 @@ impl AdminService {
         ensure!(
             !token.is_empty()
                 && token.trim() == token
-                && bool::from(token.as_bytes().ct_eq(self.token.as_bytes())),
+                && bool::from(token.as_bytes().ct_eq(self.api_key.as_bytes())),
             "admin credential is invalid"
         );
         Ok(())

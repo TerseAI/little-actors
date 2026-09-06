@@ -1809,6 +1809,79 @@ mod tests {
         Ok(())
     }
 
+    #[tokio::test]
+    async fn session_scoped_token_endpoint_requires_the_api_key() -> Result<()> {
+        let issuer = test_issuer()?;
+        let auth = ActorJwtVerifier::for_scope(
+            issuer.verifier_keys_json()?,
+            "issuer",
+            "authority",
+            ActorTokenPurpose::ControlPlane,
+            Duration::from_secs(60),
+        )?;
+        let registry = Arc::new(LocalAdminRegistry::default());
+        let admin = AdminService::new("api-key".into(), registry.clone(), issuer.clone())?;
+        admin
+            .ensure_namespace_and_register_deployment(&HostLaunchSpec {
+                namespace_id: "project-1".into(),
+                code_revision: "revision-1".into(),
+                image_ref: "image-1".into(),
+                working_directory: "/workspace".into(),
+                actor_entrypoint: None,
+            })
+            .await?;
+        let (retired, _) = tokio::sync::mpsc::unbounded_channel();
+        let service = ControlPlaneService::new(
+            Arc::new(FakeLeaseStore {
+                leases: Mutex::new(HashMap::new()),
+            }),
+            Arc::new(LocalObjectPlacementStore::default()),
+            Arc::new(FakeStorageUrls(&["us-east"])),
+            auth,
+            registry,
+            issuer,
+            Arc::new(FakeRetiringProvisioner { retired }),
+        );
+        let routes = super::super::public_api::router(service, admin);
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+        let origin = format!("http://{}", listener.local_addr()?);
+        let server = tokio::spawn(async { axum::serve(listener, routes).await });
+        let client = reqwest::Client::new();
+        let deadline = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)?
+            .as_millis()
+            + 30_000;
+        let body = serde_json::json!({ "executionId": "run-1", "storageRegion": "us-east", "deadlineUnixMs": deadline as i64 });
+        let url = format!("{origin}/v1/namespaces/project-1/session-scoped-token");
+        for credential in ["", "wrong-key"] {
+            let response = client
+                .post(&url)
+                .bearer_auth(credential)
+                .json(&body)
+                .send()
+                .await?;
+            assert_eq!(response.status(), reqwest::StatusCode::UNAUTHORIZED);
+        }
+        let response = client
+            .post(&url)
+            .bearer_auth("api-key")
+            .json(&body)
+            .send()
+            .await?;
+        assert_eq!(response.status(), reqwest::StatusCode::OK);
+        let reply: serde_json::Value = response.json().await?;
+        assert!(!reply["token"].as_str().unwrap_or_default().is_empty());
+        assert!(reply["expiresAtMs"].as_i64().unwrap_or_default() > 0);
+        let old = client
+            .post(format!("{origin}/v1/namespaces/project-1/workflow-tokens"))
+            .json(&body)
+            .send()
+            .await?;
+        assert_eq!(old.status(), reqwest::StatusCode::NOT_FOUND);
+        server.abort();
+        Ok(())
+    }
+
     fn test_issuer() -> Result<ActorJwtIssuer> {
         let pkcs8 = Ed25519KeyPair::generate_pkcs8(&SystemRandom::new())?;
         ActorJwtIssuer::from_base64_pkcs8(

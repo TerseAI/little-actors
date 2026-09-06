@@ -35,7 +35,7 @@ pub(super) fn router(invocations: ControlPlaneService, admin: AdminService) -> R
             put(register_deployment),
         )
         .route(
-            "/v1/namespaces/{namespace_id}/workflow-tokens",
+            "/v1/namespaces/{namespace_id}/session-scoped-token",
             post(issue_workflow_token),
         )
         .route(

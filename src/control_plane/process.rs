@@ -29,7 +29,7 @@ pub struct ControlPlaneProcessConfig {
     pub authority_audience: String,
     pub invocation_audience: String,
     pub jwt_max_lifetime: Duration,
-    pub admin_token: String,
+    pub api_key: String,
     pub storage: ControlPlaneStorageConfig,
     pub sandbox_provider: SandboxProviderConfig,
     pub socket_event_sink: Option<SocketEventSinkConfig>,
@@ -50,12 +50,10 @@ pub struct SandboxProviderConfig {
 
 pub struct SocketEventSinkConfig {
     pub url: String,
-    pub token: String,
 }
 
 pub struct SocketAuthenticatorConfig {
     pub url: String,
-    pub token: String,
 }
 
 impl ControlPlaneProcessConfig {
@@ -115,12 +113,16 @@ async fn control_plane_routes(config: ControlPlaneProcessConfig) -> Result<tonic
     let provisioner = sandbox_provisioner(config.sandbox_provider, &issuer, &leases)?;
     let socket_events = config
         .socket_event_sink
-        .map(|sink| super::event_sink::HttpSocketMessageEventSink::new(sink.url, sink.token))
+        .map(|sink| {
+            super::event_sink::HttpSocketMessageEventSink::new(sink.url, config.api_key.clone())
+        })
         .transpose()?
         .map(|sink| Arc::new(sink) as Arc<dyn super::event_sink::SocketMessageEventSink>);
     let socket_authenticator = config
         .socket_authenticator
-        .map(|auth| super::socket_auth::HttpSocketAuthenticator::new(auth.url, auth.token))
+        .map(|auth| {
+            super::socket_auth::HttpSocketAuthenticator::new(auth.url, config.api_key.clone())
+        })
         .transpose()?
         .map(|auth| Arc::new(auth) as Arc<dyn super::socket_auth::SocketAuthenticator>);
     let service = ControlPlaneService::new(
@@ -134,7 +136,7 @@ async fn control_plane_routes(config: ControlPlaneProcessConfig) -> Result<tonic
     )
     .with_socket_event_sink(socket_events)
     .with_socket_authenticator(socket_authenticator);
-    let admin = super::admin::AdminService::new(config.admin_token, registry, issuer)?;
+    let admin = super::admin::AdminService::new(config.api_key, registry, issuer)?;
     let public_api = super::public_api::router(service.clone(), admin);
     let internal_api = service.into_internal_service();
     Ok(tonic::service::Routes::from(public_api).add_service(internal_api))
@@ -183,10 +185,10 @@ impl ControlPlaneProcessConfig {
             !jwt_max_lifetime.is_zero(),
             "DURABLE_OBJECT_JWT_MAX_TTL_SECONDS must be positive"
         );
-        let admin_token = required(&mut get, "DURABLE_OBJECT_ADMIN_TOKEN")?;
+        let api_key = required(&mut get, "DURABLE_OBJECT_API_KEY")?;
         ensure!(
-            admin_token.trim() == admin_token,
-            "DURABLE_OBJECT_ADMIN_TOKEN has surrounding whitespace"
+            api_key.trim() == api_key,
+            "DURABLE_OBJECT_API_KEY has surrounding whitespace"
         );
         let standard_buckets: HashMap<String, String> =
             serde_json::from_str(&required(&mut get, "DURABLE_OBJECT_STANDARD_BUCKETS")?)
@@ -208,7 +210,7 @@ impl ControlPlaneProcessConfig {
             authority_audience,
             invocation_audience,
             jwt_max_lifetime,
-            admin_token,
+            api_key,
             storage,
             sandbox_provider,
             socket_event_sink,
@@ -220,35 +222,25 @@ impl ControlPlaneProcessConfig {
 fn socket_authenticator_config(
     get: &mut impl FnMut(&str) -> Option<String>,
 ) -> Result<Option<SocketAuthenticatorConfig>> {
-    let url = get("DURABLE_OBJECT_SOCKET_AUTH_URL");
-    let token = get("DURABLE_OBJECT_SOCKET_AUTH_TOKEN");
-    match (url, token) {
-        (None, None) => Ok(None),
-        (Some(url), Some(token)) => Ok(Some(SocketAuthenticatorConfig {
-            url: validated_http_url(&url, "DURABLE_OBJECT_SOCKET_AUTH_URL")?,
-            token,
-        })),
-        _ => anyhow::bail!(
-            "DURABLE_OBJECT_SOCKET_AUTH_URL and DURABLE_OBJECT_SOCKET_AUTH_TOKEN must be configured together"
-        ),
-    }
+    get("DURABLE_OBJECT_SOCKET_AUTH_URL")
+        .map(|url| {
+            Ok(SocketAuthenticatorConfig {
+                url: validated_http_url(&url, "DURABLE_OBJECT_SOCKET_AUTH_URL")?,
+            })
+        })
+        .transpose()
 }
 
 fn socket_event_sink_config(
     get: &mut impl FnMut(&str) -> Option<String>,
 ) -> Result<Option<SocketEventSinkConfig>> {
-    let url = get("DURABLE_OBJECT_SOCKET_EVENT_URL");
-    let token = get("DURABLE_OBJECT_SOCKET_EVENT_TOKEN");
-    match (url, token) {
-        (None, None) => Ok(None),
-        (Some(url), Some(token)) => Ok(Some(SocketEventSinkConfig {
-            url: validated_http_url(&url, "DURABLE_OBJECT_SOCKET_EVENT_URL")?,
-            token,
-        })),
-        _ => anyhow::bail!(
-            "DURABLE_OBJECT_SOCKET_EVENT_URL and DURABLE_OBJECT_SOCKET_EVENT_TOKEN must be configured together"
-        ),
-    }
+    get("DURABLE_OBJECT_SOCKET_EVENT_URL")
+        .map(|url| {
+            Ok(SocketEventSinkConfig {
+                url: validated_http_url(&url, "DURABLE_OBJECT_SOCKET_EVENT_URL")?,
+            })
+        })
+        .transpose()
 }
 
 fn sandbox_provider_config(
@@ -372,7 +364,7 @@ mod tests {
     fn parses_the_minimal_storage_configuration() -> Result<()> {
         let values = HashMap::from([
             ("DURABLE_OBJECT_JWT_SIGNING_KEY", "c2lnbmluZw=="),
-            ("DURABLE_OBJECT_ADMIN_TOKEN", "admin-token"),
+            ("DURABLE_OBJECT_API_KEY", "api-key"),
             ("DURABLE_OBJECT_SANDBOX_PROVIDER", "modal"),
             (
                 "DURABLE_OBJECT_CONTROL_PLANE_URL",
@@ -401,50 +393,40 @@ mod tests {
     }
 
     #[test]
-    fn parses_socket_event_sink_only_when_url_and_token_are_present() -> Result<()> {
-        let mut complete = HashMap::from([
-            (
-                "DURABLE_OBJECT_SOCKET_EVENT_URL",
-                "https://api.example.com/events",
-            ),
-            ("DURABLE_OBJECT_SOCKET_EVENT_TOKEN", "event-token"),
-        ]);
+    fn configures_socket_events_without_a_separate_key() -> Result<()> {
+        let mut complete = HashMap::from([(
+            "DURABLE_OBJECT_SOCKET_EVENT_URL",
+            "https://api.example.com/events",
+        )]);
         let sink =
             socket_event_sink_config(&mut |name| complete.get(name).map(|value| (*value).into()))?
                 .context("socket event sink was not configured")?;
         assert_eq!(sink.url, "https://api.example.com/events");
-        assert_eq!(sink.token, "event-token");
-
-        complete.remove("DURABLE_OBJECT_SOCKET_EVENT_TOKEN");
+        complete.remove("DURABLE_OBJECT_SOCKET_EVENT_URL");
         assert!(
-            socket_event_sink_config(&mut |name| complete.get(name).map(|value| (*value).into()))
-                .is_err()
+            socket_event_sink_config(&mut |name| complete.get(name).map(|value| (*value).into()))?
+                .is_none()
         );
         Ok(())
     }
 
     #[test]
-    fn parses_socket_authenticator_only_when_url_and_token_are_present() -> Result<()> {
-        let mut complete = HashMap::from([
-            (
-                "DURABLE_OBJECT_SOCKET_AUTH_URL",
-                "https://api.example.com/authorize",
-            ),
-            ("DURABLE_OBJECT_SOCKET_AUTH_TOKEN", "auth-token"),
-        ]);
+    fn configures_socket_authorization_without_a_separate_key() -> Result<()> {
+        let mut complete = HashMap::from([(
+            "DURABLE_OBJECT_SOCKET_AUTH_URL",
+            "https://api.example.com/authorize",
+        )]);
         let auth = socket_authenticator_config(&mut |name| {
             complete.get(name).map(|value| (*value).into())
         })?
         .context("socket authenticator was not configured")?;
         assert_eq!(auth.url, "https://api.example.com/authorize");
-        assert_eq!(auth.token, "auth-token");
-
-        complete.remove("DURABLE_OBJECT_SOCKET_AUTH_TOKEN");
+        complete.remove("DURABLE_OBJECT_SOCKET_AUTH_URL");
         assert!(
             socket_authenticator_config(&mut |name| complete
                 .get(name)
-                .map(|value| (*value).into()))
-            .is_err()
+                .map(|value| (*value).into()))?
+            .is_none()
         );
         Ok(())
     }
