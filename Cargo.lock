@@ -867,6 +867,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "google-cloud-iam-credentials-v1"
+version = "1.10.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7a5a468cd7f57b946157b7ae56d5d7cfcf8f0099f0301be51335d99dd4edc036"
+dependencies = [
+ "async-trait",
+ "bytes",
+ "google-cloud-gax",
+ "google-cloud-gax-internal",
+ "google-cloud-wkt",
+ "serde",
+ "serde_json",
+ "serde_with",
+ "tracing",
+]
+
+[[package]]
 name = "google-cloud-iam-v1"
 version = "1.11.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1551,6 +1568,7 @@ dependencies = [
  "deadpool-postgres",
  "futures-util",
  "google-cloud-auth",
+ "google-cloud-iam-credentials-v1",
  "google-cloud-storage",
  "jsonwebtoken",
  "moka",

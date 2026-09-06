@@ -30,9 +30,6 @@
     },
     "main": "dist/index.js",
     "types": "dist/index.d.ts",
-    "bin": {
-        "little-durable-objects-modal": "./dist/providers/modalCli.js"
-    },
     "exports": {
         ".": {
             "types": "./dist/index.d.ts",
@@ -41,18 +38,6 @@
         "./host": {
             "types": "./dist/host.d.ts",
             "import": "./dist/host.js"
-        },
-        "./modal": {
-            "types": "./dist/providers/modal.d.ts",
-            "import": "./dist/providers/modal.js"
-        },
-        "./providers": {
-            "types": "./dist/providers/types.d.ts",
-            "import": "./dist/providers/types.js"
-        },
-        "./regions": {
-            "types": "./dist/regions.d.ts",
-            "import": "./dist/regions.js"
         }
     },
     "files": [
@@ -67,15 +52,14 @@
         "clean": "rm -rf dist .test-dist",
         "package:check": "node scripts/check-package.mjs",
         "prepack": "pnpm run clean && pnpm run build && pnpm run package:check",
-        "test": "pnpm run clean && pnpm run build && tsc -p tsconfig.test.json && cp dist/generated/durable_object.proto .test-dist/generated/durable_object.proto && node --test --test-concurrency=1 .test-dist/*.test.js .test-dist/shared/*.test.js .test-dist/workflow/*.test.js .test-dist/host/*.test.js .test-dist/host/worker/*.test.js .test-dist/providers/*.test.js",
-        "format": "prettier --config ../.prettierrc --write \"*.ts\" \"{fixtures,host,providers,shared,workflow}/**/*.ts\" \"scripts/*.mjs\"",
-        "format:check": "prettier --config ../.prettierrc --check \"*.ts\" \"{fixtures,host,providers,shared,workflow}/**/*.ts\" \"scripts/*.mjs\""
+        "test": "pnpm run clean && pnpm run build && tsc -p tsconfig.test.json && cp dist/generated/durable_object.proto .test-dist/generated/durable_object.proto && node --test --test-concurrency=1 .test-dist/*.test.js .test-dist/shared/*.test.js .test-dist/workflow/*.test.js .test-dist/host/*.test.js .test-dist/host/worker/*.test.js",
+        "format": "prettier --config ../.prettierrc --write \"*.ts\" \"{fixtures,host,shared,workflow}/**/*.ts\" \"scripts/*.mjs\"",
+        "format:check": "prettier --config ../.prettierrc --check \"*.ts\" \"{fixtures,host,shared,workflow}/**/*.ts\" \"scripts/*.mjs\""
     },
     "dependencies": {
         "@discoveryjs/json-ext": "^1.1.0",
         "@grpc/grpc-js": "^1.14.4",
         "@grpc/proto-loader": "^0.8.1",
-        "modal": "^0.10.0",
         "tsx": "^4.0.0",
         "ws": "^8.18.3",
         "zod": "^4.3.6"

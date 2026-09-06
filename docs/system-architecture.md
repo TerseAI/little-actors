@@ -1,8 +1,8 @@
 # System architecture
 
 An actor is an object whose properties are saved between calls. Its host is the
-machine running it. This diagram describes the current code and shipped Modal
-settings; the live deployment has not been checked.
+machine running it. This diagram describes repository defaults, not deployment
+status.
 
 ```text
 Application server (outside this repository)
@@ -27,6 +27,7 @@ Application server (outside this repository)
                                         v
 +--------------------- Object host on Modal ---------------------------+
 | One project, code version, and region                                |
+| US East: any Modal cloud; other supported regions: Google Cloud       |
 |                                                                      |
 | Rust dispatcher: owns actor directory, admission, and activity       |
 |    +-- Actor A task: owns state; runs and commits calls in order     |
@@ -54,13 +55,14 @@ Postgres, Modal, and approving storage access. Object hosts get access tokens li
 to their project and temporary links for saved state.
 
 Each helper process reads one command, writes one reply, and exits. The helper
-can reuse a running Modal host. The shipped region settings select Google Cloud
-locations and public host addresses. The central service uses public addresses
-when calling hosts.
+can reuse a running Modal host. In `north-america-east`, hosts and image warmups
+use Modal's `us-east` region without a cloud restriction. Other supported regions
+remain on Google Cloud. The central service uses public addresses when calling
+hosts.
 
 The runtime container includes a compiled Go helper using Modal's official SDK.
-The npm package also provides the JavaScript helper. Select the executable with
-`DURABLE_OBJECT_SANDBOX_COMMAND`; each request starts an independent process.
+The npm package provides the actor and workflow runtime. Select the helper executable
+with `DURABLE_OBJECT_SANDBOX_COMMAND`; each request starts an independent process.
 
 The host starts Node and waits for project code to load before reporting ready.
 By default, Node removes object workers after 60 idle seconds, and a host stops
@@ -144,6 +146,10 @@ only when the host, its current run, its check-in deadline, and the object's
 ownership and saved version still match. The host waits for confirmation of
 changed state before returning success and outgoing messages.
 
+When using metadata-service credentials, the central service reuses its IAM
+signing client and connections. Each signing request still gets a fresh signature;
+signatures are not cached. File-based credentials retain the SDK's signing behavior.
+
 Connection details and waiting outgoing messages live in the central service's
 memory. Restarting that process loses them, and separate copies of the service
 do not share them. Notices to the application server are sent in the background;
@@ -180,8 +186,8 @@ it excludes the earlier time Modal spends preparing the machine.
 | Choose hosts, replace old code, check host access, approve state | [service.rs](../src/control_plane/service.rs) |
 | Keep live connections and contact the application server | [websocket.rs](../src/control_plane/websocket.rs), [socket_auth.rs](../src/control_plane/socket_auth.rs), [event_sink.rs](../src/control_plane/event_sink.rs) |
 | Make workflow calls and forward outgoing messages | [remoteClient.ts](../npm/workflow/remoteClient.ts) |
-| Run helper commands and manage Modal hosts | [command_process.rs](../src/sandbox/command_process.rs), [provider.go](../providers/modal-go/provider.go), [modal.go](../providers/modal-go/modal.go), [modal.ts](../npm/providers/modal.ts), [regions.ts](../npm/regions.ts) |
+| Run helper commands and manage Modal hosts | [command_process.rs](../src/sandbox/command_process.rs), [provider.go](../providers/modal-go/provider.go), [modal.go](../providers/modal-go/modal.go) |
 | Start hosts, manage workers, run object code | [process.rs](../src/host/process.rs), [supervisor.ts](../npm/host/worker/supervisor.ts), [runtime.ts](../npm/host/worker/runtime.ts) |
 | Dispatch calls and own actor tasks | [actor_host.rs](../src/host/actor_host.rs) |
 | Connect actor tasks to the Node executor | [executor_connection.rs](../src/actor/executor_connection.rs) |
-| Save state and record which copy is current | [actor_runtime.rs](../src/host/actor_runtime.rs), [storage_urls.rs](../src/storage_urls.rs), [placement.rs](../src/placement.rs), [database tables](../migrations/V1__initial.sql) |
+| Save state and record which copy is current | [actor_runtime.rs](../src/host/actor_runtime.rs), [storage_urls.rs](../src/storage_urls.rs), [iam.rs](../src/storage_urls/iam.rs), [placement.rs](../src/placement.rs), [database tables](../migrations/V1__initial.sql) |

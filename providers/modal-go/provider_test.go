@@ -29,7 +29,7 @@ func TestFreshHostPublishesOnlyRouteAndWaitsForReadiness(t *testing.T) {
 	if !reflect.DeepEqual(sb.calls, []string{"route", "write:" + routeFile, "ready", "detach"}) {
 		t.Fatal(sb.calls)
 	}
-	if api.params.Cloud != "gcp" || !reflect.DeepEqual(api.params.Regions, []string{"us-east"}) || !reflect.DeepEqual(api.params.H2Ports, []int{7101}) {
+	if api.params.Cloud != "" || !reflect.DeepEqual(api.params.Regions, []string{"us-east"}) || !reflect.DeepEqual(api.params.H2Ports, []int{7101}) {
 		t.Fatalf("unexpected placement: %+v", api.params)
 	}
 	if api.params.CPU != 0 || api.params.Timeout != 24*time.Hour || api.params.ReadinessProbe == nil {
@@ -100,6 +100,42 @@ func TestInvalidHostRequestsDoNotTouchModal(t *testing.T) {
 		if api.resolves != 0 {
 			t.Fatal("invalid request touched Modal")
 		}
+	}
+}
+
+func TestHostsAndWarmupsUseRegionalPlacement(t *testing.T) {
+	for _, tc := range []struct {
+		canonicalRegion, region, cloud string
+	}{
+		{"north-america-east", "us-east", ""},
+		{"north-america-central", "us-central", "gcp"},
+		{"north-america-south", "us-south", "gcp"},
+		{"north-america-west", "us-west", "gcp"},
+		{"europe-west", "eu-west", "gcp"},
+		{"asia-southeast", "ap-southeast", "gcp"},
+	} {
+		t.Run(tc.canonicalRegion, func(t *testing.T) {
+			r := testRequest()
+			r.CanonicalRegion = tc.canonicalRegion
+			params, err := hostParams(r)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if params.Cloud != tc.cloud || !reflect.DeepEqual(params.Regions, []string{tc.region}) {
+				t.Fatalf("unexpected host placement: cloud=%q regions=%v", params.Cloud, params.Regions)
+			}
+			api := &fakeAPI{created: &fakeSandbox{}}
+			_, err = newTestProvider(api).warmImage(context.Background(), imageRequest{
+				NamespaceID: r.NamespaceID, CodeRevision: r.CodeRevision,
+				CanonicalRegion: r.CanonicalRegion, ImageRef: r.ImageRef,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if api.params.Cloud != tc.cloud || !reflect.DeepEqual(api.params.Regions, []string{tc.region}) {
+				t.Fatalf("unexpected warmup placement: cloud=%q regions=%v", api.params.Cloud, api.params.Regions)
+			}
+		})
 	}
 }
 

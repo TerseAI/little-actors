@@ -85,7 +85,7 @@ func (p *provider) warmImage(ctx context.Context, request imageRequest) (imageWa
 	if err != nil {
 		return imageWarmup{}, err
 	}
-	sb, err := p.api.Create(ctx, app, image, &modal.SandboxCreateParams{Command: []string{"true"}, Timeout: 2 * time.Minute, Regions: []string{region}, Cloud: "gcp"})
+	sb, err := p.api.Create(ctx, app, image, &modal.SandboxCreateParams{Command: []string{"true"}, Timeout: 2 * time.Minute, Regions: []string{region}, Cloud: modalCloud(request.CanonicalRegion)})
 	if err != nil {
 		return imageWarmup{}, err
 	}
@@ -228,7 +228,7 @@ func hostParams(request ensureRequest) (*modal.SandboxCreateParams, error) {
 		Timeout: 24 * time.Hour, IdleTimeout: time.Duration(request.HostIdleTimeoutMS) * time.Millisecond,
 		Command: []string{"sh", "-c", bootstrap, "durable-object-host-bootstrap", "/usr/local/bin/little-durable-objects", stderrFile, readyFile},
 		Workdir: request.WorkingDirectory, Env: hostEnvironment(request), H2Ports: []int{7101},
-		ReadinessProbe: probe, Regions: []string{region}, Cloud: "gcp",
+		ReadinessProbe: probe, Regions: []string{region}, Cloud: modalCloud(request.CanonicalRegion),
 	}, nil
 }
 

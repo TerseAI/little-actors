@@ -20,12 +20,12 @@ cargo install little-durable-objects --locked
 
 1. Create a Postgres database and one GCS `STANDARD` bucket. Give the service account in `GOOGLE_APPLICATION_CREDENTIALS` object access to the bucket.
 
-2. Build the Rust runtime and TypeScript package:
+2. Build the Rust runtime, TypeScript package, and Go provider:
 
     ```sh
     pnpm install
     pnpm build
-    chmod +x npm/dist/providers/modalCli.js
+    (cd providers/modal-go && go build -o ../../target/release/little-durable-objects-modal-go .)
     ```
 
 3. Start the control plane. Its HTTP origin serves the public REST API and the internal host gRPC API, so it must be reachable from Modal with HTTP/2 enabled.
@@ -40,7 +40,7 @@ cargo install little-durable-objects --locked
     export DURABLE_OBJECT_JWT_SIGNING_KEY="$(openssl genpkey -algorithm Ed25519 -outform DER | base64 | tr -d '\n')"
     export DURABLE_OBJECT_ADMIN_TOKEN="$(openssl rand -hex 32)"
     export DURABLE_OBJECT_SANDBOX_PROVIDER=modal
-    export DURABLE_OBJECT_SANDBOX_COMMAND="$PWD/npm/dist/providers/modalCli.js"
+    export DURABLE_OBJECT_SANDBOX_COMMAND="$PWD/target/release/little-durable-objects-modal-go"
     export MODAL_TOKEN_ID=...
     export MODAL_TOKEN_SECRET=...
 

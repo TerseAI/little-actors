@@ -83,6 +83,13 @@ func modalRegion(region string) (string, error) {
 	return "", fmt.Errorf("canonical region %q has no Modal placement", region)
 }
 
+func modalCloud(region string) string {
+	if region == "north-america-east" {
+		return ""
+	}
+	return "gcp"
+}
+
 func resourceName(namespace, revision, region string) string {
 	digest := sha256.Sum256([]byte(namespace + "\x00" + revision + "\x00" + region))
 	return fmt.Sprintf("do-host-%x", digest[:16])

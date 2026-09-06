@@ -110,9 +110,8 @@ async fn control_plane_routes(config: ControlPlaneProcessConfig) -> Result<tonic
         database.clone(),
     ));
     let registry = Arc::new(super::PostgresAdminRegistry::from_database(database));
-    let storage_urls = Arc::new(GcsStorageUrlSigner::from_adc(
-        config.storage.standard_buckets,
-    )?);
+    let storage_urls =
+        Arc::new(GcsStorageUrlSigner::from_adc(config.storage.standard_buckets).await?);
     let provisioner = sandbox_provisioner(config.sandbox_provider, &issuer, &leases)?;
     let socket_events = config
         .socket_event_sink
@@ -279,7 +278,7 @@ fn sandbox_provider_config(
     Ok(SandboxProviderConfig {
         provider_name,
         command: get("DURABLE_OBJECT_SANDBOX_COMMAND")
-            .unwrap_or_else(|| "little-durable-objects-modal".into()),
+            .unwrap_or_else(|| "little-durable-objects-modal-go".into()),
         environment,
         runtime: HostSandboxRuntimeConfig {
             control_plane_url,

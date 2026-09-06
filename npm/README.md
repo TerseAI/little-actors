@@ -1,6 +1,6 @@
 # little-durable-objects
 
-The package provides the typed `Actor` API, control-plane HTTP client, JavaScript host executor, region catalog, and provider contract. It also bundles the Modal command used by the Rust control plane.
+The package provides the typed `Actor` API, control-plane HTTP client, and JavaScript host executor.
 
 Requires Node.js 20 or newer.
 
@@ -70,7 +70,7 @@ The control plane selects one sandbox provider globally. For Modal, set `DURABLE
 
 The control plane starts an independent provider process for each call. It writes one JSON command to stdin and closes stdin. The provider writes one response to stdout and exits. Responses are `{ "status": "success", "result": ... }` or `{ "status": "failure", "error": "..." }`. Logs go to stderr. Calls do not share a process pool or queue.
 
-The `little-durable-objects-modal` executable handles host lifecycle and disposable image-warmup commands through the Modal TypeScript SDK, using `MODAL_TOKEN_ID` and `MODAL_TOKEN_SECRET`. The Rust control plane runs it locally; each call pays the Node and SDK startup cost.
+The runtime container includes `little-durable-objects-modal-go`, which handles host lifecycle and disposable image-warmup commands through the Modal Go SDK, using `MODAL_TOKEN_ID` and `MODAL_TOKEN_SECRET`. The npm package provides the actor and workflow runtime; it does not include a sandbox provider.
 
 Actor hosts conventionally load `src/durable-objects.ts`. See the [runtime repository](https://github.com/TerseAI/little-durable-objects) for backend configuration, the REST admin API, authentication, and lifecycle behavior.
 

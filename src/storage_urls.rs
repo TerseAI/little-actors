@@ -2,11 +2,13 @@ use std::{collections::HashMap, time::Duration};
 
 use anyhow::{Context, Result, ensure};
 use async_trait::async_trait;
-use google_cloud_auth::{credentials, signer::Signer};
+use google_cloud_auth::signer::Signer;
 use google_cloud_storage::{builder::storage::SignedUrlBuilder, http::Method};
 use serde::{Deserialize, Serialize};
 
 use crate::{actor::ActorKey, placement::validate_region};
+
+mod iam;
 
 const SIGNED_URL_TTL: Duration = Duration::from_secs(60);
 pub const STATE_CONTENT_TYPE: &str = "application/json";
@@ -41,8 +43,8 @@ pub struct GcsStorageUrlSigner {
 }
 
 impl GcsStorageUrlSigner {
-    pub fn from_adc(buckets: HashMap<String, String>) -> Result<Self> {
-        Self::new(buckets, credentials::Builder::default().build_signer()?)
+    pub async fn from_adc(buckets: HashMap<String, String>) -> Result<Self> {
+        Self::new(buckets, iam::from_adc().await?)
     }
 
     pub fn new(buckets: HashMap<String, String>, signer: Signer) -> Result<Self> {
