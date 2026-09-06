@@ -2,6 +2,9 @@ import { Worker } from "node:worker_threads"
 
 import { errorMessage, failedReply } from "../../shared/types.js"
 import type { ActorExecutorCommand, ActorExecutorReply, ActorWorkerData, ActorWorkerMessage, ActorWorkerRequest, EvictCommand, InvokeCommand, WebSocketEventCommand } from "../../shared/types.js"
+import type { SocketEffect } from "../../shared/types.js"
+
+type SocketPublisher = (effects: readonly SocketEffect[]) => Promise<void>
 
 const DEFAULT_ACTOR_IDLE_TIMEOUT_MS = 60_000
 const MAX_RESIDENT_ACTORS = 32
@@ -39,14 +42,14 @@ class ActorWorkerSupervisor {
         return this.actorTypes
     }
 
-    async handle(command: ActorExecutorCommand): Promise<ActorExecutorReply> {
+    async handle(command: ActorExecutorCommand, publish?: SocketPublisher): Promise<ActorExecutorReply> {
         if (this.closed) return failedReply("actor_worker_terminated", "actor supervisor is closed")
         switch (command.type) {
             case "invoke":
             case "websocket_event":
                 try {
                     if (this.actorTypes === undefined) await this.ready()
-                    return await this.execute(command)
+                    return await this.execute(command, publish)
                 } catch (error) {
                     return failedReply("actor_worker_failed", errorMessage(error))
                 }
@@ -78,7 +81,7 @@ class ActorWorkerSupervisor {
         this.takeSpeculativeWorker()?.terminate("unused actor preload expired or failed")
     }
 
-    private execute(command: InvokeCommand | WebSocketEventCommand): Promise<ActorExecutorReply> {
+    private execute(command: InvokeCommand | WebSocketEventCommand, publish?: SocketPublisher): Promise<ActorExecutorReply> {
         if (!this.actorTypes?.includes(command.actor.actor_type)) {
             return Promise.resolve(failedReply("actor_type_not_found", `actor type ${command.actor.actor_type} is not loaded in this customer process`))
         }
@@ -98,7 +101,7 @@ class ActorWorkerSupervisor {
             })
             this.actors.set(key, actor)
         }
-        return actor.execute(command)
+        return actor.execute(command, publish)
     }
 
     private evict(command: EvictCommand): ActorExecutorReply {
@@ -152,7 +155,7 @@ class ResidentActorWorker {
         this.worker = options.worker
     }
 
-    async execute(command: InvokeCommand | WebSocketEventCommand): Promise<ActorExecutorReply> {
+    async execute(command: InvokeCommand | WebSocketEventCommand, publish?: SocketPublisher): Promise<ActorExecutorReply> {
         if (this.worker === undefined && command.resident_only) return { type: "state_required" }
         if (this.idleTimer !== undefined) clearTimeout(this.idleTimer)
         this.idleTimer = undefined
@@ -160,7 +163,7 @@ class ResidentActorWorker {
         const worker = this.worker
         let reply: ActorExecutorReply
         try {
-            reply = await worker.execute(command)
+            reply = await worker.execute(command, publish)
         } catch (error) {
             reply = failedReply(error instanceof ActorWorkerTerminatedError ? "actor_worker_terminated" : "actor_worker_failed", errorMessage(error))
         } finally {
@@ -196,6 +199,7 @@ class ActorWorker implements ActorWorkerHandle {
     private replyResolve: ((reply: ActorExecutorReply) => void) | undefined
     private replyReject: ((error: Error) => void) | undefined
     private terminalError: Error | undefined
+    private publish: SocketPublisher | undefined
 
     constructor(data: ActorWorkerData) {
         this.readyPromise = new Promise<readonly string[]>((resolve, reject) => {
@@ -217,9 +221,10 @@ class ActorWorker implements ActorWorkerHandle {
         })
     }
 
-    async execute(command: InvokeCommand | WebSocketEventCommand): Promise<ActorExecutorReply> {
+    async execute(command: InvokeCommand | WebSocketEventCommand, publish?: SocketPublisher): Promise<ActorExecutorReply> {
         if (this.terminalError !== undefined) throw this.terminalError
         this.worker.ref()
+        this.publish = publish
         try {
             await this.readyPromise
             if (this.terminalError !== undefined) throw this.terminalError
@@ -241,6 +246,10 @@ class ActorWorker implements ActorWorkerHandle {
     }
 
     private receive(message: ActorWorkerMessage): void {
+        if (message.type === "socket_effects") {
+            void this.publishEffects(message.effects)
+            return
+        }
         if (message.type === "ready") {
             this.readyResolve?.(message.actorTypes)
             this.readyResolve = undefined
@@ -255,11 +264,22 @@ class ActorWorker implements ActorWorkerHandle {
         this.reply(message)
     }
 
+    private async publishEffects(effects: readonly SocketEffect[]): Promise<void> {
+        try {
+            if (this.publish === undefined) throw new Error("actor socket publishing is unavailable")
+            await this.publish(effects)
+            this.post({ type: "socket_effects_published" })
+        } catch (error) {
+            this.post({ type: "socket_effects_published", error: errorMessage(error) })
+        }
+    }
+
     private reply(reply: ActorExecutorReply): void {
         const resolve = this.replyResolve
         if (resolve === undefined) return
         this.replyResolve = undefined
         this.replyReject = undefined
+        this.publish = undefined
         resolve(reply)
         this.worker.unref()
     }
@@ -309,7 +329,7 @@ interface ResidentActorWorkerOptions {
 
 interface ActorWorkerHandle {
     ready(): Promise<readonly string[]>
-    execute(command: InvokeCommand | WebSocketEventCommand): Promise<ActorExecutorReply>
+    execute(command: InvokeCommand | WebSocketEventCommand, publish?: SocketPublisher): Promise<ActorExecutorReply>
     terminate(reason: string): void
 }
 

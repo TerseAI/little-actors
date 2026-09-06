@@ -21,6 +21,7 @@ const (
 
 type modalAPI interface {
 	Resolve(context.Context, string) (*modal.App, *modal.Image, error)
+	Secret(context.Context, string) (*modal.Secret, error)
 	Create(context.Context, *modal.App, *modal.Image, *modal.SandboxCreateParams) (sandbox, error)
 	Find(context.Context, string) (sandbox, error)
 }
@@ -59,6 +60,13 @@ func (p *provider) ensureHost(ctx context.Context, request ensureRequest) (hostH
 		return hostHandle{}, err
 	}
 	phases.ResourcesResolvedAtMS = p.elapsed()
+	for _, reference := range request.SecretRefs {
+		secret, err := p.api.Secret(ctx, reference)
+		if err != nil {
+			return hostHandle{}, err
+		}
+		params.Secrets = append(params.Secrets, secret)
+	}
 	for attempt := 0; attempt < 2; attempt++ {
 		sb, reused, err := p.acquire(ctx, app, image, params)
 		if err != nil {

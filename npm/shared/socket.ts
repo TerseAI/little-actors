@@ -44,7 +44,7 @@ class ActorSocketScope {
 
     constructor(
         connections: readonly SocketConnection[],
-        readonly effects: SocketEffect[]
+        readonly effects: Pick<SocketEffect[], "push">
     ) {
         const sockets = connections.map(connection => new RuntimeActorSocket(connection, effects))
         this.sockets = sockets
@@ -82,7 +82,7 @@ class RuntimeActorSocket<Metadata = JsonValue> implements ActorSocket<Metadata> 
 
     constructor(
         connection: SocketConnection,
-        private readonly effects: SocketEffect[],
+        private readonly effects: Pick<SocketEffect[], "push">,
         private stateValue: ActorSocketState = "open"
     ) {
         this.id = connection.id
@@ -146,15 +146,59 @@ class RuntimeActorSocket<Metadata = JsonValue> implements ActorSocket<Metadata> 
 async function runWithActorSockets<T>(
     instance: object,
     connections: readonly SocketConnection[],
-    operation: (scope: ActorSocketScope) => Promise<T>
+    operation: (scope: ActorSocketScope) => Promise<T>,
+    publish?: (effects: readonly SocketEffect[]) => Promise<void>
 ): Promise<{ readonly value: T; readonly effects: readonly SocketEffect[] }> {
     const effects: SocketEffect[] = []
-    const scope = new ActorSocketScope(connections, effects)
+    const output = publish === undefined ? undefined : new SocketOutput(publish)
+    const scope = new ActorSocketScope(connections, output ?? effects)
     scopes.set(instance, scope)
     try {
         return { value: await operation(scope), effects }
     } finally {
         scopes.delete(instance)
+        await output?.flush()
+    }
+}
+
+class SocketOutput {
+    private pending: Promise<void> | undefined
+    private queued: SocketEffect[] = []
+    private queuedBytes = 0
+    private failure: unknown
+
+    constructor(private readonly publish: (effects: readonly SocketEffect[]) => Promise<void>) {}
+
+    push(...effects: SocketEffect[]): number {
+        if (this.failure !== undefined) throw this.failure
+        const bytes = Buffer.byteLength(JSON.stringify(effects))
+        if (this.queued.length + effects.length > 512 || this.queuedBytes + bytes > 24 * 1024 * 1024) throw new ActorProtocolError("actor socket output queue is full")
+        this.queued.push(...effects)
+        this.queuedBytes += bytes
+        this.pending ??= this.drain()
+        void this.pending.catch(() => undefined)
+        return this.queued.length
+    }
+
+    async flush(): Promise<void> {
+        await this.pending
+        if (this.failure !== undefined) throw this.failure
+    }
+
+    private async drain(): Promise<void> {
+        try {
+            while (this.queued.length > 0) {
+                const batch = this.queued
+                this.queued = []
+                this.queuedBytes = 0
+                await this.publish(batch)
+            }
+        } catch (error) {
+            this.failure = error
+            throw error
+        } finally {
+            this.pending = undefined
+        }
     }
 }
 

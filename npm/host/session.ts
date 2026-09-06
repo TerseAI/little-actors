@@ -6,6 +6,7 @@ import { z } from "zod"
 import { ActorConfigurationError, ActorProtocolError, ActorSessionError } from "../shared/errors.js"
 import { failedReply, parseActorSessionServerMessage } from "../shared/types.js"
 import type { ActorExecutorCommand, ActorExecutorReply, ActorSessionClientMessage } from "../shared/types.js"
+import type { SocketEffect } from "../shared/types.js"
 
 import { resolveActorEntrypoint } from "./actorModule.js"
 import { ActorWorkerSupervisor } from "./worker/supervisor.js"
@@ -46,7 +47,7 @@ class ActorSession {
             actorEntrypointUrl,
             actorIdleTimeoutMs: this.settings.actorIdleTimeoutMs
         })
-        const commandHandler = (command: ActorExecutorCommand): Promise<ActorExecutorReply> => supervisor.handle(command)
+        const commandHandler: ActorCommandHandler = (command, publish) => supervisor.handle(command, publish)
         try {
             const actorTypes = await discoverActorTypes(supervisor, this.settings.startupTimeoutMs)
             this.connection = await ActorSessionConnection.open(this.settings.socketPath, actorTypes, commandHandler, this.settings.startupTimeoutMs)
@@ -110,12 +111,13 @@ class ActorSessionConnection {
     private readonly attachedPromise: Promise<void>
     private closedResolve: (() => void) | undefined
     private readonly closedPromise: Promise<void>
+    private readonly publishing = new Map<number, { resolve: () => void; reject: (error: Error) => void }>()
 
     static async open(socketPath: string, actorTypes: readonly string[], commandHandler: ActorCommandHandler, timeoutMs: number): Promise<ActorSessionConnection> {
         if (actorTypes.length === 0) throw new ActorSessionError("the actor entrypoint does not export any actor classes")
         const socket = await connectSocket(socketPath)
         const connection = new ActorSessionConnection(socket, commandHandler)
-        connection.send({ type: "attach", protocol: 13, actor_types: actorTypes })
+        connection.send({ type: "attach", protocol: 14, actor_types: actorTypes })
         await connection.waitUntilAttached(timeoutMs)
         return connection
     }
@@ -191,14 +193,35 @@ class ActorSessionConnection {
                     this.attachedReject = undefined
                     break
                 case "command":
-                    await this.reply(message.message_id, message.command, await this.commandHandler(message.command))
+                    await this.reply(message.message_id, message.command, await this.commandHandler(message.command, effects => this.publish(message.message_id, effects)))
                     break
+                case "socket_effects_published": {
+                    const pending = this.publishing.get(message.message_id)
+                    if (pending === undefined) throw new ActorProtocolError("Rust host acknowledged unknown socket output")
+                    this.publishing.delete(message.message_id)
+                    if (message.error === undefined) pending.resolve()
+                    else pending.reject(new ActorSessionError(message.error))
+                    break
+                }
                 default:
                     throw message satisfies never
             }
         } catch (error) {
             this.fail(sessionError(error))
         }
+    }
+
+    private publish(messageId: number, effects: readonly SocketEffect[]): Promise<void> {
+        return new Promise((resolve, reject) => {
+            if (this.publishing.has(messageId)) throw new ActorProtocolError("actor socket output is already being published")
+            this.publishing.set(messageId, { resolve, reject })
+            try {
+                this.send({ type: "socket_effects", message_id: messageId, effects })
+            } catch (error) {
+                this.publishing.delete(messageId)
+                reject(sessionError(error))
+            }
+        })
     }
 
     private async reply(messageId: number, command: ActorExecutorCommand, reply: ActorExecutorReply): Promise<void> {
@@ -230,6 +253,8 @@ class ActorSessionConnection {
     }
 
     private close(): void {
+        for (const pending of this.publishing.values()) pending.reject(new ActorSessionError("Rust host disconnected while publishing socket output"))
+        this.publishing.clear()
         this.attachedReject?.(new ActorSessionError("Rust host disconnected from actor session"))
         this.attachedResolve = undefined
         this.attachedReject = undefined
@@ -297,6 +322,6 @@ function parseActorIdleTimeout(value: string | undefined): number {
     return parsed
 }
 
-type ActorCommandHandler = (command: ActorExecutorCommand) => Promise<ActorExecutorReply>
+type ActorCommandHandler = (command: ActorExecutorCommand, publish?: (effects: readonly SocketEffect[]) => Promise<void>) => Promise<ActorExecutorReply>
 
 export { ActorSession, ActorSessionSettings, serializeWithinBytes, runActorHost }

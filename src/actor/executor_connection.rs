@@ -18,14 +18,14 @@ use tokio::{
         unix::{OwnedReadHalf, OwnedWriteHalf},
     },
     sync::{mpsc, oneshot},
-    task::JoinHandle,
+    task::{JoinHandle, JoinSet},
 };
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, info};
 
 use super::{ActorInvocationFailure, ActorKey};
 
-const ACTOR_EXECUTOR_PROTOCOL_VERSION: u32 = 13;
+const ACTOR_EXECUTOR_PROTOCOL_VERSION: u32 = 14;
 const MAX_PENDING_EXECUTOR_COMMANDS: usize = 64;
 pub(crate) const MAX_ACTOR_EXECUTOR_MESSAGE_BYTES: usize = 32 * 1024 * 1024;
 
@@ -177,6 +177,11 @@ pub trait ActorExecutor: Send + Sync {
     }
 }
 
+#[async_trait]
+pub(crate) trait ActorSocketPublisher: Send + Sync {
+    async fn publish(&self, actor: &ActorKey, effects: Vec<ActorSocketEffect>) -> Result<()>;
+}
+
 pub(crate) struct ActorExecutorListener {
     listener: UnixListener,
     socket_path: PathBuf,
@@ -257,8 +262,11 @@ impl ActorExecutorConnection {
         self.executor.clone()
     }
 
-    pub(crate) async fn mark_ready(&self) -> Result<()> {
-        self.executor.mark_ready().await?;
+    pub(crate) async fn mark_ready(
+        &self,
+        publisher: Option<Arc<dyn ActorSocketPublisher>>,
+    ) -> Result<()> {
+        self.executor.mark_ready(publisher).await?;
         info!(
             actor_types = ?self.executor.actor_types,
             "customer JavaScript process attached to actor executor"
@@ -411,10 +419,10 @@ impl JsActorExecutor {
         (executor, task)
     }
 
-    async fn mark_ready(&self) -> Result<()> {
+    async fn mark_ready(&self, publisher: Option<Arc<dyn ActorSocketPublisher>>) -> Result<()> {
         let (reply, ready) = oneshot::channel();
         self.commands
-            .send(ExecutorRequest::Ready(reply))
+            .send(ExecutorRequest::Ready(reply, publisher))
             .await
             .context("actor executor stopped")?;
         ready
@@ -455,6 +463,9 @@ async fn run_executor_connection(
         residents: HashSet::new(),
         next_message_id: 1,
         outbound,
+        publisher: None,
+        publishing: JoinSet::new(),
+        publishing_ids: HashSet::new(),
     };
     tokio::try_join!(
         driver.run(commands, replies),
@@ -469,20 +480,37 @@ struct ExecutorDriver {
     residents: HashSet<ActorKey>,
     next_message_id: u64,
     outbound: mpsc::Sender<ExecutorWrite>,
+    publisher: Option<Arc<dyn ActorSocketPublisher>>,
+    publishing: JoinSet<(u64, Result<()>)>,
+    publishing_ids: HashSet<u64>,
 }
 
 impl ExecutorDriver {
     async fn run(
         mut self,
         mut commands: mpsc::Receiver<ExecutorRequest>,
-        mut replies: mpsc::Receiver<Result<(u64, ExecutorReply)>>,
+        mut replies: mpsc::Receiver<Result<ActorExecutorClientMessage>>,
     ) -> Result<()> {
         loop {
             tokio::select! {
                 biased;
                 reply = replies.recv() => {
-                    let (message_id, reply) = reply.context("actor executor reader stopped")??;
-                    self.deliver(message_id, reply)?;
+                    match reply.context("actor executor reader stopped")?? {
+                        ActorExecutorClientMessage::Reply { message_id, reply } => self.deliver(message_id, reply)?,
+                        ActorExecutorClientMessage::SocketEffects { message_id, effects } => self.publish(message_id, effects)?,
+                        ActorExecutorClientMessage::Attach { .. } => anyhow::bail!("customer actor executor attached more than once"),
+                    }
+                }
+                published = self.publishing.join_next(), if !self.publishing.is_empty() => {
+                    let (message_id, result) = published.context("socket publisher stopped")??;
+                    self.publishing_ids.remove(&message_id);
+                    self.outbound.send(ExecutorWrite {
+                        bytes: encode_server_message(&ActorExecutorServerMessage::SocketEffectsPublished {
+                            message_id,
+                            error: result.err().map(|error| format!("{error:#}")),
+                        })?,
+                        written: None,
+                    }).await.context("actor executor writer stopped")?;
                 }
                 command = commands.recv(), if self.pending.len() < MAX_PENDING_EXECUTOR_COMMANDS => match command {
                     Some(command) => self.handle_command(command)?,
@@ -500,16 +528,50 @@ impl ExecutorDriver {
                     resident && !matches!(pending.command, ExecutorCommand::Evict(_));
                 self.enqueue(*pending)
             }
-            ExecutorRequest::Ready(written) => self
-                .outbound
-                .try_send(ExecutorWrite {
-                    bytes: encode_server_message(&ActorExecutorServerMessage::Attached {
-                        protocol: ACTOR_EXECUTOR_PROTOCOL_VERSION,
-                    })?,
-                    written: Some(written),
-                })
-                .map_err(|_| anyhow::anyhow!("actor executor writer stopped or filled its queue")),
+            ExecutorRequest::Ready(written, publisher) => {
+                self.publisher = publisher;
+                self.outbound
+                    .try_send(ExecutorWrite {
+                        bytes: encode_server_message(&ActorExecutorServerMessage::Attached {
+                            protocol: ACTOR_EXECUTOR_PROTOCOL_VERSION,
+                        })?,
+                        written: Some(written),
+                    })
+                    .map_err(|_| {
+                        anyhow::anyhow!("actor executor writer stopped or filled its queue")
+                    })
+            }
         }
+    }
+
+    fn publish(&mut self, message_id: u64, effects: Vec<ActorSocketEffect>) -> Result<()> {
+        let pending = self
+            .pending
+            .get(&message_id)
+            .context("socket output has no active actor invocation")?;
+        ensure!(
+            self.publishing_ids.insert(message_id),
+            "actor sent concurrent socket publications"
+        );
+        let actor = pending.command.actor().clone();
+        let connecting = matches!(&pending.command, ExecutorCommand::WebsocketEvent(invocation) if matches!(invocation.event, ActorSocketEvent::Connect { .. }));
+        let publisher = self.publisher.clone();
+        self.publishing.spawn(async move {
+            let result = async {
+                ensure!(
+                    !connecting,
+                    "socket output cannot precede connection acceptance"
+                );
+                super::validate_socket_effects(&effects)?;
+                publisher
+                    .context("actor socket publishing is unavailable")?
+                    .publish(&actor, effects)
+                    .await
+            }
+            .await;
+            (message_id, result)
+        });
+        Ok(())
     }
 
     fn enqueue(&mut self, pending: PendingCommand) -> Result<()> {
@@ -560,6 +622,10 @@ impl ExecutorDriver {
     }
 
     fn deliver(&mut self, message_id: u64, reply: ExecutorReply) -> Result<()> {
+        ensure!(
+            !self.publishing_ids.contains(&message_id),
+            "actor completed before socket output was acknowledged"
+        );
         let mut pending = self
             .pending
             .remove(&message_id)
@@ -590,16 +656,11 @@ impl ExecutorDriver {
 
 async fn read_executor_messages(
     mut reader: BufReader<OwnedReadHalf>,
-    inbound: mpsc::Sender<Result<(u64, ExecutorReply)>>,
+    inbound: mpsc::Sender<Result<ActorExecutorClientMessage>>,
 ) -> Result<()> {
     loop {
         let reply = match read_client_message(&mut reader).await {
-            Ok(Some(ActorExecutorClientMessage::Reply { message_id, reply })) => {
-                Ok((message_id, reply))
-            }
-            Ok(Some(ActorExecutorClientMessage::Attach { .. })) => Err(anyhow::anyhow!(
-                "customer actor executor attached more than once"
-            )),
+            Ok(Some(message)) => Ok(message),
             Ok(None) => Err(anyhow::anyhow!(
                 "customer JavaScript actor executor disconnected"
             )),
@@ -640,7 +701,10 @@ async fn write_executor_messages(
 
 enum ExecutorRequest {
     Exchange(Box<PendingCommand>),
-    Ready(oneshot::Sender<Result<()>>),
+    Ready(
+        oneshot::Sender<Result<()>>,
+        Option<Arc<dyn ActorSocketPublisher>>,
+    ),
 }
 
 struct PendingCommand {
@@ -745,6 +809,11 @@ async fn remove_socket(path: &Path) -> Result<()> {
 #[derive(Debug, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 enum ActorExecutorServerMessage<'a> {
+    SocketEffectsPublished {
+        message_id: u64,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        error: Option<String>,
+    },
     Attached {
         protocol: u32,
     },
@@ -766,6 +835,10 @@ struct ExecutorCommandEnvelope<'a> {
 #[derive(Debug, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 enum ActorExecutorClientMessage {
+    SocketEffects {
+        message_id: u64,
+        effects: Vec<ActorSocketEffect>,
+    },
     Attach {
         protocol: u32,
         actor_types: Vec<String>,
@@ -876,14 +949,14 @@ mod tests {
             let mut stream = BufReader::new(stream);
             write_json_line(
                 &mut stream,
-                &json!({"type":"attach", "protocol":13, "actor_types":["counter"]}),
+                &json!({"type":"attach", "protocol":14, "actor_types":["counter"]}),
             )
             .await?;
             let _ = read_json_line(&mut stream).await?;
             std::future::pending::<Result<()>>().await
         });
         let connection = listener.accept().await?;
-        connection.mark_ready().await?;
+        connection.mark_ready(None).await?;
         let executor = connection.executor();
         let shutdown = CancellationToken::new();
         let mut running = tokio::spawn(connection.run(shutdown.clone()));
@@ -923,7 +996,7 @@ mod tests {
         let customer = tokio::spawn(run_incrementing_customer(socket.clone()));
         let connection = host.accept().await?;
         let executor = connection.executor();
-        connection.mark_ready().await?;
+        connection.mark_ready(None).await?;
         assert!(executor.supports("counter"));
 
         let shutdown = CancellationToken::new();
@@ -1058,7 +1131,7 @@ mod tests {
         let customer = tokio::spawn(run_attached_customer(socket.clone()));
         let connection = host.accept().await?;
         let executor = connection.executor();
-        connection.mark_ready().await?;
+        connection.mark_ready(None).await?;
 
         let shutdown = CancellationToken::new();
         let connection_task = tokio::spawn(connection.run(shutdown.clone()));
@@ -1118,10 +1191,10 @@ mod tests {
         let (reader, mut writer) = stream.into_split();
         let mut reader = BufReader::new(reader);
         writer
-            .write_all(b"{\"type\":\"attach\",\"protocol\":13,\"actor_types\":[\"counter\"]}\n")
+            .write_all(b"{\"type\":\"attach\",\"protocol\":14,\"actor_types\":[\"counter\"]}\n")
             .await?;
         ensure!(
-            read_json_line(&mut reader).await? == json!({ "type": "attached", "protocol": 13 })
+            read_json_line(&mut reader).await? == json!({ "type": "attached", "protocol": 14 })
         );
 
         let invocation = read_json_line(&mut reader).await?;
@@ -1181,10 +1254,10 @@ mod tests {
         let (reader, mut writer) = stream.into_split();
         let mut reader = BufReader::new(reader);
         writer
-            .write_all(b"{\"type\":\"attach\",\"protocol\":13,\"actor_types\":[\"counter\"]}\n")
+            .write_all(b"{\"type\":\"attach\",\"protocol\":14,\"actor_types\":[\"counter\"]}\n")
             .await?;
         ensure!(
-            read_json_line(&mut reader).await? == json!({ "type": "attached", "protocol": 13 })
+            read_json_line(&mut reader).await? == json!({ "type": "attached", "protocol": 14 })
         );
         let mut trailing = String::new();
         ensure!(

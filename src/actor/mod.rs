@@ -13,7 +13,8 @@ pub use self::{
     },
 };
 pub(crate) use executor_connection::{
-    ActorExecutorConnection, ActorExecutorListener, MAX_ACTOR_EXECUTOR_MESSAGE_BYTES,
+    ActorExecutorConnection, ActorExecutorListener, ActorSocketPublisher,
+    MAX_ACTOR_EXECUTOR_MESSAGE_BYTES,
 };
 pub(crate) use socket::{
     MAX_SOCKET_MESSAGE_BYTES, MAX_SOCKET_METADATA_BYTES, validate_socket_effects,

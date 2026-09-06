@@ -17,5 +17,3 @@ Rules for working in this repo. Keep changes minimal and idiomatic.
 6. **Follow SOLID principles**
 
 7. **Follow TDD.** Add a failing behavior test before production changes, then implement and refactor.
-
-8. **Keep the ASCII architecture diagram up to date.** Maintain `docs/system-architecture.md` whenever a change affects system components, trust boundaries, protocols, or ownership.

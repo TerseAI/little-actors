@@ -10,7 +10,10 @@ class ActorRuntime {
     private instance: Actor | undefined
     private identity: ActorIdentity | undefined
 
-    constructor(private readonly definition: ActorDefinition) {}
+    constructor(
+        private readonly definition: ActorDefinition,
+        private readonly publish?: (effects: readonly SocketEffect[]) => Promise<void>
+    ) {}
 
     async handle(command: InvokeCommand | WebSocketEventCommand): Promise<ActorExecutorReply> {
         return command.type === "invoke" ? this.invoke(command) : this.handleSocketEvent(command)
@@ -29,8 +32,11 @@ class ActorRuntime {
         }
 
         try {
-            const operation = await runWithActorSockets(instance, command.connections ?? [], async () =>
-                runInActorInvocation(async () => Reflect.apply(method, instance, command.args) as Promise<unknown>)
+            const operation = await runWithActorSockets(
+                instance,
+                command.connections ?? [],
+                async () => runInActorInvocation(async () => Reflect.apply(method, instance, command.args) as Promise<unknown>),
+                this.publish
             )
             const result: JsonValue = operation.value === undefined ? null : cloneJson(operation.value, "actor result")
             return {
@@ -52,12 +58,17 @@ class ActorRuntime {
         const methodName = lifecycleMethod(command)
         const method: unknown = Reflect.get(instance, methodName)
         try {
-            const operation = await runWithActorSockets(instance, command.connections, async scope => {
-                if (method === undefined) return
-                if (typeof method !== "function") throw new ActorProtocolError(`actor lifecycle hook ${this.definition.actorType}.${methodName} is not callable`)
-                const args = lifecycleArguments(command, scope)
-                await runInActorInvocation(async () => Reflect.apply(method, instance, args) as Promise<unknown>)
-            })
+            const operation = await runWithActorSockets(
+                instance,
+                command.connections,
+                async scope => {
+                    if (method === undefined) return
+                    if (typeof method !== "function") throw new ActorProtocolError(`actor lifecycle hook ${this.definition.actorType}.${methodName} is not callable`)
+                    const args = lifecycleArguments(command, scope)
+                    await runInActorInvocation(async () => Reflect.apply(method, instance, args) as Promise<unknown>)
+                },
+                command.event.type === "connect" ? undefined : this.publish
+            )
             const state = snapshotActorState(instance)
             return { type: "websocket_handled", state, effects: socketEffects(command, state, operation.effects) }
         } catch (error) {

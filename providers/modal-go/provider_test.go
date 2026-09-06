@@ -40,6 +40,22 @@ func TestFreshHostPublishesOnlyRouteAndWaitsForReadiness(t *testing.T) {
 	}
 }
 
+func TestHostAttachesNamedSecretsAndSocketGateway(t *testing.T) {
+	api := &fakeAPI{created: &fakeSandbox{}}
+	request := testRequest()
+	request.SecretRefs = []string{"project-secrets"}
+	request.SocketGatewayURL = "https://sockets.example"
+	if _, err := newTestProvider(api).ensureHost(context.Background(), request); err != nil {
+		t.Fatal(err)
+	}
+	if len(api.params.Secrets) != 1 || api.params.Secrets[0].Name != "project-secrets" {
+		t.Fatal("secret reference was not attached")
+	}
+	if api.params.Env["DURABLE_OBJECT_SOCKET_GATEWAY_URL"] != request.SocketGatewayURL {
+		t.Fatal("gateway address was lost")
+	}
+}
+
 func TestExistingHostKeepsItsIdentity(t *testing.T) {
 	r := testRequest()
 	existing := &fakeSandbox{metadata: `{"hostId":"host.v1.qa.existing","route":"https://existing.test","canonicalRegion":"north-america-east"}`}
@@ -191,6 +207,9 @@ type fakeAPI struct {
 func (a *fakeAPI) Resolve(context.Context, string) (*modal.App, *modal.Image, error) {
 	a.resolves++
 	return &modal.App{}, &modal.Image{}, nil
+}
+func (a *fakeAPI) Secret(_ context.Context, name string) (*modal.Secret, error) {
+	return &modal.Secret{Name: name}, nil
 }
 func (a *fakeAPI) Create(_ context.Context, _ *modal.App, _ *modal.Image, params *modal.SandboxCreateParams) (sandbox, error) {
 	a.creates++

@@ -1,8 +1,8 @@
 # little-durable-objects
 
-A multi-tenant durable-object runtime that is provider neutral.
+A multi-tenant durable-object runtime built in Rust.
 
-Initial implementation uses Modal as the dataplane sandbox provider. Actor-state snapshots use regional GCS buckets, which provide the durability guarantee. PostgreSQL manages leases and current state head.
+![Little Durable Architecture](docs/llittle-do-diagram.png)
 
 ## Install
 

@@ -12,7 +12,7 @@ use tonic::{
 };
 
 use crate::{
-    actor::ActorKey,
+    actor::{ActorKey, ActorSocketEffect, ActorSocketPublisher},
     grpc::proto::actor_control_plane_service_client::ActorControlPlaneServiceClient,
     host::HostId,
     host_leases::{HostLease, HostLeaseRegistry, HostLeaseRequest},
@@ -30,11 +30,14 @@ const CONTROL_PLANE_CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 pub struct ControlPlaneClient {
     client: ActorControlPlaneServiceClient<Channel>,
     authorization: Arc<RwLock<MetadataValue<tonic::metadata::Ascii>>>,
+    socket_gateway: String,
+    http: reqwest::Client,
 }
 
 impl ControlPlaneClient {
     pub async fn connect(endpoint: impl Into<String>, token: impl AsRef<str>) -> Result<Self> {
-        let channel = Endpoint::new(endpoint.into())
+        let endpoint = endpoint.into();
+        let channel = Endpoint::new(endpoint.clone())
             .context("parse actor control-plane endpoint")?
             .connect_timeout(CONTROL_PLANE_CONNECT_TIMEOUT)
             .timeout(CONTROL_PLANE_REQUEST_TIMEOUT)
@@ -42,11 +45,21 @@ impl ControlPlaneClient {
             .await
             .context("connect to actor control plane")?;
         Ok(Self {
+            socket_gateway: endpoint,
+            http: reqwest::Client::builder()
+                .redirect(reqwest::redirect::Policy::none())
+                .timeout(CONTROL_PLANE_REQUEST_TIMEOUT)
+                .build()?,
             client: ActorControlPlaneServiceClient::new(channel)
                 .max_decoding_message_size(MAX_CONTROL_PLANE_MESSAGE_BYTES)
                 .max_encoding_message_size(MAX_CONTROL_PLANE_MESSAGE_BYTES),
             authorization: Arc::new(RwLock::new(bearer_authorization(token.as_ref())?)),
         })
+    }
+
+    pub(crate) fn with_socket_gateway(mut self, endpoint: &str) -> Self {
+        self.socket_gateway = endpoint.to_owned();
+        self
     }
 
     pub async fn prepare_state_write(
@@ -97,6 +110,40 @@ impl ControlPlaneClient {
             } => Ok((state_version, next_write)),
             reply => anyhow::bail!("unexpected commit-state reply: {reply:?}"),
         }
+    }
+}
+
+#[async_trait]
+impl ActorSocketPublisher for ControlPlaneClient {
+    async fn publish(&self, actor: &ActorKey, effects: Vec<ActorSocketEffect>) -> Result<()> {
+        actor.validate()?;
+        let authorization = self
+            .authorization
+            .read()
+            .map_err(|_| anyhow::anyhow!("actor authorization lock poisoned"))?
+            .to_str()?
+            .to_owned();
+        let url = format!(
+            "{}/v1/namespaces/{}/actors/{}/{}/socket-effects",
+            self.socket_gateway.trim_end_matches('/'),
+            actor.namespace_id,
+            actor.actor_type,
+            actor.actor_id
+        );
+        let response = self
+            .http
+            .post(url)
+            .header("authorization", authorization)
+            .json(&serde_json::json!({ "effects": effects }))
+            .send()
+            .await
+            .context("publish actor socket output")?;
+        ensure!(
+            response.status().is_success(),
+            "socket gateway rejected actor output with HTTP {}",
+            response.status()
+        );
+        Ok(())
     }
 }
 

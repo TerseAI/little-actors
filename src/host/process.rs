@@ -33,6 +33,7 @@ const MAX_IDLE_TIMEOUT_MS: u64 = 86_400_000;
 
 pub struct ActorHostConfig {
     pub control_plane_url: String,
+    pub socket_gateway_url: String,
     pub host_token: String,
     pub jwt_public_keys: String,
     pub namespace_id: String,
@@ -85,12 +86,13 @@ where
         host,
         lease,
         renewal,
+        socket_publisher,
     } = prepared;
     let mut lease_lost = renewal.lease_lost();
     let mut activity = host.activity();
 
     let service = ActorHostGrpcService::new(host.clone(), invocation_auth).into_service();
-    if let Err(error) = executor_connection.mark_ready().await {
+    if let Err(error) = executor_connection.mark_ready(Some(socket_publisher)).await {
         log_startup(&config, &timings, "failed", Some(&error));
         return Err(error);
     }
@@ -135,6 +137,8 @@ impl ActorHostConfig {
     fn from_lookup(mut get: impl FnMut(&str) -> Option<String>) -> Result<Self> {
         let startup_started_at = Instant::now();
         let control_plane_url = required(&mut get, "DURABLE_OBJECT_CONTROL_PLANE_URL")?;
+        let socket_gateway_url =
+            get("DURABLE_OBJECT_SOCKET_GATEWAY_URL").unwrap_or_else(|| control_plane_url.clone());
         let host_token = required(&mut get, "DURABLE_OBJECT_HOST_TOKEN")?;
         let jwt_public_keys = required(&mut get, "DURABLE_OBJECT_JWT_PUBLIC_KEYS")?;
         let namespace_id = required(&mut get, "DURABLE_OBJECT_NAMESPACE_ID")?;
@@ -202,6 +206,7 @@ impl ActorHostConfig {
             "DURABLE_OBJECT_RENEW_MS must be shorter than DURABLE_OBJECT_LEASE_MS"
         );
         Ok(Self {
+            socket_gateway_url,
             control_plane_url,
             host_token,
             jwt_public_keys,
@@ -244,6 +249,7 @@ impl HostMetadataFile {
 }
 
 struct PreparedActorHost {
+    socket_publisher: Arc<dyn crate::actor::ActorSocketPublisher>,
     invocation_auth: ActorJwtVerifier,
     listener: TcpListener,
     route: String,
@@ -285,7 +291,7 @@ async fn prepare_actor_host(
             ),
         )
         .await?;
-    let control_plane = Arc::new(control_plane);
+    let control_plane = Arc::new(control_plane.with_socket_gateway(&config.socket_gateway_url));
     let host = Arc::new(ActorHost::new(
         endpoint.clone(),
         config.namespace_id.clone(),
@@ -296,7 +302,7 @@ async fn prepare_actor_host(
     let lease = Arc::new(HostLeaseMaintainer::new(
         endpoint,
         config.session_id.clone(),
-        control_plane as Arc<dyn HostLeaseRegistry>,
+        control_plane.clone() as Arc<dyn HostLeaseRegistry>,
         Arc::new(SystemClock),
         config.lease_duration,
         config.renew_every,
@@ -304,6 +310,7 @@ async fn prepare_actor_host(
     let renewal = lease.clone().start().await?;
     timings.lease_registered_at_ms = Some(timings.elapsed_ms());
     Ok(PreparedActorHost {
+        socket_publisher: control_plane,
         invocation_auth,
         listener,
         route,

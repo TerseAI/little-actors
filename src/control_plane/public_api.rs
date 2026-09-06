@@ -24,15 +24,14 @@ struct PublicApiState {
 }
 
 pub(super) fn router(invocations: ControlPlaneService, admin: AdminService) -> Router {
-    let sockets = super::websocket::router(
-        invocations.clone(),
-        super::websocket::SocketRegistry::default(),
-    );
+    let sockets = super::websocket::router(invocations.clone(), invocations.sockets.clone());
     Router::new()
         .route("/.well-known/jwks.json", get(jwks))
         .route(
             "/v1/namespaces/{namespace_id}/deployment",
-            put(register_deployment),
+            put(register_deployment)
+                .get(get_deployment)
+                .delete(delete_deployment),
         )
         .route(
             "/v1/namespaces/{namespace_id}/session-scoped-token",
@@ -45,6 +44,35 @@ pub(super) fn router(invocations: ControlPlaneService, admin: AdminService) -> R
         .layer(DefaultBodyLimit::max(MAX_CONTROL_PLANE_MESSAGE_BYTES))
         .with_state(PublicApiState { invocations, admin })
         .merge(sockets)
+}
+
+async fn get_deployment(
+    State(state): State<PublicApiState>,
+    Path(namespace_id): Path<String>,
+    headers: HeaderMap,
+) -> Result<Json<Option<HostLaunchSpec>>, ApiError> {
+    authorized_admin(&state.admin, &headers)?;
+    Ok(Json(
+        state
+            .admin
+            .current_deployment(&namespace_id)
+            .await
+            .map_err(ApiError::internal)?,
+    ))
+}
+
+async fn delete_deployment(
+    State(state): State<PublicApiState>,
+    Path(namespace_id): Path<String>,
+    headers: HeaderMap,
+) -> Result<Json<DeploymentReply>, ApiError> {
+    authorized_admin(&state.admin, &headers)?;
+    let changed = state
+        .invocations
+        .delete_deployment(&state.admin, &namespace_id)
+        .await
+        .map_err(ApiError::internal)?;
+    Ok(Json(DeploymentReply { changed }))
 }
 
 async fn register_deployment(
@@ -60,6 +88,8 @@ async fn register_deployment(
         image_ref: request.image_ref,
         working_directory: request.working_directory,
         actor_entrypoint: request.actor_entrypoint,
+        secret_refs: request.secret_refs,
+        socket_gateway_url: request.socket_gateway_url,
     };
     let changed = state
         .invocations
@@ -245,6 +275,10 @@ struct RegisterDeploymentRequest {
     working_directory: String,
     #[serde(default)]
     actor_entrypoint: Option<String>,
+    #[serde(default)]
+    secret_refs: Vec<String>,
+    #[serde(default)]
+    socket_gateway_url: Option<String>,
     #[serde(default)]
     warm_region: Option<String>,
 }

@@ -55,6 +55,10 @@ func (a *sdkAPI) Find(ctx context.Context, name string) (sandbox, error) {
 	return &sdkSandbox{sb}, nil
 }
 
+func (a *sdkAPI) Secret(ctx context.Context, name string) (*modal.Secret, error) {
+	return a.client.Secrets.FromName(ctx, name, nil)
+}
+
 type sdkSandbox struct{ sb *modal.Sandbox }
 
 func (s *sdkSandbox) ID() string                             { return s.sb.SandboxID }

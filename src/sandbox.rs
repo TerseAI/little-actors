@@ -30,6 +30,8 @@ pub struct EnsureHostRequest {
     pub image_ref: String,
     pub working_directory: String,
     pub actor_entrypoint: Option<String>,
+    pub secret_refs: Vec<String>,
+    pub socket_gateway_url: String,
     pub actor_idle_timeout_ms: u64,
     pub host_idle_timeout_ms: u64,
 }

@@ -4,6 +4,7 @@ import { test } from "node:test"
 import { runWithActorClientForTests } from "../../fixtures/actorClient.js"
 import { Actor, registerActorClass } from "../../shared/actor.js"
 import type { ActorConnection, ActorSocket } from "../../shared/socket.js"
+import type { SocketEffect } from "../../shared/types.js"
 
 import { ActorRuntime } from "./runtime.js"
 
@@ -90,6 +91,90 @@ const counterDefinition = registerActorClass(Counter)
 const forwarderDefinition = registerActorClass(Forwarder)
 const chatDefinition = registerActorClass(ChatRoom)
 const rejectingDefinition = registerActorClass(RejectingRoom)
+
+test("streams actor output before execution finishes without replaying it in the final reply", async () => {
+    let release!: () => void
+    const gate = new Promise<void>(resolve => {
+        release = resolve
+    })
+    class StreamingActor extends Actor {
+        async stream() {
+            this.broadcast("first")
+            await gate
+            this.broadcast("last")
+        }
+    }
+    const effects: SocketEffect[] = []
+    let first!: () => void
+    const published = new Promise<void>(resolve => {
+        first = resolve
+    })
+    const runtime = new ActorRuntime(registerActorClass(StreamingActor), async batch => {
+        effects.push(...batch)
+        first()
+    })
+    let completed = false
+    const invocation = runtime.handle({ type: "invoke", request_id: "stream-1", actor: { ...actorIdentity, actor_type: "StreamingActor" }, method: "stream", args: [], state: null }).then(reply => {
+        completed = true
+        return reply
+    })
+    try {
+        await Promise.race([published, new Promise((_, reject) => setTimeout(() => reject(new Error("output waited for actor completion")), 500))])
+        assert.equal(completed, false)
+        assert.equal(effects.length, 1)
+    } finally {
+        release()
+    }
+    assert.deepEqual(await invocation, { type: "invoked", result: null, state: {} })
+    assert.deepEqual(
+        effects.map(effect => effect.type === "broadcast" && effect.message),
+        [
+            { type: "text", data: "first" },
+            { type: "text", data: "last" }
+        ]
+    )
+})
+
+test("rejecting a connection never publishes live socket effects", async () => {
+    const runtime = new ActorRuntime(rejectingDefinition, async () => {
+        assert.fail("connection effects escaped before acceptance")
+    })
+    const reply = await runtime.handle({
+        type: "websocket_event",
+        request_id: "connect-1",
+        actor: { ...actorIdentity, actor_type: "RejectingRoom" },
+        state: null,
+        connections: [],
+        event: { type: "connect", connection: { id: "socket-1", metadata: {}, tags: [] } }
+    })
+    assert.equal(reply.type, "websocket_handled")
+})
+
+test("batches pending stream output in order and surfaces publish failures", async () => {
+    class BurstActor extends Actor {
+        async stream() {
+            for (let index = 0; index < 10; index++) this.broadcast(String(index))
+        }
+    }
+    const batches: (readonly SocketEffect[])[] = []
+    const definition = registerActorClass(BurstActor)
+    const command = { type: "invoke" as const, request_id: "burst", actor: { ...actorIdentity, actor_type: "BurstActor" }, method: "stream", args: [], state: null }
+    const runtime = new ActorRuntime(definition, async effects => {
+        batches.push(effects)
+    })
+    assert.equal((await runtime.handle(command)).type, "invoked")
+    assert.ok(batches.length <= 2, "queued deltas should not each cost a network round trip")
+    assert.deepEqual(
+        batches.flat().map(effect => effect.type === "broadcast" && effect.message.data),
+        Array.from({ length: 10 }, (_, index) => String(index))
+    )
+    const failing = new ActorRuntime(definition, async () => {
+        throw new Error("publish denied")
+    })
+    const reply = await failing.handle(command)
+    assert.equal(reply.type, "failed")
+    if (reply.type === "failed") assert.match(reply.message, /publish denied/)
+})
 
 test("a resident-only command requests hydration before constructing or executing an actor", async () => {
     const runtime = new ActorRuntime(counterDefinition)

@@ -6,22 +6,37 @@ use std::{
 
 use anyhow::{Context, Result, ensure};
 use async_trait::async_trait;
+use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
+use serde::Serialize;
 use subtle::ConstantTimeEq;
 
 use crate::{actor::ActorScope, postgres::PostgresDatabase};
 
 use super::{ActorJwtIssuer, issuer::IssuedActorToken};
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub(crate) struct HostLaunchSpec {
     pub namespace_id: String,
     pub code_revision: String,
     pub image_ref: String,
     pub working_directory: String,
     pub actor_entrypoint: Option<String>,
+    pub secret_refs: Vec<String>,
+    pub socket_gateway_url: Option<String>,
 }
 
 impl HostLaunchSpec {
+    pub(crate) fn host_revision(&self) -> String {
+        if self.secret_refs.is_empty() {
+            return self.code_revision.clone();
+        }
+        let identity = serde_json::to_vec(&(&self.code_revision, &self.secret_refs))
+            .expect("host identity is serializable");
+        let digest = aws_lc_rs::digest::digest(&aws_lc_rs::digest::SHA256, &identity);
+        format!("cfg.{}", URL_SAFE_NO_PAD.encode(digest.as_ref()))
+    }
+
     pub(crate) fn validate(&self) -> Result<()> {
         ActorScope {
             namespace_id: self.namespace_id.clone(),
@@ -42,6 +57,26 @@ impl HostLaunchSpec {
                 "actor entrypoint must contain between 1 and 1024 bytes"
             );
         }
+        ensure!(
+            self.secret_refs.len() <= 16,
+            "at most 16 secret references are allowed"
+        );
+        for reference in &self.secret_refs {
+            validate_component("secret reference", reference, 255)?;
+        }
+        if let Some(endpoint) = &self.socket_gateway_url {
+            let url = reqwest::Url::parse(endpoint).context("invalid socket gateway URL")?;
+            ensure!(
+                matches!(url.scheme(), "http" | "https")
+                    && url.host_str().is_some()
+                    && url.username().is_empty()
+                    && url.password().is_none()
+                    && url.query().is_none()
+                    && url.fragment().is_none()
+                    && url.path() == "/",
+                "socket gateway URL must be an HTTP(S) origin without credentials"
+            );
+        }
         Ok(())
     }
 }
@@ -51,6 +86,7 @@ pub(crate) trait AdminRegistry: Send + Sync {
     async fn ensure_namespace_and_register_deployment(&self, spec: &HostLaunchSpec)
     -> Result<bool>;
     async fn launch_spec(&self, namespace_id: &str) -> Result<Option<HostLaunchSpec>>;
+    async fn remove_deployment(&self, namespace_id: &str) -> Result<()>;
 }
 
 #[derive(Clone)]
@@ -110,6 +146,10 @@ impl AdminService {
         Ok(self.registry.launch_spec(namespace_id).await?.is_some())
     }
 
+    pub(crate) async fn remove_deployment(&self, namespace_id: &str) -> Result<()> {
+        self.registry.remove_deployment(namespace_id).await
+    }
+
     pub(crate) fn issue_workflow_token(
         &self,
         namespace_id: &str,
@@ -142,6 +182,15 @@ struct LocalAdminState {
 #[cfg(test)]
 #[async_trait]
 impl AdminRegistry for LocalAdminRegistry {
+    async fn remove_deployment(&self, namespace_id: &str) -> Result<()> {
+        self.state
+            .lock()
+            .map_err(|_| anyhow::anyhow!("admin registry lock poisoned"))?
+            .launch_specs
+            .remove(namespace_id);
+        Ok(())
+    }
+
     async fn ensure_namespace_and_register_deployment(
         &self,
         spec: &HostLaunchSpec,
@@ -183,6 +232,17 @@ impl PostgresAdminRegistry {
 
 #[async_trait]
 impl AdminRegistry for PostgresAdminRegistry {
+    async fn remove_deployment(&self, namespace_id: &str) -> Result<()> {
+        validate_namespace(namespace_id)?;
+        self.database
+            .execute(
+                "DELETE FROM durable_object_project_specs WHERE namespace_id = $1",
+                &[&namespace_id],
+            )
+            .await?;
+        Ok(())
+    }
+
     async fn ensure_namespace_and_register_deployment(
         &self,
         spec: &HostLaunchSpec,
@@ -197,25 +257,29 @@ impl AdminRegistry for PostgresAdminRegistry {
                    RETURNING namespace_id \
                  ) \
                  INSERT INTO durable_object_project_specs \
-                   (namespace_id, code_revision, image_ref, working_directory, actor_entrypoint) \
-                 SELECT namespace_id, $2, $3, $4, $5 FROM ensured_namespace \
+                   (namespace_id, code_revision, image_ref, working_directory, actor_entrypoint, secret_refs, socket_gateway_url) \
+                 SELECT namespace_id, $2, $3, $4, $5, $6, $7 FROM ensured_namespace \
                  ON CONFLICT (namespace_id) DO UPDATE SET \
                    code_revision = EXCLUDED.code_revision, image_ref = EXCLUDED.image_ref, \
                    working_directory = EXCLUDED.working_directory, actor_entrypoint = EXCLUDED.actor_entrypoint, \
+                   secret_refs = EXCLUDED.secret_refs, socket_gateway_url = EXCLUDED.socket_gateway_url, \
                    updated_at = clock_timestamp() \
                  WHERE (durable_object_project_specs.code_revision, \
                         durable_object_project_specs.image_ref, \
                         durable_object_project_specs.working_directory, \
-                        durable_object_project_specs.actor_entrypoint) \
+                        durable_object_project_specs.actor_entrypoint, \
+                        durable_object_project_specs.secret_refs, durable_object_project_specs.socket_gateway_url) \
                        IS DISTINCT FROM \
                        (EXCLUDED.code_revision, EXCLUDED.image_ref, \
-                        EXCLUDED.working_directory, EXCLUDED.actor_entrypoint)",
+                        EXCLUDED.working_directory, EXCLUDED.actor_entrypoint, EXCLUDED.secret_refs, EXCLUDED.socket_gateway_url)",
                 &[
                     &spec.namespace_id,
                     &spec.code_revision,
                     &spec.image_ref,
                     &spec.working_directory,
                     &spec.actor_entrypoint,
+                    &spec.secret_refs,
+                    &spec.socket_gateway_url,
                 ],
             )
             .await
@@ -228,7 +292,7 @@ impl AdminRegistry for PostgresAdminRegistry {
         Ok(self
             .database
             .query_opt(
-                "SELECT code_revision, image_ref, working_directory, actor_entrypoint \
+                "SELECT code_revision, image_ref, working_directory, actor_entrypoint, secret_refs, socket_gateway_url \
                  FROM durable_object_project_specs WHERE namespace_id = $1",
                 &[&namespace_id],
             )
@@ -240,6 +304,8 @@ impl AdminRegistry for PostgresAdminRegistry {
                 image_ref: row.get(1),
                 working_directory: row.get(2),
                 actor_entrypoint: row.get(3),
+                secret_refs: row.get(4),
+                socket_gateway_url: row.get(5),
             }))
     }
 }
@@ -269,6 +335,46 @@ fn validate_component(name: &str, value: &str, maximum: usize) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn secret_changes_get_a_new_host_revision_without_changing_the_image_revision() {
+        let mut deployment = spec("image-1");
+        let initial = deployment.host_revision();
+        deployment.secret_refs = vec!["secrets-first".into()];
+        let first = deployment.host_revision();
+        assert_ne!(initial, first);
+        deployment.secret_refs = vec!["secrets-second".into()];
+        assert_ne!(first, deployment.host_revision());
+        assert_eq!(deployment.code_revision, "revision-1");
+        deployment.secret_refs.clear();
+        assert_eq!(initial, deployment.host_revision());
+    }
+
+    #[tokio::test]
+    async fn deployment_retains_secret_references_and_gateway_address() -> Result<()> {
+        let registry = LocalAdminRegistry::default();
+        let mut deployment = spec("im-1");
+        deployment.secret_refs = vec!["project-secrets".into()];
+        deployment.socket_gateway_url = Some("https://sockets.example".into());
+        assert!(
+            registry
+                .ensure_namespace_and_register_deployment(&deployment)
+                .await?
+        );
+        assert_eq!(
+            registry.launch_spec(&deployment.namespace_id).await?,
+            Some(deployment.clone())
+        );
+        deployment.secret_refs = vec!["replacement-secrets".into()];
+        assert!(
+            registry
+                .ensure_namespace_and_register_deployment(&deployment)
+                .await?
+        );
+        deployment.socket_gateway_url = Some("https://user:password@sockets.example".into());
+        assert!(deployment.validate().is_err());
+        Ok(())
+    }
 
     #[tokio::test]
     async fn registration_replaces_the_projects_active_revision() -> Result<()> {
@@ -311,6 +417,8 @@ mod tests {
         let registry = PostgresAdminRegistry::from_database(database.clone());
         let mut deployment = spec("image-1");
         deployment.namespace_id = format!("project-{}", uuid::Uuid::new_v4());
+        deployment.secret_refs = vec!["project-secrets".into()];
+        deployment.socket_gateway_url = Some("https://sockets.example".into());
 
         assert!(
             registry
@@ -329,6 +437,9 @@ mod tests {
             .await?
             .get::<_, bool>(0);
         assert!(namespace_exists);
+        registry.remove_deployment(&deployment.namespace_id).await?;
+        assert_eq!(registry.launch_spec(&deployment.namespace_id).await?, None);
+        registry.remove_deployment(&deployment.namespace_id).await?;
         Ok(())
     }
 
@@ -339,6 +450,8 @@ mod tests {
             image_ref: image.into(),
             working_directory: "/workspace".into(),
             actor_entrypoint: Some("src/durable-objects.ts".into()),
+            secret_refs: vec![],
+            socket_gateway_url: None,
         }
     }
 }

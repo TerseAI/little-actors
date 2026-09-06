@@ -97,7 +97,8 @@ const evictCommandSchema = z.object({
 const executorCommandSchema = z.discriminatedUnion("type", [invokeCommandSchema, websocketEventCommandSchema, evictCommandSchema])
 
 const actorSessionServerMessageSchema = z.discriminatedUnion("type", [
-    z.object({ type: z.literal("attached"), protocol: z.literal(13) }),
+    z.object({ type: z.literal("attached"), protocol: z.literal(14) }),
+    z.object({ type: z.literal("socket_effects_published"), message_id: z.number().int().nonnegative(), error: z.string().optional() }),
     z.object({
         type: z.literal("command"),
         message_id: z.number().int().nonnegative(),
@@ -178,11 +179,11 @@ type EvictCommand = z.infer<typeof evictCommandSchema>
 type ActorExecutorCommand = z.infer<typeof executorCommandSchema>
 type ActorSessionServerMessage = z.infer<typeof actorSessionServerMessageSchema>
 type ActorExecutorReply = InvokedReply | WebSocketHandledReply | FailedReply | EvictedReply | { readonly type: "state_required" }
-type ActorSessionClientMessage = AttachMessage | ReplyMessage
+type ActorSessionClientMessage = AttachMessage | ReplyMessage | { readonly type: "socket_effects"; readonly message_id: number; readonly effects: readonly SocketEffect[] }
 
 interface AttachMessage {
     readonly type: "attach"
-    readonly protocol: 13
+    readonly protocol: 14
     readonly actor_types: readonly string[]
 }
 
@@ -219,8 +220,8 @@ interface ActorWorkerData {
     readonly moduleUrl: string
 }
 
-type ActorWorkerRequest = { readonly type: "execute"; readonly command: InvokeCommand | WebSocketEventCommand }
-type ActorWorkerMessage = { readonly type: "ready"; readonly actorTypes: readonly string[] } | ActorExecutorReply
+type ActorWorkerRequest = { readonly type: "execute"; readonly command: InvokeCommand | WebSocketEventCommand } | { readonly type: "socket_effects_published"; readonly error?: string }
+type ActorWorkerMessage = { readonly type: "ready"; readonly actorTypes: readonly string[] } | ActorExecutorReply | { readonly type: "socket_effects"; readonly effects: readonly SocketEffect[] }
 
 type SocketConnection = z.infer<typeof socketConnectionSchema>
 type SocketMessage = z.infer<typeof socketMessageSchema>

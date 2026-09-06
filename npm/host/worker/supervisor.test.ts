@@ -5,6 +5,7 @@ import path from "node:path"
 import { test } from "node:test"
 import { fileURLToPath, pathToFileURL } from "node:url"
 
+import type { SocketEffect } from "../../shared/types.js"
 import { loadActorEntrypoint } from "../actorModule.js"
 
 import { ActorWorkerSupervisor } from "./supervisor.js"
@@ -254,21 +255,29 @@ async function exerciseSocketHibernation(entrypoint: string): Promise<void> {
         }
     )
     await new Promise(resolve => setTimeout(resolve, 30))
+    const published: SocketEffect[] = []
     assert.deepEqual(
-        await runtime.handle({
-            type: "websocket_event",
-            request_id: "socket-request-2",
-            actor: actorIdentity,
-            event: { type: "message", connection_id: "socket-1", message: { type: "text", data: "hello" } },
-            connections: [connection],
-            state: { count: 1 }
-        }),
+        await runtime.handle(
+            {
+                type: "websocket_event",
+                request_id: "socket-request-2",
+                actor: actorIdentity,
+                event: { type: "message", connection_id: "socket-1", message: { type: "text", data: "hello" } },
+                connections: [connection],
+                state: { count: 1 }
+            },
+            async effects => {
+                published.push(...effects)
+            }
+        ),
         {
             type: "websocket_handled",
             state: { count: 2 },
-            effects: [{ type: "send", connection_id: "socket-1", message: { type: "text", data: "user-1:hello" } }]
+            effects: []
         }
     )
+    assert.deepEqual(published, [{ type: "send", connection_id: "socket-1", message: { type: "text", data: "user-1:hello" } }])
+    runtime.close()
 }
 
 async function exerciseIdleRecycling(entrypoint: string): Promise<void> {

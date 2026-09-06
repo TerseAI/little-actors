@@ -7,21 +7,23 @@ import (
 )
 
 type ensureRequest struct {
-	NamespaceID           string `json:"namespaceId"`
-	CodeRevision          string `json:"codeRevision"`
-	CanonicalRegion       string `json:"canonicalRegion"`
-	HostID                string `json:"hostId"`
-	SessionID             string `json:"sessionId"`
-	HostToken             string `json:"hostToken"`
-	JWTPublicKeys         string `json:"jwtPublicKeys"`
-	ControlPlaneURL       string `json:"controlPlaneUrl"`
-	JWTIssuer             string `json:"jwtIssuer"`
-	InvocationJWTAudience string `json:"invocationJwtAudience"`
-	ImageRef              string `json:"imageRef"`
-	WorkingDirectory      string `json:"workingDirectory"`
-	ActorEntrypoint       string `json:"actorEntrypoint"`
-	ActorIdleTimeoutMS    int64  `json:"actorIdleTimeoutMs"`
-	HostIdleTimeoutMS     int64  `json:"hostIdleTimeoutMs"`
+	NamespaceID           string   `json:"namespaceId"`
+	CodeRevision          string   `json:"codeRevision"`
+	CanonicalRegion       string   `json:"canonicalRegion"`
+	HostID                string   `json:"hostId"`
+	SessionID             string   `json:"sessionId"`
+	HostToken             string   `json:"hostToken"`
+	JWTPublicKeys         string   `json:"jwtPublicKeys"`
+	ControlPlaneURL       string   `json:"controlPlaneUrl"`
+	JWTIssuer             string   `json:"jwtIssuer"`
+	InvocationJWTAudience string   `json:"invocationJwtAudience"`
+	ImageRef              string   `json:"imageRef"`
+	WorkingDirectory      string   `json:"workingDirectory"`
+	ActorEntrypoint       string   `json:"actorEntrypoint"`
+	SecretRefs            []string `json:"secretRefs"`
+	SocketGatewayURL      string   `json:"socketGatewayUrl"`
+	ActorIdleTimeoutMS    int64    `json:"actorIdleTimeoutMs"`
+	HostIdleTimeoutMS     int64    `json:"hostIdleTimeoutMs"`
 }
 type imageRequest struct {
 	NamespaceID     string `json:"namespaceId"`
@@ -109,6 +111,9 @@ func hostEnvironment(r ensureRequest) map[string]string {
 	}
 	if r.ActorEntrypoint != "" {
 		env["DURABLE_OBJECT_ENTRYPOINT"] = r.ActorEntrypoint
+	}
+	if r.SocketGatewayURL != "" {
+		env["DURABLE_OBJECT_SOCKET_GATEWAY_URL"] = r.SocketGatewayURL
 	}
 	return env
 }

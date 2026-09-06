@@ -91,6 +91,22 @@ async fn apply_effects(
         actor_id,
     };
     actor.validate().map_err(SocketApiError::bad_request)?;
+    let authorization = headers
+        .get(header::AUTHORIZATION)
+        .and_then(|value| value.to_str().ok())
+        .ok_or_else(|| SocketApiError::unauthorized("authorization is required"))?;
+    let principal = state
+        .service
+        .authenticate_workflow(authorization)
+        .map_err(|_| SocketApiError::unauthorized("invalid socket publisher"))?;
+    if principal.process_role == crate::host::ActorProcessRole::Host {
+        state
+            .service
+            .publish_socket_effects(&principal, actor, request.effects)
+            .await
+            .map_err(|_| SocketApiError::forbidden("host cannot publish for this actor"))?;
+        return Ok(StatusCode::NO_CONTENT);
+    }
     authorize_workflow(&state, &headers, &actor)?;
     validate_socket_effects(&request.effects).map_err(SocketApiError::bad_request)?;
     state.registry.apply(&actor, request.effects).await;
@@ -219,21 +235,23 @@ async fn run_connection(mut socket: WebSocket, state: SocketServerState, access:
             inbound = socket.recv() => {
                 match inbound {
                     Some(Ok(Message::Text(data))) => {
-                        if !dispatch(&state, &actor, &principal, ActorSocketEvent::Message {
+                        match run_handler_with_output(&mut socket, &mut outbound_rx, dispatch(&state, &actor, &principal, ActorSocketEvent::Message {
                             connection_id: connection.id.clone(),
                             message: ActorSocketMessage::Text { data: data.to_string() },
-                        }, true).await {
-                            disconnect = (1011, "actor socket handler failed".into(), false);
-                            break;
+                        }, true)).await {
+                            Ok(true) => {},
+                            Ok(false) => { disconnect = (1011, "actor socket handler failed".into(), false); break; },
+                            Err(closed) => { disconnect = closed; break; },
                         }
                     }
                     Some(Ok(Message::Binary(data))) => {
-                        if !dispatch(&state, &actor, &principal, ActorSocketEvent::Message {
+                        match run_handler_with_output(&mut socket, &mut outbound_rx, dispatch(&state, &actor, &principal, ActorSocketEvent::Message {
                             connection_id: connection.id.clone(),
                             message: ActorSocketMessage::Binary { data: STANDARD.encode(data) },
-                        }, true).await {
-                            disconnect = (1011, "actor socket handler failed".into(), false);
-                            break;
+                        }, true)).await {
+                            Ok(true) => {},
+                            Ok(false) => { disconnect = (1011, "actor socket handler failed".into(), false); break; },
+                            Err(closed) => { disconnect = closed; break; },
                         }
                     }
                     Some(Ok(Message::Ping(data))) => {
@@ -248,20 +266,9 @@ async fn run_connection(mut socket: WebSocket, state: SocketServerState, access:
                 }
             }
             outbound = outbound_rx.recv() => {
-                match outbound {
-                    Some(OutboundMessage::Message(message)) => {
-                        let Some(message) = websocket_message(message) else {
-                            disconnect = (1011, "actor produced an invalid socket message".into(), false);
-                            break;
-                        };
-                        if socket.send(message).await.is_err() { break; }
-                    }
-                    Some(OutboundMessage::Close { code, reason }) => {
-                        disconnect = (code, reason.clone(), true);
-                        let _ = close_socket(&mut socket, code, &reason).await;
-                        break;
-                    }
-                    None => break,
+                if let Err(closed) = send_outbound(&mut socket, outbound).await {
+                    disconnect = closed;
+                    break;
                 }
             }
         }
@@ -281,6 +288,48 @@ async fn run_connection(mut socket: WebSocket, state: SocketServerState, access:
     )
     .await;
     state.registry.remove(&actor, &connection.id).await;
+}
+
+type SocketDisconnect = (u16, String, bool);
+
+async fn run_handler_with_output(
+    socket: &mut WebSocket,
+    outbound: &mut mpsc::UnboundedReceiver<OutboundMessage>,
+    handler: impl std::future::Future<Output = bool>,
+) -> Result<bool, SocketDisconnect> {
+    tokio::pin!(handler);
+    loop {
+        tokio::select! {
+            result = &mut handler => return Ok(result),
+            message = outbound.recv() => send_outbound(socket, message).await?,
+        }
+    }
+}
+
+async fn send_outbound(
+    socket: &mut WebSocket,
+    message: Option<OutboundMessage>,
+) -> Result<(), SocketDisconnect> {
+    match message {
+        Some(OutboundMessage::Message(message)) => {
+            let message = websocket_message(message).ok_or_else(|| {
+                (
+                    1011,
+                    "actor produced an invalid socket message".into(),
+                    false,
+                )
+            })?;
+            socket
+                .send(message)
+                .await
+                .map_err(|_| (1006, String::new(), false))
+        }
+        Some(OutboundMessage::Close { code, reason }) => {
+            let _ = close_socket(socket, code, &reason).await;
+            Err((code, reason, true))
+        }
+        None => Err((1006, String::new(), false)),
+    }
 }
 
 async fn dispatch(
@@ -444,7 +493,7 @@ impl SocketRegistry {
         }
     }
 
-    async fn apply(&self, actor: &ActorKey, effects: Vec<ActorSocketEffect>) {
+    pub(super) async fn apply(&self, actor: &ActorKey, effects: Vec<ActorSocketEffect>) {
         for effect in effects {
             self.apply_one(actor, effect).await;
         }
@@ -710,6 +759,47 @@ mod tests {
     use serde_json::json;
 
     use super::*;
+
+    #[tokio::test]
+    async fn socket_writer_runs_while_actor_handler_is_pending() -> anyhow::Result<()> {
+        use futures_util::StreamExt;
+        let (release, waiting) = tokio::sync::oneshot::channel::<()>();
+        let waiting = Arc::new(std::sync::Mutex::new(Some(waiting)));
+        let app = Router::new().route(
+            "/",
+            get(move |upgrade: WebSocketUpgrade| {
+                let waiting = waiting.lock().unwrap().take().unwrap();
+                async move {
+                    upgrade.on_upgrade(move |mut socket| async move {
+                        let (outbound, mut incoming) = mpsc::unbounded_channel();
+                        outbound
+                            .send(OutboundMessage::Message(ActorSocketMessage::Text {
+                                data: "before-return".into(),
+                            }))
+                            .unwrap();
+                        let result = run_handler_with_output(&mut socket, &mut incoming, async {
+                            waiting.await.unwrap();
+                            true
+                        })
+                        .await;
+                        assert!(matches!(result, Ok(true)));
+                    })
+                }
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+        let address = listener.local_addr()?;
+        let server = tokio::spawn(async move { axum::serve(listener, app).await });
+        let (mut socket, _) = tokio_tungstenite::connect_async(format!("ws://{address}/")).await?;
+        let message = tokio::time::timeout(std::time::Duration::from_secs(2), socket.next())
+            .await?
+            .unwrap()?;
+        assert_eq!(message.into_text()?, "before-return");
+        release.send(()).unwrap();
+        let _ = socket.next().await;
+        server.abort();
+        Ok(())
+    }
 
     #[test]
     fn external_credentials_support_server_headers_and_browser_protocols() {

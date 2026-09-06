@@ -22,7 +22,7 @@ test("discovers actors only inside the first execution Worker", { timeout: 5_000
         const lines = createInterface({ input: socket })
         lines.once("line", line => {
             assert.deepEqual(JSON.parse(line).actor_types, ["SessionCounter"])
-            socket.write(`${JSON.stringify({ type: "attached", protocol: 13 })}\n`)
+            socket.write(`${JSON.stringify({ type: "attached", protocol: 14 })}\n`)
             socket.end()
         })
     })
@@ -123,10 +123,10 @@ test("the actor session carries only owned execution commands", async t => {
 
         assert.deepEqual(await readMessage(iterator), {
             type: "attach",
-            protocol: 13,
+            protocol: 14,
             actor_types: ["SessionCounter"]
         })
-        customerSocket.write(`${JSON.stringify({ type: "attached", protocol: 13 })}\n`)
+        customerSocket.write(`${JSON.stringify({ type: "attached", protocol: 14 })}\n`)
         await startup
 
         customerSocket.write(
@@ -150,6 +150,34 @@ test("the actor session carries only owned execution commands", async t => {
         assert.deepEqual(await readMessage(iterator), {
             type: "reply",
             message_id: 1,
+            reply: { type: "invoked", result: 4, state: { count: 4 } }
+        })
+
+        customerSocket.write(
+            `${JSON.stringify({
+                type: "command",
+                message_id: 100,
+                command: {
+                    type: "invoke",
+                    request_id: "stream",
+                    actor: { namespace_id: "namespace-1", actor_type: "SessionCounter", actor_id: "counter-1" },
+                    method: "stream",
+                    args: [],
+                    state: { count: 4 }
+                }
+            })}\n`
+        )
+        for (const data of ["first", "last"]) {
+            assert.deepEqual(await readMessage(iterator), {
+                type: "socket_effects",
+                message_id: 100,
+                effects: [{ type: "broadcast", message: { type: "text", data }, except_connection_ids: [], tags: [] }]
+            })
+            customerSocket.write(`${JSON.stringify({ type: "socket_effects_published", message_id: 100 })}\n`)
+        }
+        assert.deepEqual(await readMessage(iterator), {
+            type: "reply",
+            message_id: 100,
             reply: { type: "invoked", result: 4, state: { count: 4 } }
         })
 

@@ -13,6 +13,12 @@ class SessionCounter extends Actor {
         return "x".repeat(bytes)
     }
 
+    async stream(): Promise<number> {
+        this.broadcast("first")
+        this.broadcast("last")
+        return this.count
+    }
+
     async announceThenSpin(): Promise<never> {
         await SessionCounter.get("worker-start-observer").increment(0)
         return this.spinForever()

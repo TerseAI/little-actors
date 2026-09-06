@@ -44,6 +44,7 @@ const FALLBACK_REGION: &str = "north-america-central";
 
 #[derive(Clone)]
 pub struct ControlPlaneService {
+    pub(super) sockets: super::websocket::SocketRegistry,
     leases: Arc<dyn HostLeaseStore>,
     placements: Arc<dyn ObjectPlacementStore>,
     storage_urls: Arc<dyn StorageUrlSigner>,
@@ -68,6 +69,7 @@ impl ControlPlaneService {
         provisioner: Arc<dyn HostProvisioner>,
     ) -> Self {
         Self {
+            sockets: super::websocket::SocketRegistry::default(),
             leases,
             placements,
             storage_urls,
@@ -138,11 +140,26 @@ impl ControlPlaneService {
         spec: &HostLaunchSpec,
     ) -> Result<bool> {
         let previous = admin.current_deployment(&spec.namespace_id).await?;
-        let changed = admin.ensure_namespace_and_register_deployment(spec).await?;
-        if changed && let Some(previous) = previous {
-            self.terminate_deployment_hosts(&previous).await;
+        spec.validate()?;
+        if let Some(previous) = previous
+            && previous != *spec
+        {
+            self.terminate_deployment_hosts(&previous).await?;
         }
-        Ok(changed)
+        admin.ensure_namespace_and_register_deployment(spec).await
+    }
+
+    pub(super) async fn delete_deployment(
+        &self,
+        admin: &AdminService,
+        namespace_id: &str,
+    ) -> Result<bool> {
+        let Some(previous) = admin.current_deployment(namespace_id).await? else {
+            return Ok(false);
+        };
+        self.terminate_deployment_hosts(&previous).await?;
+        admin.remove_deployment(namespace_id).await?;
+        Ok(true)
     }
 
     pub(super) fn warm_deployment_image(&self, spec: HostLaunchSpec, region: String) {
@@ -187,7 +204,7 @@ impl ControlPlaneService {
         });
     }
 
-    async fn terminate_deployment_hosts(&self, spec: &HostLaunchSpec) {
+    async fn terminate_deployment_hosts(&self, spec: &HostLaunchSpec) -> Result<()> {
         let started_at = Instant::now();
         match self
             .provisioner
@@ -204,16 +221,13 @@ impl ControlPlaneService {
                 outcome = "terminated",
                 "replaced deployment hosts terminated"
             ),
-            Err(error) => warn!(
-                event = "actor_hosts_terminated",
-                namespace_id = %spec.namespace_id,
-                code_revision = %spec.code_revision,
-                total_ms = elapsed_ms(started_at),
-                outcome = "failed",
-                error = %format!("{error:#}"),
-                "replaced deployment hosts could not be terminated"
-            ),
+            Err(error) => {
+                return Err(error.context(
+                    "previous actor hosts could not be terminated; retry the deployment update",
+                ));
+            }
         }
+        Ok(())
     }
 
     pub(super) async fn resolve_workflow_target_timed(
@@ -275,7 +289,7 @@ impl ControlPlaneService {
             .try_get_with(target.route.clone(), async {
                 Endpoint::new(target.route.clone())?
                     .connect_timeout(Duration::from_secs(5))
-                    .timeout(super::CONTROL_PLANE_REQUEST_TIMEOUT)
+                    .timeout(Duration::from_secs(24 * 60 * 60))
                     .connect()
                     .await
                     .context("connect to actor host")
@@ -404,7 +418,7 @@ impl ControlPlaneService {
             actor,
             &target.lease.id,
             &target.lease.session_id,
-            &target.spec.code_revision,
+            &target.spec.host_revision(),
             &target.placement.home_region,
             target.placement.owner_epoch,
             target.placement.state_version,
@@ -537,6 +551,34 @@ impl ControlPlaneService {
                 .await
             }
         }
+    }
+
+    pub(super) async fn publish_socket_effects(
+        &self,
+        principal: &ActorPrincipal,
+        actor: ActorKey,
+        effects: Vec<ActorSocketEffect>,
+    ) -> Result<ControlPlaneCommandReply> {
+        actor.validate()?;
+        ensure!(
+            principal.process_role == ActorProcessRole::Host,
+            "socket publisher is not a host"
+        );
+        ensure!(
+            principal.scope.contains(&actor),
+            "actor crossed the host namespace"
+        );
+        crate::actor::validate_socket_effects(&effects)?;
+        self.require_active_host(principal).await?;
+        let placement = self.current_placement(&actor).await?;
+        validate_state_owner(
+            principal,
+            &principal.host_id,
+            placement.owner_epoch,
+            &placement,
+        )?;
+        self.sockets.apply(&actor, effects).await;
+        Ok(ControlPlaneCommandReply::Unit)
     }
 
     async fn register_lease(
@@ -697,7 +739,7 @@ impl ControlPlaneService {
                 timings.placement_loaded_at_ms = Some(timings.elapsed_ms());
             }
             let lease_checked = current.as_ref().is_some_and(|placement| {
-                host_matches_revision(&placement.owner, &spec.namespace_id, &spec.code_revision)
+                host_matches_revision(&placement.owner, &spec.namespace_id, &spec.host_revision())
             });
             let active = self.active_target(&current, &spec).await?;
             if lease_checked && let Some(timings) = timings.as_deref_mut() {
@@ -816,7 +858,7 @@ impl ControlPlaneService {
         let Some(placement) = current else {
             return Ok(None);
         };
-        if !host_matches_revision(&placement.owner, &spec.namespace_id, &spec.code_revision) {
+        if !host_matches_revision(&placement.owner, &spec.namespace_id, &spec.host_revision()) {
             return Ok(None);
         }
         let status = self.leases.lease_status(&placement.owner).await?;
@@ -994,7 +1036,7 @@ impl HostProvisioner for SandboxHostProvisioner {
         self.provider
             .terminate_hosts(&TerminateHostsRequest {
                 namespace_id: spec.namespace_id.clone(),
-                code_revision: spec.code_revision.clone(),
+                code_revision: spec.host_revision(),
                 canonical_regions: regions.to_vec(),
             })
             .await
@@ -1003,26 +1045,21 @@ impl HostProvisioner for SandboxHostProvisioner {
 
 impl SandboxHostProvisioner {
     fn request(&self, spec: &HostLaunchSpec, region: &str) -> Result<EnsureHostRequest> {
+        let revision = spec.host_revision();
         let host_id = HostId::new(format!(
             "host.v1.{}.{}.{}",
             spec.namespace_id,
-            spec.code_revision,
+            revision,
             uuid::Uuid::new_v4()
         ));
         let session_id = uuid::Uuid::new_v4().to_string();
         let host_token = self
             .issuer
-            .issue_host(
-                &spec.namespace_id,
-                &host_id,
-                &session_id,
-                &spec.code_revision,
-                region,
-            )?
+            .issue_host(&spec.namespace_id, &host_id, &session_id, &revision, region)?
             .token;
         Ok(EnsureHostRequest {
             namespace_id: spec.namespace_id.clone(),
-            code_revision: spec.code_revision.clone(),
+            code_revision: revision,
             canonical_region: region.to_owned(),
             host_id,
             session_id,
@@ -1034,6 +1071,11 @@ impl SandboxHostProvisioner {
             image_ref: spec.image_ref.clone(),
             working_directory: spec.working_directory.clone(),
             actor_entrypoint: spec.actor_entrypoint.clone(),
+            secret_refs: spec.secret_refs.clone(),
+            socket_gateway_url: spec
+                .socket_gateway_url
+                .clone()
+                .unwrap_or_else(|| self.runtime.control_plane_url.clone()),
             actor_idle_timeout_ms: self.runtime.actor_idle_timeout_ms,
             host_idle_timeout_ms: self.runtime.host_idle_timeout_ms,
         })
@@ -1127,6 +1169,10 @@ fn internal(error: impl std::fmt::Display) -> Status {
 }
 
 #[cfg(test)]
+#[path = "streaming_tests.rs"]
+mod streaming_tests;
+
+#[cfg(test)]
 mod tests {
     use std::{collections::HashMap, sync::Mutex, time::Duration};
 
@@ -1141,8 +1187,8 @@ mod tests {
     use aws_lc_rs::{rand::SystemRandom, signature::Ed25519KeyPair};
     use base64::{Engine, engine::general_purpose::STANDARD};
 
-    struct FakeLeaseStore {
-        leases: Mutex<HashMap<HostId, HostLease>>,
+    pub(super) struct FakeLeaseStore {
+        pub(super) leases: Mutex<HashMap<HostId, HostLease>>,
     }
 
     struct FakeSocketEventSink {
@@ -1189,7 +1235,7 @@ mod tests {
         }
     }
 
-    struct FakeStorageUrls(&'static [&'static str]);
+    pub(super) struct FakeStorageUrls(pub(super) &'static [&'static str]);
 
     #[async_trait]
     impl StorageUrlSigner for FakeStorageUrls {
@@ -1218,8 +1264,8 @@ mod tests {
         }
     }
 
-    struct FakeWarmProvisioner {
-        warmed: tokio::sync::mpsc::UnboundedSender<(HostLaunchSpec, String)>,
+    pub(super) struct FakeWarmProvisioner {
+        pub(super) warmed: tokio::sync::mpsc::UnboundedSender<(HostLaunchSpec, String)>,
     }
 
     #[async_trait]
@@ -1248,6 +1294,7 @@ mod tests {
 
     struct FakeRetiringProvisioner {
         retired: tokio::sync::mpsc::UnboundedSender<(HostLaunchSpec, Vec<String>)>,
+        fail: std::sync::atomic::AtomicBool,
     }
 
     #[async_trait]
@@ -1266,6 +1313,10 @@ mod tests {
             regions: &[String],
         ) -> Result<HostTermination> {
             self.retired.send((spec.clone(), regions.to_vec()))?;
+            ensure!(
+                !self.fail.load(std::sync::atomic::Ordering::Relaxed),
+                "termination failed"
+            );
             Ok(HostTermination {
                 provider: "test".into(),
                 resource_ids: vec!["sandbox-1".into()],
@@ -1290,6 +1341,10 @@ mod tests {
             issuer.clone(),
         )?;
         let (retired_tx, mut retired_rx) = tokio::sync::mpsc::unbounded_channel();
+        let provisioner = Arc::new(FakeRetiringProvisioner {
+            retired: retired_tx,
+            fail: std::sync::atomic::AtomicBool::new(true),
+        });
         let service = ControlPlaneService::new(
             Arc::new(FakeLeaseStore {
                 leases: Mutex::new(HashMap::new()),
@@ -1299,9 +1354,7 @@ mod tests {
             auth,
             registry,
             issuer,
-            Arc::new(FakeRetiringProvisioner {
-                retired: retired_tx,
-            }),
+            provisioner.clone(),
         );
         let first = HostLaunchSpec {
             namespace_id: "project-1".into(),
@@ -1309,6 +1362,8 @@ mod tests {
             image_ref: "image-1".into(),
             working_directory: "/workspace".into(),
             actor_entrypoint: None,
+            secret_refs: vec![],
+            socket_gateway_url: None,
         };
         let mut replacement = first.clone();
         replacement.code_revision = "revision-2".into();
@@ -1316,12 +1371,60 @@ mod tests {
 
         assert!(service.register_deployment(&admin, &first).await?);
         assert!(retired_rx.try_recv().is_err());
+        assert!(
+            service
+                .register_deployment(&admin, &replacement)
+                .await
+                .is_err()
+        );
+        assert_eq!(
+            admin.current_deployment("project-1").await?,
+            Some(first.clone())
+        );
+        assert_eq!(
+            retired_rx.recv().await,
+            Some((first.clone(), vec!["us-east".into()]))
+        );
+        provisioner
+            .fail
+            .store(false, std::sync::atomic::Ordering::Relaxed);
         assert!(service.register_deployment(&admin, &replacement).await?);
-
         assert_eq!(
             retired_rx.recv().await,
             Some((first, vec!["us-east".into()]))
         );
+        assert_eq!(
+            admin.current_deployment("project-1").await?,
+            Some(replacement.clone())
+        );
+        assert!(!service.register_deployment(&admin, &replacement).await?);
+        assert!(retired_rx.try_recv().is_err());
+        let mut secret_update = replacement.clone();
+        secret_update.secret_refs = vec!["project-secrets-updated".into()];
+        assert!(service.register_deployment(&admin, &secret_update).await?);
+        assert_eq!(
+            retired_rx.recv().await,
+            Some((replacement, vec!["us-east".into()]))
+        );
+        provisioner
+            .fail
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+        assert!(
+            service
+                .delete_deployment(&admin, "project-1")
+                .await
+                .is_err()
+        );
+        assert_eq!(
+            admin.current_deployment("project-1").await?,
+            Some(secret_update)
+        );
+        provisioner
+            .fail
+            .store(false, std::sync::atomic::Ordering::Relaxed);
+        assert!(service.delete_deployment(&admin, "project-1").await?);
+        assert_eq!(admin.current_deployment("project-1").await?, None);
+        assert!(!service.delete_deployment(&admin, "project-1").await?);
         Ok(())
     }
 
@@ -1357,6 +1460,8 @@ mod tests {
             image_ref: "image-1".into(),
             working_directory: "/workspace".into(),
             actor_entrypoint: None,
+            secret_refs: vec![],
+            socket_gateway_url: None,
         };
 
         service.warm_deployment_image(spec.clone(), "us-east".into());
@@ -1755,6 +1860,8 @@ mod tests {
                     image_ref: "image".into(),
                     working_directory: "/app".into(),
                     actor_entrypoint: None,
+                    secret_refs: vec![],
+                    socket_gateway_url: None,
                 })
                 .await?;
             let placements = Arc::new(LocalObjectPlacementStore::default());
@@ -1828,9 +1935,11 @@ mod tests {
                 image_ref: "image-1".into(),
                 working_directory: "/workspace".into(),
                 actor_entrypoint: None,
+                secret_refs: vec![],
+                socket_gateway_url: None,
             })
             .await?;
-        let (retired, _) = tokio::sync::mpsc::unbounded_channel();
+        let (retired, _retired_rx) = tokio::sync::mpsc::unbounded_channel();
         let service = ControlPlaneService::new(
             Arc::new(FakeLeaseStore {
                 leases: Mutex::new(HashMap::new()),
@@ -1840,7 +1949,10 @@ mod tests {
             auth,
             registry,
             issuer,
-            Arc::new(FakeRetiringProvisioner { retired }),
+            Arc::new(FakeRetiringProvisioner {
+                retired,
+                fail: std::sync::atomic::AtomicBool::new(false),
+            }),
         );
         let routes = super::super::public_api::router(service, admin);
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
@@ -1878,11 +1990,52 @@ mod tests {
             .send()
             .await?;
         assert_eq!(old.status(), reqwest::StatusCode::NOT_FOUND);
+        let deployment_url = format!("{origin}/v1/namespaces/project-1/deployment");
+        for method in [reqwest::Method::GET, reqwest::Method::DELETE] {
+            assert_eq!(
+                client
+                    .request(method, &deployment_url)
+                    .send()
+                    .await?
+                    .status(),
+                reqwest::StatusCode::UNAUTHORIZED
+            );
+        }
+        let deployment: serde_json::Value = client
+            .get(&deployment_url)
+            .bearer_auth("api-key")
+            .send()
+            .await?
+            .error_for_status()?
+            .json()
+            .await?;
+        assert_eq!(deployment["codeRevision"], "revision-1");
+        assert_eq!(deployment["secretRefs"], serde_json::json!([]));
+        for changed in [true, false] {
+            let reply: serde_json::Value = client
+                .delete(&deployment_url)
+                .bearer_auth("api-key")
+                .send()
+                .await?
+                .error_for_status()?
+                .json()
+                .await?;
+            assert_eq!(reply["changed"], changed);
+        }
+        let deployment: serde_json::Value = client
+            .get(&deployment_url)
+            .bearer_auth("api-key")
+            .send()
+            .await?
+            .error_for_status()?
+            .json()
+            .await?;
+        assert!(deployment.is_null());
         server.abort();
         Ok(())
     }
 
-    fn test_issuer() -> Result<ActorJwtIssuer> {
+    pub(super) fn test_issuer() -> Result<ActorJwtIssuer> {
         let pkcs8 = Ed25519KeyPair::generate_pkcs8(&SystemRandom::new())?;
         ActorJwtIssuer::from_base64_pkcs8(
             &STANDARD.encode(pkcs8.as_ref()),
