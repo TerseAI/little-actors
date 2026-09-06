@@ -4,7 +4,7 @@ import assert from "node:assert/strict"
 import { test } from "node:test"
 
 import { ModalSandboxProvider } from "./modal.js"
-import type { EnsureHostRequest, PublicHostRouteRequest, TerminateHostsRequest, WarmImageRequest } from "./types.js"
+import type { EnsureHostRequest, TerminateHostsRequest, WarmImageRequest } from "./types.js"
 
 test("terminates every cached host for a replaced deployment revision", async () => {
     const lookedUp: string[] = []
@@ -172,7 +172,6 @@ for (const [canonicalRegion, pool] of [
         assert.equal(createOptions?.timeoutMs, 86_400_000)
         assert.equal(createOptions?.idleTimeoutMs, 300_000)
         assert.deepEqual(createOptions?.regions, [pool])
-        assert.equal(createOptions?.i6pn, undefined)
         assert.deepEqual(createOptions?.h2Ports, [7101])
         assert.ok(createOptions?.readinessProbe)
         assert.equal(createOptions?.command?.[4], "/usr/local/bin/little-durable-objects")
@@ -183,8 +182,6 @@ for (const [canonicalRegion, pool] of [
         assert.equal(createOptions?.env?.DURABLE_OBJECT_ACTOR_IDLE_TIMEOUT_MS, "60000")
         assert.equal(createOptions?.env?.DURABLE_OBJECT_HOST_IDLE_TIMEOUT_MS, "300000")
         assert.equal(createOptions?.env?.DURABLE_OBJECT_HOST_BIND, "0.0.0.0:7101")
-        assert.equal(createOptions?.env?.DURABLE_OBJECT_HOST_PRIVATE_HOSTNAME, undefined)
-        assert.equal(createOptions?.env?.DURABLE_OBJECT_HOST_ROUTE_FILE, undefined)
         assert.equal(createOptions?.env?.DURABLE_OBJECT_HOST_PUBLIC_ROUTE_FILE, "/tmp/durable-object-route")
         assert.equal(createOptions?.env?.DURABLE_OBJECT_HOST_METADATA_FILE, "/tmp/durable-object-host.json")
         assert.equal(createOptions?.env?.MODAL_TOKEN_ID, undefined)
@@ -473,90 +470,6 @@ test("a failed status lookup does not terminate or replace an existing host", as
     assert.equal(creates, 1)
 })
 
-test("private hosts publish metadata locally without provider filesystem writes", async () => {
-    let ready = false
-    let options: SandboxCreateParams | undefined
-    const sandbox = {
-        sandboxId: "sb-private",
-        async waitUntilReady() {
-            ready = true
-        },
-        filesystem: {
-            async readText(path: string) {
-                assert.equal(ready, true)
-                assert.equal(path, "/tmp/durable-object-route")
-                return "http://[fd00::1]:7101\n"
-            },
-            async writeText() {
-                assert.fail("the host owns metadata publication")
-            }
-        }
-    }
-    const client = {
-        apps: {
-            async fromName() {
-                return { name: "durable-object-hosts" }
-            }
-        },
-        images: {
-            async fromId() {
-                return { imageId: "im-actor" }
-            }
-        },
-        sandboxes: {
-            async experimentalCreate(_app: unknown, _image: unknown, params: SandboxCreateParams) {
-                options = params
-                return sandbox
-            },
-            async experimentalFromName() {
-                assert.fail("new hosts need no lookup")
-            }
-        }
-    }
-    const provider = new ModalSandboxProvider({
-        client: client as unknown as ModalClient,
-        catalog: { "north-america-east": { modal: { regions: ["us-east4"], cloud: "gcp", privateNetwork: true } } }
-    })
-
-    const handle = await provider.ensureHost(request())
-
-    assert.equal(handle.route, "http://[fd00::1]:7101")
-    assert.equal(options?.env?.DURABLE_OBJECT_HOST_METADATA_FILE, "/tmp/durable-object-host.json")
-    assert.equal(options?.env?.DURABLE_OBJECT_HOST_ROUTE_FILE, "/tmp/durable-object-route")
-})
-
-test("retrieves the public HTTP/2 route only when requested", async () => {
-    let tunnelLookups = 0
-    const sandbox = {
-        sandboxId: "sb-v2-actor",
-        async poll() {
-            return null
-        },
-        async tunnels() {
-            tunnelLookups += 1
-            return { 7101: { url: "https://host.example.com" } }
-        }
-    }
-    const client = {
-        apps: {
-            async fromName() {
-                return { name: "durable-object-hosts" }
-            }
-        },
-        sandboxes: {
-            async experimentalFromName() {
-                return sandbox
-            }
-        }
-    }
-    const provider = new ModalSandboxProvider({ client: client as unknown as ModalClient })
-
-    const route = await provider.publicHostRoute(publicHostRouteRequest())
-
-    assert.deepEqual(route, { route: "https://host.example.com" })
-    assert.equal(tunnelLookups, 1)
-})
-
 test("surfaces host stderr when the main process exits before readiness", async () => {
     let terminated = false
     const sandbox = {
@@ -638,13 +551,5 @@ function terminateHostsRequest(): TerminateHostsRequest {
         namespaceId: "project-1",
         codeRevision: "revision-1",
         canonicalRegions: ["north-america-east", "north-america-central", "north-america-west"]
-    }
-}
-
-function publicHostRouteRequest(): PublicHostRouteRequest {
-    return {
-        namespaceId: "project-1",
-        codeRevision: "revision-1",
-        canonicalRegion: "north-america-east"
     }
 }

@@ -26,8 +26,7 @@ use crate::{
     },
     sandbox::{
         EnsureHostRequest, HostSandboxRuntimeConfig, HostTermination, ImageWarmup,
-        ProviderCommandFailure, PublicHostRouteRequest, SandboxProvider, TerminateHostsRequest,
-        WarmImageRequest,
+        ProviderCommandFailure, SandboxProvider, TerminateHostsRequest, WarmImageRequest,
     },
     storage_urls::{StateWriteTicket, StorageUrlSigner, validate_snapshot_object_name},
 };
@@ -50,8 +49,7 @@ pub struct ControlPlaneService {
     auth: ActorJwtVerifier,
     host_token_issuer: ActorJwtIssuer,
     registry: Arc<dyn AdminRegistry>,
-    provisioner: Option<Arc<dyn HostProvisioner>>,
-    public_routes: Cache<(HostId, String), String>,
+    provisioner: Arc<dyn HostProvisioner>,
     socket_targets: Cache<(ActorKey, HostId, String, i64), Arc<WorkflowActorTarget>>,
     host_channels: Cache<String, Channel>,
     socket_events: Option<Arc<dyn super::event_sink::SocketMessageEventSink>>,
@@ -66,7 +64,7 @@ impl ControlPlaneService {
         auth: ActorJwtVerifier,
         registry: Arc<dyn AdminRegistry>,
         issuer: ActorJwtIssuer,
-        provisioner: Option<Arc<dyn HostProvisioner>>,
+        provisioner: Arc<dyn HostProvisioner>,
     ) -> Self {
         Self {
             leases,
@@ -76,10 +74,6 @@ impl ControlPlaneService {
             host_token_issuer: issuer,
             registry,
             provisioner,
-            public_routes: Cache::builder()
-                .max_capacity(1024)
-                .time_to_live(Duration::from_secs(60))
-                .build(),
             socket_targets: Cache::builder()
                 .max_capacity(4096)
                 .time_to_live(Duration::from_secs(55))
@@ -151,9 +145,7 @@ impl ControlPlaneService {
     }
 
     pub(super) fn warm_deployment_image(&self, spec: HostLaunchSpec, region: String) {
-        let Some(provisioner) = self.provisioner.clone() else {
-            return;
-        };
+        let provisioner = self.provisioner.clone();
         if !self.storage_urls.regions().contains(&region) {
             warn!(
                 event = "actor_image_warmup",
@@ -195,11 +187,9 @@ impl ControlPlaneService {
     }
 
     async fn terminate_deployment_hosts(&self, spec: &HostLaunchSpec) {
-        let Some(provisioner) = self.provisioner.as_ref() else {
-            return;
-        };
         let started_at = Instant::now();
-        match provisioner
+        match self
+            .provisioner
             .terminate_hosts(spec, &self.storage_urls.regions())
             .await
         {
@@ -225,23 +215,13 @@ impl ControlPlaneService {
         }
     }
 
-    #[cfg(test)]
-    pub(super) async fn resolve_workflow_target(
-        &self,
-        principal: &ActorPrincipal,
-        actor: &ActorKey,
-    ) -> Result<WorkflowActorTarget> {
-        self.resolve_workflow_route(principal, actor, WorkflowRoute::Invocation, None)
-            .await
-    }
-
     pub(super) async fn resolve_workflow_target_timed(
         &self,
         principal: &ActorPrincipal,
         actor: &ActorKey,
         timings: &mut TargetResolutionTimings,
     ) -> Result<WorkflowActorTarget> {
-        self.resolve_workflow_route(principal, actor, WorkflowRoute::Invocation, Some(timings))
+        self.resolve_workflow_route(principal, actor, Some(timings))
             .await
     }
 
@@ -346,7 +326,7 @@ impl ControlPlaneService {
         }
         self.socket_targets
             .try_get_with(key, async {
-                self.resolve_workflow_route(principal, actor, WorkflowRoute::ControlPlane, None)
+                self.resolve_workflow_route(principal, actor, None)
                     .await
                     .map(Arc::new)
             })
@@ -398,7 +378,6 @@ impl ControlPlaneService {
         &self,
         principal: &ActorPrincipal,
         actor: &ActorKey,
-        route_kind: WorkflowRoute,
         mut timings: Option<&mut TargetResolutionTimings>,
     ) -> Result<WorkflowActorTarget> {
         actor.validate()?;
@@ -434,17 +413,7 @@ impl ControlPlaneService {
         if let Some(timings) = timings.as_deref_mut() {
             timings.invocation_token_issued_at_ms = Some(timings.elapsed_ms());
         }
-        let route = match route_kind {
-            WorkflowRoute::Invocation
-                if principal.private_routing
-                    && principal.region == target.placement.home_region =>
-            {
-                target.lease.route.clone()
-            }
-            WorkflowRoute::Invocation | WorkflowRoute::ControlPlane => {
-                self.public_route(&target).await?
-            }
-        };
+        let route = target.lease.route;
         if let Some(timings) = timings {
             timings.route_selected_at_ms = Some(timings.elapsed_ms());
         }
@@ -457,33 +426,6 @@ impl ControlPlaneService {
             expires_at_ms: issued.expires_at_ms,
         })
     }
-
-    fn provisioner(&self) -> Result<&Arc<dyn HostProvisioner>> {
-        self.provisioner
-            .as_ref()
-            .context("sandbox provider is not configured")
-    }
-
-    async fn public_route(&self, target: &RoutedActor) -> Result<String> {
-        if target.lease.route.starts_with("https://") {
-            return Ok(target.lease.route.clone());
-        }
-        let key = (target.lease.id.clone(), target.lease.session_id.clone());
-        self.public_routes
-            .try_get_with(key, async {
-                self.provisioner()?
-                    .public_host_route(&target.spec, &target.placement.home_region)
-                    .await
-            })
-            .await
-            .map_err(|error| anyhow::anyhow!("{error:#}"))
-    }
-}
-
-#[derive(Clone, Copy)]
-enum WorkflowRoute {
-    Invocation,
-    ControlPlane,
 }
 
 pub(super) struct WorkflowActorTarget {
@@ -764,8 +706,7 @@ impl ControlPlaneService {
                 return Ok(target);
             }
             let region = self.target_region(current.as_ref(), storage_region)?;
-            let provisioner = self.provisioner()?;
-            let lease = provisioner.ensure_host(&spec, &region).await?;
+            let lease = self.provisioner.ensure_host(&spec, &region).await?;
             if let Some(timings) = timings.as_deref_mut() {
                 timings.host_ensured_at_ms = Some(timings.elapsed_ms());
             }
@@ -881,7 +822,6 @@ fn select_target_region(
 #[async_trait]
 pub(crate) trait HostProvisioner: Send + Sync {
     async fn ensure_host(&self, spec: &HostLaunchSpec, region: &str) -> Result<HostLease>;
-    async fn public_host_route(&self, spec: &HostLaunchSpec, region: &str) -> Result<String>;
     async fn warm_image(&self, spec: &HostLaunchSpec, region: &str) -> Result<ImageWarmup>;
     async fn terminate_hosts(
         &self,
@@ -974,19 +914,6 @@ impl HostProvisioner for SandboxHostProvisioner {
             "actor host provisioning completed"
         );
         Ok(lease)
-    }
-
-    async fn public_host_route(&self, spec: &HostLaunchSpec, region: &str) -> Result<String> {
-        let response = self
-            .provider
-            .public_host_route(&PublicHostRouteRequest {
-                namespace_id: spec.namespace_id.clone(),
-                code_revision: spec.code_revision.clone(),
-                canonical_region: region.to_owned(),
-            })
-            .await?;
-        validate_host_route(&response.route)?;
-        Ok(response.route)
     }
 
     async fn warm_image(&self, spec: &HostLaunchSpec, region: &str) -> Result<ImageWarmup> {
@@ -1242,10 +1169,6 @@ mod tests {
             anyhow::bail!("host creation is outside this test")
         }
 
-        async fn public_host_route(&self, _spec: &HostLaunchSpec, _region: &str) -> Result<String> {
-            anyhow::bail!("public host routing is outside this test")
-        }
-
         async fn warm_image(&self, spec: &HostLaunchSpec, region: &str) -> Result<ImageWarmup> {
             self.warmed.send((spec.clone(), region.to_owned()))?;
             Ok(ImageWarmup {
@@ -1268,45 +1191,10 @@ mod tests {
         retired: tokio::sync::mpsc::UnboundedSender<(HostLaunchSpec, Vec<String>)>,
     }
 
-    struct FakeRouteProvisioner {
-        routes: Mutex<Vec<(HostLaunchSpec, String)>>,
-    }
-
-    #[async_trait]
-    impl HostProvisioner for FakeRouteProvisioner {
-        async fn ensure_host(&self, _spec: &HostLaunchSpec, _region: &str) -> Result<HostLease> {
-            anyhow::bail!("host creation is outside this test")
-        }
-
-        async fn public_host_route(&self, spec: &HostLaunchSpec, region: &str) -> Result<String> {
-            self.routes
-                .lock()
-                .unwrap()
-                .push((spec.clone(), region.to_owned()));
-            Ok("https://actor.example.com/".into())
-        }
-
-        async fn warm_image(&self, _spec: &HostLaunchSpec, _region: &str) -> Result<ImageWarmup> {
-            anyhow::bail!("image warmup is outside this test")
-        }
-
-        async fn terminate_hosts(
-            &self,
-            _spec: &HostLaunchSpec,
-            _regions: &[String],
-        ) -> Result<HostTermination> {
-            anyhow::bail!("host termination is outside this test")
-        }
-    }
-
     #[async_trait]
     impl HostProvisioner for FakeRetiringProvisioner {
         async fn ensure_host(&self, _spec: &HostLaunchSpec, _region: &str) -> Result<HostLease> {
             anyhow::bail!("host creation is outside this test")
-        }
-
-        async fn public_host_route(&self, _spec: &HostLaunchSpec, _region: &str) -> Result<String> {
-            anyhow::bail!("public host routing is outside this test")
         }
 
         async fn warm_image(&self, _spec: &HostLaunchSpec, _region: &str) -> Result<ImageWarmup> {
@@ -1352,9 +1240,9 @@ mod tests {
             auth,
             registry,
             issuer,
-            Some(Arc::new(FakeRetiringProvisioner {
+            Arc::new(FakeRetiringProvisioner {
                 retired: retired_tx,
-            })),
+            }),
         );
         let first = HostLaunchSpec {
             namespace_id: "project-1".into(),
@@ -1402,7 +1290,7 @@ mod tests {
             auth,
             registry,
             issuer,
-            Some(Arc::new(FakeWarmProvisioner { warmed: warmed_tx })),
+            Arc::new(FakeWarmProvisioner { warmed: warmed_tx }),
         );
         let spec = HostLaunchSpec {
             namespace_id: "project-1".into(),
@@ -1441,7 +1329,9 @@ mod tests {
             auth,
             Arc::new(LocalAdminRegistry::default()),
             issuer,
-            None,
+            Arc::new(FakeWarmProvisioner {
+                warmed: tokio::sync::mpsc::unbounded_channel().0,
+            }),
         )
         .with_socket_event_sink(Some(Arc::new(FakeSocketEventSink {
             delivered: delivered_tx,
@@ -1473,217 +1363,6 @@ mod tests {
         assert_eq!(delivered["connectionId"], "socket-1");
         assert_eq!(delivered["message"]["type"], "text");
         assert_eq!(delivered["message"]["data"], "hello");
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn workflow_target_uses_private_routing_only_for_capable_same_region_callers()
-    -> Result<()> {
-        let issuer = test_issuer()?;
-        let auth = ActorJwtVerifier::for_scope(
-            issuer.verifier_keys_json()?,
-            "issuer",
-            "invocation",
-            ActorTokenPurpose::Invocation,
-            Duration::from_secs(60),
-        )?;
-        let host_id = HostId::new("host.v1.project-1.revision-1.host-1");
-        let leases = Arc::new(FakeLeaseStore {
-            leases: Mutex::new(HashMap::from([(
-                host_id.clone(),
-                HostLease {
-                    id: host_id.clone(),
-                    session_id: "00000000-0000-4000-8000-000000000001".into(),
-                    route: "http://[fd00:cafe::1234]:7101/".into(),
-                    expires_at_ms: 10_000,
-                },
-            )])),
-        });
-        let placements = Arc::new(LocalObjectPlacementStore::default());
-        let registry = Arc::new(LocalAdminRegistry::default());
-        let actor = ActorKey {
-            namespace_id: "project-1".into(),
-            actor_type: "Counter".into(),
-            actor_id: "counter-1".into(),
-        };
-        registry
-            .ensure_namespace_and_register_deployment(&HostLaunchSpec {
-                namespace_id: "project-1".into(),
-                code_revision: "revision-1".into(),
-                image_ref: "image-1".into(),
-                working_directory: "/workspace".into(),
-                actor_entrypoint: None,
-            })
-            .await?;
-        placements
-            .claim(&actor.storage_key(), None, &host_id, "us-east")
-            .await?;
-        let provisioner = Arc::new(FakeRouteProvisioner {
-            routes: Mutex::new(Vec::new()),
-        });
-        let service = ControlPlaneService::new(
-            leases,
-            placements,
-            Arc::new(FakeStorageUrls),
-            auth,
-            registry,
-            issuer.clone(),
-            Some(provisioner.clone()),
-        );
-
-        let target = service
-            .resolve_workflow_target(
-                &ActorPrincipal {
-                    scope: ActorScope {
-                        namespace_id: "project-1".into(),
-                    },
-                    host_id: HostId::new("workflow.v1.project-1.execution-1"),
-                    session_id: uuid::Uuid::new_v4().to_string(),
-                    process_role: ActorProcessRole::Workflow,
-                    region: "us-east".into(),
-                    private_routing: true,
-                    code_revision: None,
-                    expires_at: unix_seconds()? + 30,
-                    invocation: None,
-                },
-                &actor,
-            )
-            .await?;
-
-        assert_eq!(target.route, "http://[fd00:cafe::1234]:7101/");
-        assert!(provisioner.routes.lock().unwrap().is_empty());
-        assert_eq!(target.owner_epoch, 1);
-        assert_eq!(target.state_version, 0);
-        assert!(target.state_read_url.is_empty());
-        let verifier = ActorJwtVerifier::for_scope(
-            issuer.verifier_keys_json()?,
-            "issuer",
-            "invocation",
-            ActorTokenPurpose::Invocation,
-            Duration::from_secs(60),
-        )?;
-        let principal = verifier.authenticate_authorization(&format!("Bearer {}", target.token))?;
-        assert_eq!(
-            principal
-                .invocation
-                .expect("direct invocation capability")
-                .actor,
-            actor
-        );
-
-        let local_target = service
-            .resolve_workflow_target(
-                &ActorPrincipal {
-                    scope: ActorScope {
-                        namespace_id: "project-1".into(),
-                    },
-                    host_id: HostId::new("workflow.v1.project-1.execution-local"),
-                    session_id: uuid::Uuid::new_v4().to_string(),
-                    process_role: ActorProcessRole::Workflow,
-                    region: "us-east".into(),
-                    private_routing: false,
-                    code_revision: None,
-                    expires_at: unix_seconds()? + 30,
-                    invocation: None,
-                },
-                &actor,
-            )
-            .await?;
-
-        assert_eq!(local_target.route, "https://actor.example.com/");
-
-        let cross_region_target = service
-            .resolve_workflow_target(
-                &ActorPrincipal {
-                    scope: ActorScope {
-                        namespace_id: "project-1".into(),
-                    },
-                    host_id: HostId::new("workflow.v1.project-1.execution-2"),
-                    session_id: uuid::Uuid::new_v4().to_string(),
-                    process_role: ActorProcessRole::Workflow,
-                    region: "us-west".into(),
-                    private_routing: true,
-                    code_revision: None,
-                    expires_at: unix_seconds()? + 30,
-                    invocation: None,
-                },
-                &actor,
-            )
-            .await?;
-
-        assert_eq!(cross_region_target.route, "https://actor.example.com/");
-        let principal = ActorPrincipal {
-            scope: ActorScope {
-                namespace_id: "project-1".into(),
-            },
-            host_id: HostId::new("workflow.v1.project-1.socket-test"),
-            session_id: uuid::Uuid::new_v4().to_string(),
-            process_role: ActorProcessRole::Workflow,
-            region: "us-east".into(),
-            private_routing: false,
-            code_revision: None,
-            expires_at: unix_seconds()? + 30,
-            invocation: None,
-        };
-        let first = service.socket_target(&principal, &actor).await?;
-        let second = service.socket_target(&principal, &actor).await?;
-        assert!(Arc::ptr_eq(&first, &second));
-        let cached_key = (
-            actor.clone(),
-            principal.host_id.clone(),
-            principal.session_id.clone(),
-            principal.expires_at,
-        );
-        service
-            .socket_targets
-            .insert(
-                cached_key,
-                Arc::new(WorkflowActorTarget {
-                    route: first.route.clone(),
-                    token: first.token.clone(),
-                    owner_epoch: first.owner_epoch,
-                    state_version: first.state_version,
-                    state_read_url: first.state_read_url.clone(),
-                    expires_at_ms: (unix_seconds()? + 4) * 1000,
-                }),
-            )
-            .await;
-        let refreshed = service.socket_target(&principal, &actor).await?;
-        assert!(refreshed.expires_at_ms > (unix_seconds()? + 5) * 1000);
-        let mut shorter = principal.clone();
-        shorter.expires_at -= 10;
-        let shorter_target = service.socket_target(&shorter, &actor).await?;
-        assert!(shorter_target.expires_at_ms <= shorter.expires_at * 1000);
-        let mut other_session = principal.clone();
-        other_session.session_id = uuid::Uuid::new_v4().to_string();
-        assert!(!Arc::ptr_eq(
-            &first,
-            &service.socket_target(&other_session, &actor).await?
-        ));
-        let mut expired = principal.clone();
-        expired.expires_at = unix_seconds()?;
-        assert!(service.socket_target(&expired, &actor).await.is_err());
-        assert_eq!(
-            provisioner.routes.lock().unwrap().as_slice(),
-            &[(
-                HostLaunchSpec {
-                    namespace_id: "project-1".into(),
-                    code_revision: "revision-1".into(),
-                    image_ref: "image-1".into(),
-                    working_directory: "/workspace".into(),
-                    actor_entrypoint: None,
-                },
-                "us-east".into()
-            )]
-        );
-        let mut routed = service.route_actor(&actor, "us-east", None).await?;
-        routed.lease.route = "https://already-public.example.com/".into();
-        assert_eq!(service.public_route(&routed).await?, routed.lease.route);
-        assert_eq!(provisioner.routes.lock().unwrap().len(), 1);
-        routed.lease.route = "http://[fd00:cafe::5678]:7101/".into();
-        routed.lease.session_id = uuid::Uuid::new_v4().to_string();
-        service.public_route(&routed).await?;
-        assert_eq!(provisioner.routes.lock().unwrap().len(), 2);
         Ok(())
     }
 
@@ -1772,7 +1451,9 @@ mod tests {
             auth,
             Arc::new(LocalAdminRegistry::default()),
             issuer,
-            None,
+            Arc::new(FakeWarmProvisioner {
+                warmed: tokio::sync::mpsc::unbounded_channel().0,
+            }),
         );
         let actor = ActorKey {
             namespace_id: "project-1".into(),
@@ -1787,7 +1468,6 @@ mod tests {
             session_id: uuid::Uuid::new_v4().to_string(),
             process_role: ActorProcessRole::Workflow,
             region: "us-east".into(),
-            private_routing: false,
             code_revision: None,
             expires_at: unix_seconds()? + 60,
             invocation: None,

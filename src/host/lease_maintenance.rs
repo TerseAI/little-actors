@@ -1,10 +1,4 @@
-use std::{
-    sync::{
-        Arc,
-        atomic::{AtomicU64, Ordering},
-    },
-    time::Duration,
-};
+use std::{sync::Arc, time::Duration};
 
 use anyhow::{Result, ensure};
 use tokio::{sync::watch, task::JoinHandle, time::Instant};
@@ -27,7 +21,6 @@ pub(crate) struct HostLeaseMaintainer {
     clock: Arc<dyn Clock>,
     lease_duration_ms: u64,
     renew_every: Duration,
-    consecutive_failures: AtomicU64,
 }
 
 impl HostLeaseMaintainer {
@@ -61,7 +54,6 @@ impl HostLeaseMaintainer {
             clock,
             lease_duration_ms,
             renew_every,
-            consecutive_failures: AtomicU64::new(0),
         })
     }
 
@@ -169,11 +161,6 @@ impl HostLeaseMaintainer {
                         error = %format!("{error:#}"),
                         "host lease renewal failed; ownership checks will self-fence after expiry"
                     );
-                    let _ = self.consecutive_failures.fetch_update(
-                        Ordering::Relaxed,
-                        Ordering::Relaxed,
-                        |failures| Some(failures.saturating_add(1)),
-                    );
                     local_deadline
                 }
             }),
@@ -197,7 +184,6 @@ impl HostLeaseMaintainer {
         };
 
         let lease = self.store.register(&request).await?;
-        self.consecutive_failures.store(0, Ordering::Relaxed);
         debug!(
             host_id = %lease.id,
             route = %lease.route,
@@ -426,7 +412,6 @@ mod tests {
                 .expires_at_ms,
             2_500
         );
-        assert_eq!(manager.consecutive_failures.load(Ordering::Relaxed), 0);
 
         renewal.shutdown().await?;
         let calls_after_shutdown = store.calls.load(Ordering::SeqCst);

@@ -1,3 +1,11 @@
+FROM golang:1.27.1-bookworm AS modal-builder
+
+WORKDIR /build
+COPY providers/modal-go/go.mod providers/modal-go/go.sum ./
+RUN go mod download
+COPY providers/modal-go/ ./
+RUN CGO_ENABLED=0 go build -mod=readonly -trimpath -ldflags="-s -w" -o /out/little-durable-objects-modal-go .
+
 FROM rust:1.89.0-bookworm AS builder
 
 WORKDIR /build
@@ -15,6 +23,8 @@ RUN apt-get update -qq \
     && rm -rf /var/lib/apt/lists/*
 
 COPY --from=builder /build/target/release/little-durable-objects /usr/local/bin/little-durable-objects
+COPY --from=modal-builder /out/little-durable-objects-modal-go /usr/local/bin/little-durable-objects-modal-go
 
 ENV RUST_LOG=warn,little_durable_objects=info
+ENV DURABLE_OBJECT_SANDBOX_COMMAND=little-durable-objects-modal-go
 ENTRYPOINT ["/usr/local/bin/little-durable-objects"]

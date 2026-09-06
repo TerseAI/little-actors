@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use tonic::{Request, Response, Status};
-use tracing::{error, warn};
+use tracing::warn;
 
 use super::proto::{
     HostInvokeActorRequest, HostSocketEventRequest, InvokeActorReply,
@@ -45,7 +45,7 @@ impl ActorHostService for ActorHostGrpcService {
         request: Request<HostInvokeActorRequest>,
     ) -> Result<Response<InvokeActorReply>, Status> {
         let invocation = self.authorize_invocation(request).await?;
-        self.invoke_detached(invocation).await
+        self.invoke_authorized(invocation).await
     }
 
     async fn handle_socket(
@@ -107,48 +107,33 @@ impl ActorHostGrpcService {
         })
     }
 
-    async fn invoke_detached(
+    async fn invoke_authorized(
         &self,
         request: AuthorizedHostInvocation,
     ) -> Result<Response<InvokeActorReply>, Status> {
-        // The task is deliberately detached so a disconnected caller never
-        // cancels an accepted actor method or releases its actor gate early.
-        let host = self.host.clone();
         let request_id = request.invocation.request_id.clone();
-        let task_request_id = request_id.clone();
-        let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
-        tokio::spawn(async move {
-            let result = match host
-                .invoke_actor(
-                    request.invocation,
-                    request.owner_epoch,
-                    request.state_version,
-                    request.state_read_url,
-                )
-                .await
-            {
-                Ok(result) => result,
-                Err(error) => {
-                    warn!(request_id = task_request_id, error = %format!("{error:#}"), "actor invocation failed before execution");
-                    ActorExecutionResult::Failed {
-                        failure: ActorInvocationFailure {
-                            code: "unavailable".into(),
-                            message: "actor could not start because its state was unavailable"
-                                .into(),
-                        },
-                    }
-                }
-            };
-            let _ = reply_tx.send(InvokeActorReply::from(result));
-        });
-
-        match reply_rx.await {
-            Ok(reply) => Ok(Response::new(reply)),
+        let result = match self
+            .host
+            .invoke_actor(
+                request.invocation,
+                request.owner_epoch,
+                request.state_version,
+                request.state_read_url,
+            )
+            .await
+        {
+            Ok(result) => result,
             Err(error) => {
-                error!(request_id, error = %error, "actor invocation task stopped without a reply");
-                Err(Status::internal("actor invocation task stopped"))
+                warn!(request_id, error = %format!("{error:#}"), "actor invocation failed before execution");
+                ActorExecutionResult::Failed {
+                    failure: ActorInvocationFailure {
+                        code: "unavailable".into(),
+                        message: "actor could not start because its state was unavailable".into(),
+                    },
+                }
             }
-        }
+        };
+        Ok(Response::new(InvokeActorReply::from(result)))
     }
 }
 
@@ -220,7 +205,6 @@ mod tests {
             session_id: "00000000-0000-4000-8000-000000000001".into(),
             process_role: ActorProcessRole::Host,
             region: "north-america-east".into(),
-            private_routing: false,
             code_revision: Some("revision-1".into()),
             expires_at: i64::MAX,
             invocation: Some(ActorInvocationCapability {

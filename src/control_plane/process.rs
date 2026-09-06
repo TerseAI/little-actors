@@ -31,7 +31,7 @@ pub struct ControlPlaneProcessConfig {
     pub jwt_max_lifetime: Duration,
     pub admin_token: String,
     pub storage: ControlPlaneStorageConfig,
-    pub sandbox_provider: Option<SandboxProviderConfig>,
+    pub sandbox_provider: SandboxProviderConfig,
     pub socket_event_sink: Option<SocketEventSinkConfig>,
     pub socket_authenticator: Option<SocketAuthenticatorConfig>,
 }
@@ -142,27 +142,21 @@ async fn control_plane_routes(config: ControlPlaneProcessConfig) -> Result<tonic
 }
 
 fn sandbox_provisioner(
-    config: Option<SandboxProviderConfig>,
+    config: SandboxProviderConfig,
     issuer: &super::ActorJwtIssuer,
     leases: &Arc<PostgresHostLeaseStore>,
-) -> Result<Option<Arc<dyn super::service::HostProvisioner>>> {
-    config
-        .map(
-            |config| -> Result<Arc<dyn super::service::HostProvisioner>> {
-                let provider = Arc::new(CommandSandboxProvider::new(
-                    config.provider_name,
-                    config.command,
-                    config.environment,
-                )?);
-                Ok(Arc::new(super::service::SandboxHostProvisioner::new(
-                    provider,
-                    config.runtime,
-                    issuer.clone(),
-                    leases.clone(),
-                )))
-            },
-        )
-        .transpose()
+) -> Result<Arc<dyn super::service::HostProvisioner>> {
+    let provider = Arc::new(CommandSandboxProvider::new(
+        config.provider_name,
+        config.command,
+        config.environment,
+    )?);
+    Ok(Arc::new(super::service::SandboxHostProvisioner::new(
+        provider,
+        config.runtime,
+        issuer.clone(),
+        leases.clone(),
+    )))
 }
 
 impl ControlPlaneProcessConfig {
@@ -262,14 +256,8 @@ fn sandbox_provider_config(
     get: &mut impl FnMut(&str) -> Option<String>,
     jwt_issuer: &str,
     invocation_audience: &str,
-) -> Result<Option<SandboxProviderConfig>> {
-    let Some(provider_name) = get("DURABLE_OBJECT_SANDBOX_PROVIDER") else {
-        ensure!(
-            get("DURABLE_OBJECT_SANDBOX_COMMAND").is_none(),
-            "sandbox command requires a provider"
-        );
-        return Ok(None);
-    };
+) -> Result<SandboxProviderConfig> {
+    let provider_name = required(get, "DURABLE_OBJECT_SANDBOX_PROVIDER")?;
     ensure!(
         provider_name == "modal",
         "unsupported sandbox provider {provider_name:?}"
@@ -288,7 +276,7 @@ fn sandbox_provider_config(
         &required(get, "DURABLE_OBJECT_CONTROL_PLANE_URL")?,
         "DURABLE_OBJECT_CONTROL_PLANE_URL",
     )?;
-    Ok(Some(SandboxProviderConfig {
+    Ok(SandboxProviderConfig {
         provider_name,
         command: get("DURABLE_OBJECT_SANDBOX_COMMAND")
             .unwrap_or_else(|| "little-durable-objects-modal".into()),
@@ -308,7 +296,7 @@ fn sandbox_provider_config(
                 DEFAULT_HOST_IDLE_TIMEOUT_MS,
             )?,
         },
-    }))
+    })
 }
 
 fn provider_credential(get: &mut impl FnMut(&str) -> Option<String>, name: &str) -> Result<String> {
@@ -386,6 +374,13 @@ mod tests {
         let values = HashMap::from([
             ("DURABLE_OBJECT_JWT_SIGNING_KEY", "c2lnbmluZw=="),
             ("DURABLE_OBJECT_ADMIN_TOKEN", "admin-token"),
+            ("DURABLE_OBJECT_SANDBOX_PROVIDER", "modal"),
+            (
+                "DURABLE_OBJECT_CONTROL_PLANE_URL",
+                "https://objects.example.com",
+            ),
+            ("MODAL_TOKEN_ID", "modal-token-id"),
+            ("MODAL_TOKEN_SECRET", "modal-token-secret"),
             (
                 "DURABLE_OBJECT_POSTGRES_URL",
                 "postgresql://localhost/actors",

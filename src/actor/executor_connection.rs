@@ -4,10 +4,7 @@ use std::{
     fmt::{Display, Formatter},
     os::unix::fs::FileTypeExt,
     path::{Path, PathBuf},
-    sync::{
-        Arc, Mutex,
-        atomic::{AtomicU64, Ordering},
-    },
+    sync::Arc,
 };
 
 use anyhow::{Context, Result, ensure};
@@ -16,8 +13,11 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tokio::{
     io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader},
-    net::{UnixListener, unix::OwnedWriteHalf},
-    sync::{Mutex as AsyncMutex, oneshot},
+    net::{
+        UnixListener,
+        unix::{OwnedReadHalf, OwnedWriteHalf},
+    },
+    sync::{mpsc, oneshot},
     task::JoinHandle,
 };
 use tokio_util::sync::CancellationToken;
@@ -26,6 +26,7 @@ use tracing::{debug, info};
 use super::{ActorInvocationFailure, ActorKey};
 
 const ACTOR_EXECUTOR_PROTOCOL_VERSION: u32 = 13;
+const MAX_PENDING_EXECUTOR_COMMANDS: usize = 64;
 pub(crate) const MAX_ACTOR_EXECUTOR_MESSAGE_BYTES: usize = 32 * 1024 * 1024;
 
 #[derive(Debug, Serialize)]
@@ -154,6 +155,23 @@ pub trait ActorExecutor: Send + Sync {
         }))
     }
 
+    // Queued executors can retain immutable snapshots; borrowed implementations keep their defaults.
+    async fn invoke_shared(
+        &self,
+        invocation: ActorMethodInvocation,
+        state: Option<Arc<Value>>,
+    ) -> Result<ActorMethodOutcome> {
+        self.invoke(invocation, state.as_deref()).await
+    }
+
+    async fn handle_socket_shared(
+        &self,
+        invocation: ActorSocketInvocation,
+        state: Option<Arc<Value>>,
+    ) -> Result<ActorSocketOutcome> {
+        self.handle_socket(invocation, state.as_deref()).await
+    }
+
     async fn evict(&self, _eviction: ActorMethodEviction) -> Result<()> {
         Ok(())
     }
@@ -219,8 +237,7 @@ impl ActorExecutorListener {
             None => anyhow::bail!("customer actor executor disconnected before attaching"),
         };
 
-        let executor = Arc::new(JsActorExecutor::new(writer, attach));
-        let task = tokio::spawn(read_executor_messages(reader, executor.clone()));
+        let (executor, task) = JsActorExecutor::start(reader, writer, attach);
         debug!(
             socket = %self.socket_path.display(),
             actor_types = ?executor.actor_types,
@@ -241,11 +258,7 @@ impl ActorExecutorConnection {
     }
 
     pub(crate) async fn mark_ready(&self) -> Result<()> {
-        self.executor
-            .send(&ActorExecutorServerMessage::Attached {
-                protocol: ACTOR_EXECUTOR_PROTOCOL_VERSION,
-            })
-            .await?;
+        self.executor.mark_ready().await?;
         info!(
             actor_types = ?self.executor.actor_types,
             "customer JavaScript process attached to actor executor"
@@ -262,7 +275,6 @@ impl ActorExecutorConnection {
                 }
             }
             _ = shutdown.cancelled() => {
-                self.executor.close().await;
                 self.task.abort();
                 let _ = (&mut self.task).await;
                 Ok(())
@@ -279,10 +291,7 @@ impl Drop for ActorExecutorConnection {
 
 struct JsActorExecutor {
     actor_types: HashSet<String>,
-    next_message_id: AtomicU64,
-    pending: Mutex<HashMap<u64, oneshot::Sender<ExecutorReply>>>,
-    writer: AsyncMutex<OwnedWriteHalf>,
-    residents: Mutex<HashSet<ActorKey>>,
+    commands: mpsc::Sender<ExecutorRequest>,
 }
 
 #[async_trait]
@@ -296,8 +305,26 @@ impl ActorExecutor for JsActorExecutor {
         invocation: ActorMethodInvocation,
         state: Option<&Value>,
     ) -> Result<ActorMethodOutcome> {
+        self.invoke_shared(invocation, state.cloned().map(Arc::new))
+            .await
+    }
+
+    async fn handle_socket(
+        &self,
+        invocation: ActorSocketInvocation,
+        state: Option<&Value>,
+    ) -> Result<ActorSocketOutcome> {
+        self.handle_socket_shared(invocation, state.cloned().map(Arc::new))
+            .await
+    }
+
+    async fn invoke_shared(
+        &self,
+        invocation: ActorMethodInvocation,
+        state: Option<Arc<Value>>,
+    ) -> Result<ActorMethodOutcome> {
         match self
-            .exchange_with_state(ExecutorCommand::Invoke(invocation), state)
+            .exchange(ExecutorCommand::Invoke(invocation), state)
             .await?
         {
             ExecutorReply::Invoked {
@@ -324,13 +351,13 @@ impl ActorExecutor for JsActorExecutor {
         }
     }
 
-    async fn handle_socket(
+    async fn handle_socket_shared(
         &self,
         invocation: ActorSocketInvocation,
-        state: Option<&Value>,
+        state: Option<Arc<Value>>,
     ) -> Result<ActorSocketOutcome> {
         match self
-            .exchange_with_state(ExecutorCommand::WebsocketEvent(invocation), state)
+            .exchange(ExecutorCommand::WebsocketEvent(invocation), state)
             .await?
         {
             ExecutorReply::WebsocketHandled { state, effects } => {
@@ -351,12 +378,8 @@ impl ActorExecutor for JsActorExecutor {
     }
 
     async fn evict(&self, eviction: ActorMethodEviction) -> Result<()> {
-        self.residents
-            .lock()
-            .map_err(|_| anyhow::anyhow!("actor residency lock poisoned"))?
-            .remove(&eviction.actor);
         match self
-            .exchange(&ExecutorCommand::Evict(eviction), None, false)
+            .exchange(ExecutorCommand::Evict(eviction), None)
             .await?
         {
             ExecutorReply::Evicted => Ok(()),
@@ -374,163 +397,272 @@ impl ActorExecutor for JsActorExecutor {
 }
 
 impl JsActorExecutor {
-    fn new(writer: OwnedWriteHalf, actor_types: Vec<String>) -> Self {
-        Self {
+    fn start(
+        reader: BufReader<OwnedReadHalf>,
+        writer: OwnedWriteHalf,
+        actor_types: Vec<String>,
+    ) -> (Arc<Self>, JoinHandle<Result<()>>) {
+        let (commands, incoming) = mpsc::channel(MAX_PENDING_EXECUTOR_COMMANDS);
+        let executor = Arc::new(Self {
             actor_types: actor_types.into_iter().collect(),
-            next_message_id: AtomicU64::new(1),
-            pending: Mutex::new(HashMap::new()),
-            writer: AsyncMutex::new(writer),
-            residents: Mutex::new(HashSet::new()),
-        }
+            commands,
+        });
+        let task = tokio::spawn(run_executor_connection(reader, writer, incoming));
+        (executor, task)
     }
 
-    async fn exchange_with_state(
-        &self,
-        command: ExecutorCommand,
-        state: Option<&Value>,
-    ) -> Result<ExecutorReply> {
-        let actor = match &command {
-            ExecutorCommand::Invoke(invocation) => &invocation.actor,
-            ExecutorCommand::WebsocketEvent(invocation) => &invocation.actor,
-            ExecutorCommand::Evict(_) => unreachable!("eviction does not hydrate"),
-        };
-        let resident = self
-            .residents
-            .lock()
-            .map_err(|_| anyhow::anyhow!("actor residency lock poisoned"))?
-            .remove(actor);
-        let mut reply = self
-            .exchange(
-                &command,
-                if resident {
-                    None
-                } else {
-                    Some(state.unwrap_or(&Value::Null))
-                },
-                resident,
-            )
-            .await?;
-        if resident && matches!(reply, ExecutorReply::StateRequired) {
-            reply = self
-                .exchange(&command, Some(state.unwrap_or(&Value::Null)), false)
-                .await?;
-        }
-        ensure!(
-            !matches!(reply, ExecutorReply::StateRequired),
-            "actor executor refused explicit hydration"
-        );
-        if matches!(
-            reply,
-            ExecutorReply::Invoked { .. } | ExecutorReply::WebsocketHandled { .. }
-        ) {
-            let mut residents = self
-                .residents
-                .lock()
-                .map_err(|_| anyhow::anyhow!("actor residency lock poisoned"))?;
-            if residents.len() >= 4096 {
-                residents.clear();
-            }
-            residents.insert(actor.clone());
-        }
-        Ok(reply)
+    async fn mark_ready(&self) -> Result<()> {
+        let (reply, ready) = oneshot::channel();
+        self.commands
+            .send(ExecutorRequest::Ready(reply))
+            .await
+            .context("actor executor stopped")?;
+        ready
+            .await
+            .context("actor executor disconnected before readiness")?
     }
 
     async fn exchange(
         &self,
-        command: &ExecutorCommand,
-        state: Option<&Value>,
-        resident_only: bool,
+        command: ExecutorCommand,
+        state: Option<Arc<Value>>,
     ) -> Result<ExecutorReply> {
-        let message_id = self.next_message_id.fetch_add(1, Ordering::Relaxed);
-        let (reply_tx, reply_rx) = oneshot::channel();
-        self.pending
-            .lock()
-            .map_err(|_| anyhow::anyhow!("actor executor pending-reply lock poisoned"))?
-            .insert(message_id, reply_tx);
-
-        let write_result = self
-            .send(&ActorExecutorServerMessage::Command {
-                message_id,
-                command: ExecutorCommandEnvelope {
-                    command,
-                    state,
-                    resident_only,
-                },
-            })
-            .await;
-        if let Err(error) = write_result {
-            self.remove_pending(message_id)?;
-            if let Some(limit) = error.downcast_ref::<ActorExecutorMessageTooLarge>() {
-                return Ok(ExecutorReply::Failed {
-                    code: "resource_exhausted".into(),
-                    message: limit.to_string(),
-                });
-            }
-            return Err(error.context("send command to customer actor executor"));
-        }
-
-        reply_rx
+        let (reply, response) = oneshot::channel();
+        self.commands
+            .send(ExecutorRequest::Exchange(Box::new(PendingCommand {
+                command,
+                state,
+                reply,
+                resident_only: false,
+            })))
             .await
-            .context("customer actor executor disconnected before replying")
+            .context("actor executor stopped")?;
+        response
+            .await
+            .context("customer actor executor disconnected before replying")?
+    }
+}
+
+async fn run_executor_connection(
+    reader: BufReader<OwnedReadHalf>,
+    writer: OwnedWriteHalf,
+    commands: mpsc::Receiver<ExecutorRequest>,
+) -> Result<()> {
+    let (outbound, writes) = mpsc::channel(MAX_PENDING_EXECUTOR_COMMANDS + 1);
+    let (inbound, replies) = mpsc::channel(MAX_PENDING_EXECUTOR_COMMANDS);
+    let driver = ExecutorDriver {
+        pending: HashMap::new(),
+        residents: HashSet::new(),
+        next_message_id: 1,
+        outbound,
+    };
+    tokio::try_join!(
+        driver.run(commands, replies),
+        read_executor_messages(reader, inbound),
+        write_executor_messages(writer, writes)
+    )?;
+    Ok(())
+}
+
+struct ExecutorDriver {
+    pending: HashMap<u64, PendingCommand>,
+    residents: HashSet<ActorKey>,
+    next_message_id: u64,
+    outbound: mpsc::Sender<ExecutorWrite>,
+}
+
+impl ExecutorDriver {
+    async fn run(
+        mut self,
+        mut commands: mpsc::Receiver<ExecutorRequest>,
+        mut replies: mpsc::Receiver<Result<(u64, ExecutorReply)>>,
+    ) -> Result<()> {
+        loop {
+            tokio::select! {
+                biased;
+                reply = replies.recv() => {
+                    let (message_id, reply) = reply.context("actor executor reader stopped")??;
+                    self.deliver(message_id, reply)?;
+                }
+                command = commands.recv(), if self.pending.len() < MAX_PENDING_EXECUTOR_COMMANDS => match command {
+                    Some(command) => self.handle_command(command)?,
+                    None => return Ok(()),
+                }
+            }
+        }
     }
 
-    async fn send(&self, message: &ActorExecutorServerMessage<'_>) -> Result<()> {
-        write_server_message(&mut *self.writer.lock().await, message).await
+    fn handle_command(&mut self, command: ExecutorRequest) -> Result<()> {
+        match command {
+            ExecutorRequest::Exchange(mut pending) => {
+                let resident = self.residents.remove(pending.command.actor());
+                pending.resident_only =
+                    resident && !matches!(pending.command, ExecutorCommand::Evict(_));
+                self.enqueue(*pending)
+            }
+            ExecutorRequest::Ready(written) => self
+                .outbound
+                .try_send(ExecutorWrite {
+                    bytes: encode_server_message(&ActorExecutorServerMessage::Attached {
+                        protocol: ACTOR_EXECUTOR_PROTOCOL_VERSION,
+                    })?,
+                    written: Some(written),
+                })
+                .map_err(|_| anyhow::anyhow!("actor executor writer stopped or filled its queue")),
+        }
     }
 
-    fn deliver(&self, message_id: u64, reply: ExecutorReply) -> Result<()> {
-        let sender = self
+    fn enqueue(&mut self, pending: PendingCommand) -> Result<()> {
+        let message_id = self.next_message_id;
+        self.next_message_id = message_id
+            .checked_add(1)
+            .context("actor executor message ID overflow")?;
+        let state = if pending.resident_only || matches!(pending.command, ExecutorCommand::Evict(_))
+        {
+            None
+        } else {
+            Some(pending.state.as_deref().unwrap_or(&Value::Null))
+        };
+        let bytes = encode_server_message(&ActorExecutorServerMessage::Command {
+            message_id,
+            command: ExecutorCommandEnvelope {
+                command: &pending.command,
+                state,
+                resident_only: pending.resident_only,
+            },
+        });
+        match bytes {
+            Ok(bytes) => {
+                // Each pending command has at most one queued write; readiness has its own extra slot.
+                self.outbound
+                    .try_send(ExecutorWrite {
+                        bytes,
+                        written: None,
+                    })
+                    .map_err(|_| {
+                        anyhow::anyhow!("actor executor writer stopped or filled its queue")
+                    })?;
+                self.pending.insert(message_id, pending);
+            }
+            Err(error) => {
+                let reply = if error.is::<ActorExecutorMessageTooLarge>() {
+                    Ok(ExecutorReply::Failed {
+                        code: "resource_exhausted".into(),
+                        message: error.to_string(),
+                    })
+                } else {
+                    Err(error)
+                };
+                let _ = pending.reply.send(reply);
+            }
+        }
+        Ok(())
+    }
+
+    fn deliver(&mut self, message_id: u64, reply: ExecutorReply) -> Result<()> {
+        let mut pending = self
             .pending
-            .lock()
-            .map_err(|_| anyhow::anyhow!("actor executor pending-reply lock poisoned"))?
             .remove(&message_id)
             .with_context(|| format!("actor executor replied to unknown message {message_id}"))?;
-        let _ = sender.send(reply);
-        Ok(())
-    }
-
-    fn remove_pending(&self, message_id: u64) -> Result<()> {
-        self.pending
-            .lock()
-            .map_err(|_| anyhow::anyhow!("actor executor pending-reply lock poisoned"))?
-            .remove(&message_id);
-        Ok(())
-    }
-
-    async fn close(&self) {
-        let _ = self.writer.lock().await.shutdown().await;
-        self.disconnect();
-    }
-
-    fn disconnect(&self) {
-        if let Ok(mut pending) = self.pending.lock() {
-            pending.clear();
+        if matches!(reply, ExecutorReply::StateRequired) {
+            if pending.resident_only {
+                pending.resident_only = false;
+                return self.enqueue(pending);
+            }
+            let _ = pending.reply.send(Err(anyhow::anyhow!(
+                "actor executor refused explicit hydration"
+            )));
+            return Ok(());
         }
+        if matches!(
+            reply,
+            ExecutorReply::Invoked { .. } | ExecutorReply::WebsocketHandled { .. }
+        ) {
+            if self.residents.len() >= 4096 {
+                self.residents.clear();
+            }
+            self.residents.insert(pending.command.actor().clone());
+        }
+        let _ = pending.reply.send(Ok(reply));
+        Ok(())
     }
 }
 
 async fn read_executor_messages(
-    mut reader: BufReader<tokio::net::unix::OwnedReadHalf>,
-    executor: Arc<JsActorExecutor>,
+    mut reader: BufReader<OwnedReadHalf>,
+    inbound: mpsc::Sender<Result<(u64, ExecutorReply)>>,
 ) -> Result<()> {
-    let result = async {
-        loop {
-            match read_client_message(&mut reader).await? {
-                None => {
-                    anyhow::bail!("customer JavaScript actor executor disconnected")
-                }
-                Some(ActorExecutorClientMessage::Reply { message_id, reply }) => {
-                    executor.deliver(message_id, reply)?;
-                }
-                Some(ActorExecutorClientMessage::Attach { .. }) => {
-                    anyhow::bail!("customer actor executor attached more than once")
-                }
+    loop {
+        let reply = match read_client_message(&mut reader).await {
+            Ok(Some(ActorExecutorClientMessage::Reply { message_id, reply })) => {
+                Ok((message_id, reply))
             }
+            Ok(Some(ActorExecutorClientMessage::Attach { .. })) => Err(anyhow::anyhow!(
+                "customer actor executor attached more than once"
+            )),
+            Ok(None) => Err(anyhow::anyhow!(
+                "customer JavaScript actor executor disconnected"
+            )),
+            Err(error) => Err(error),
+        };
+        let stopped = reply.is_err();
+        inbound
+            .send(reply)
+            .await
+            .context("actor executor driver stopped")?;
+        if stopped {
+            return Ok(());
         }
     }
-    .await;
-    executor.disconnect();
-    result
+}
+
+async fn write_executor_messages(
+    mut writer: OwnedWriteHalf,
+    mut writes: mpsc::Receiver<ExecutorWrite>,
+) -> Result<()> {
+    while let Some(write) = writes.recv().await {
+        let result = writer
+            .write_all(&write.bytes)
+            .await
+            .context("write actor executor command");
+        if let Some(written) = write.written {
+            let _ = written.send(
+                result
+                    .as_ref()
+                    .map(|_| ())
+                    .map_err(|error| anyhow::anyhow!("{error:#}")),
+            );
+        }
+        result?;
+    }
+    Ok(())
+}
+
+enum ExecutorRequest {
+    Exchange(Box<PendingCommand>),
+    Ready(oneshot::Sender<Result<()>>),
+}
+
+struct PendingCommand {
+    command: ExecutorCommand,
+    state: Option<Arc<Value>>,
+    resident_only: bool,
+    reply: oneshot::Sender<Result<ExecutorReply>>,
+}
+
+struct ExecutorWrite {
+    bytes: Vec<u8>,
+    written: Option<oneshot::Sender<Result<()>>>,
+}
+
+impl ExecutorCommand {
+    fn actor(&self) -> &ActorKey {
+        match self {
+            Self::Invoke(invocation) => &invocation.actor,
+            Self::WebsocketEvent(invocation) => &invocation.actor,
+            Self::Evict(eviction) => &eviction.actor,
+        }
+    }
 }
 
 async fn read_client_message(
@@ -560,17 +692,13 @@ fn trim_ascii_end(mut document: &[u8]) -> &[u8] {
     document
 }
 
-async fn write_server_message(
-    writer: &mut OwnedWriteHalf,
-    message: &ActorExecutorServerMessage<'_>,
-) -> Result<()> {
+fn encode_server_message(message: &ActorExecutorServerMessage<'_>) -> Result<Vec<u8>> {
     let mut bytes = serde_json::to_vec(message)?;
     bytes.push(b'\n');
     if bytes.len() > MAX_ACTOR_EXECUTOR_MESSAGE_BYTES {
         return Err(ActorExecutorMessageTooLarge.into());
     }
-    writer.write_all(&bytes).await?;
-    Ok(())
+    Ok(bytes)
 }
 
 #[derive(Debug)]
@@ -689,6 +817,105 @@ mod tests {
     };
 
     #[tokio::test]
+    async fn multiplexes_out_of_order_replies_before_peer_disconnect() -> Result<()> {
+        let (host, customer) = UnixStream::pair()?;
+        let (reader, writer) = host.into_split();
+        let (executor, running) =
+            JsActorExecutor::start(BufReader::new(reader), writer, vec!["counter".into()]);
+        let peer = tokio::spawn(async move {
+            let mut customer = BufReader::new(customer);
+            let first = read_json_line(&mut customer).await?;
+            let second = read_json_line(&mut customer).await?;
+            for command in [second, first] {
+                write_json_line(&mut customer, &json!({
+                    "type": "reply", "message_id": command["message_id"],
+                    "reply": {"type": "invoked", "result": command["command"]["request_id"], "state": {}}
+                })).await?;
+            }
+            anyhow::Ok(())
+        });
+        let invoke = |id: &str| {
+            executor.invoke(
+                ActorMethodInvocation {
+                    request_id: id.into(),
+                    actor: ActorKey {
+                        namespace_id: "test".into(),
+                        actor_type: "counter".into(),
+                        actor_id: id.into(),
+                    },
+                    method: "get".into(),
+                    args: Vec::new(),
+                    connections: Vec::new(),
+                },
+                None,
+            )
+        };
+        let replies = timeout(Duration::from_secs(2), async {
+            tokio::try_join!(invoke("first"), invoke("second"))
+        })
+        .await?;
+        peer.await??;
+        let _ = running.await;
+        let (first, second) = replies?;
+        assert!(
+            matches!(first, ActorMethodOutcome::Completed { result, .. } if result == json!("first"))
+        );
+        assert!(
+            matches!(second, ActorMethodOutcome::Completed { result, .. } if result == json!("second"))
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn shutdown_does_not_wait_for_a_peer_that_stopped_reading() -> Result<()> {
+        let root = TempDir::new_in("/tmp")?;
+        let socket = root.path().join("executor.sock");
+        let listener = ActorExecutorListener::bind(&socket).await?;
+        let customer = tokio::spawn(async move {
+            let stream = UnixStream::connect(socket).await?;
+            let mut stream = BufReader::new(stream);
+            write_json_line(
+                &mut stream,
+                &json!({"type":"attach", "protocol":13, "actor_types":["counter"]}),
+            )
+            .await?;
+            let _ = read_json_line(&mut stream).await?;
+            std::future::pending::<Result<()>>().await
+        });
+        let connection = listener.accept().await?;
+        connection.mark_ready().await?;
+        let executor = connection.executor();
+        let shutdown = CancellationToken::new();
+        let mut running = tokio::spawn(connection.run(shutdown.clone()));
+        let mut call = tokio::spawn(async move {
+            executor
+                .invoke(
+                    ActorMethodInvocation {
+                        request_id: "blocked-write".into(),
+                        actor: ActorKey {
+                            namespace_id: "test".into(),
+                            actor_type: "counter".into(),
+                            actor_id: "one".into(),
+                        },
+                        method: "accept".into(),
+                        args: vec![json!("x".repeat(8 * 1024 * 1024))],
+                        connections: Vec::new(),
+                    },
+                    None,
+                )
+                .await
+        });
+        assert!(timeout(Duration::from_millis(30), &mut call).await.is_err());
+        shutdown.cancel();
+        let stopped = timeout(Duration::from_millis(200), &mut running).await;
+        running.abort();
+        call.abort();
+        customer.abort();
+        stopped.context("executor shutdown waited for a blocked socket writer")???;
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn one_javascript_executor_runs_until_host_shutdown() -> Result<()> {
         let root = TempDir::new_in("/tmp")?;
         let socket = root.path().join("actor-executor.sock");
@@ -772,25 +999,18 @@ mod tests {
     async fn resident_commands_omit_state_and_retry_only_an_explicit_hydration_request()
     -> Result<()> {
         let (host, customer) = UnixStream::pair()?;
-        let (_, writer) = host.into_split();
-        let executor = Arc::new(JsActorExecutor::new(writer, vec!["counter".into()]));
+        let (reader, writer) = host.into_split();
+        let (executor, running) =
+            JsActorExecutor::start(BufReader::new(reader), writer, vec!["counter".into()]);
         let mut reader = BufReader::new(customer);
         let customer = async {
             let first = read_json_line(&mut reader).await?;
             assert_eq!(first["command"]["state"], json!({"count": 9}));
-            executor.deliver(
-                first["message_id"].as_u64().unwrap(),
-                serde_json::from_value(
-                    json!({"type":"invoked", "result":10,"state":{"count":10}}),
-                )?,
-            )?;
+            write_json_line(&mut reader, &json!({"type":"reply", "message_id":first["message_id"], "reply":json!({"type":"invoked", "result":10,"state":{"count":10}})})).await?;
             let warm = read_json_line(&mut reader).await?;
             assert!(warm["command"].get("state").is_none());
             assert_eq!(warm["command"]["resident_only"], true);
-            executor.deliver(
-                warm["message_id"].as_u64().unwrap(),
-                serde_json::from_value(json!({"type":"state_required"}))?,
-            )?;
+            write_json_line(&mut reader, &json!({"type":"reply", "message_id":warm["message_id"], "reply":json!({"type":"state_required"})})).await?;
             let retry = read_json_line(&mut reader).await?;
             assert_eq!(
                 retry["command"]["request_id"],
@@ -798,12 +1018,7 @@ mod tests {
             );
             assert_eq!(retry["command"]["state"], json!({"count": 10}));
             assert_eq!(retry["command"]["resident_only"], false);
-            executor.deliver(
-                retry["message_id"].as_u64().unwrap(),
-                serde_json::from_value(
-                    json!({"type":"invoked", "result":11,"state":{"count":11}}),
-                )?,
-            )?;
+            write_json_line(&mut reader, &json!({"type":"reply", "message_id":retry["message_id"], "reply":json!({"type":"invoked", "result":11,"state":{"count":11}})})).await?;
             anyhow::Ok(())
         };
         let invoke = async {
@@ -831,6 +1046,7 @@ mod tests {
             anyhow::Ok(())
         };
         tokio::try_join!(customer, invoke)?;
+        running.abort();
         Ok(())
     }
 

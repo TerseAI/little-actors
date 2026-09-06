@@ -21,3 +21,23 @@ test("npm publishes the downloaded tarball as a filesystem path", () => {
 
     assert.match(workflow, /npm publish \.\/dist-tarballs\/\*\.tgz --access public/)
 })
+
+test("runtime images include the one-shot Go provider", () => {
+    const dockerfile = read("Dockerfile")
+    assert.match(dockerfile, /FROM golang:1\.27\.1-bookworm AS modal-builder/)
+    assert.match(dockerfile, /COPY providers\/modal-go\/ /)
+    assert.match(dockerfile, /CGO_ENABLED=0 go build -mod=readonly -trimpath/)
+    assert.match(dockerfile, /COPY --from=modal-builder .* \/usr\/local\/bin\/little-durable-objects-modal-go/)
+    assert.match(dockerfile, /DURABLE_OBJECT_SANDBOX_COMMAND=little-durable-objects-modal-go/)
+    assert.match(read(".dockerignore"), /!providers\/modal-go\/\*\*/)
+})
+
+test("CI and release validate the Go provider before publishing", () => {
+    for (const path of [".github/workflows/ci.yml", ".github/workflows/release.yml"]) {
+        const workflow = read(path)
+        assert.match(workflow, /working-directory: providers\/modal-go/)
+        assert.match(workflow, /go test -race -mod=readonly \.\/\.\.\./)
+        assert.match(workflow, /go-version: "1\.27\.1"/)
+    }
+    assert.match(read(".github/workflows/release.yml"), /needs: \[preflight, rust, npm-ci, go-ci\]/)
+})

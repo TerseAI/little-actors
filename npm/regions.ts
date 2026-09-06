@@ -2,17 +2,10 @@ const canonicalRegionPattern = /^[a-z0-9](?:[a-z0-9._-]{0,62}[a-z0-9])?$/u
 
 interface ModalPlacement {
     readonly regions: readonly string[]
-    readonly cloud?: string
-    readonly privateNetwork?: boolean
+    readonly cloud: string
 }
 
-interface RegionDefinition {
-    readonly modal: ModalPlacement
-}
-
-type CanonicalRegionCatalog = Readonly<Record<string, RegionDefinition>>
-
-const recommendedRegionCatalog = {
+const regionCatalog: Readonly<Record<string, { readonly modal: ModalPlacement }>> = {
     "north-america-east": {
         modal: { regions: ["us-east"], cloud: "gcp" }
     },
@@ -31,10 +24,10 @@ const recommendedRegionCatalog = {
     "asia-southeast": {
         modal: { regions: ["ap-southeast"], cloud: "gcp" }
     }
-} as const satisfies CanonicalRegionCatalog
+}
 
-function modalPlacement(region: string, catalog: CanonicalRegionCatalog = recommendedRegionCatalog): ModalPlacement {
-    const placement = catalog[validateCanonicalRegion(region)]?.modal
+function modalPlacement(region: string): ModalPlacement {
+    const placement = regionCatalog[validateCanonicalRegion(region)]?.modal
     if (!placement) throw new Error(`canonical region ${JSON.stringify(region)} has no Modal placement`)
     return placement
 }
@@ -44,5 +37,5 @@ function validateCanonicalRegion(value: string): string {
     return value
 }
 
-export { modalPlacement, recommendedRegionCatalog, validateCanonicalRegion }
-export type { CanonicalRegionCatalog, ModalPlacement, RegionDefinition }
+export { modalPlacement, validateCanonicalRegion }
+export type { ModalPlacement }

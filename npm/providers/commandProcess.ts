@@ -52,8 +52,6 @@ async function execute(provider: SandboxProvider, command: SandboxProviderComman
             }
             return { ...handle, provisioning }
         }
-        case "public_host_route":
-            return provider.publicHostRoute(command.request)
         case "warm_image":
             return provider.warmImage(command.request)
         case "terminate_hosts":

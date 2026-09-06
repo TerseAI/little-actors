@@ -1,114 +1,33 @@
-use std::{
-    collections::HashMap,
-    sync::{
-        Arc, Mutex,
-        atomic::{AtomicBool, AtomicUsize, Ordering},
-    },
-    time::{Duration, Instant},
-};
+use std::{borrow::Cow, collections::HashMap, sync::Arc, time::Duration};
 
 use anyhow::{Context, Result, ensure};
-use async_trait::async_trait;
-use serde_json::Value;
-use tokio::sync::{Notify, watch};
-use tracing::{info, warn};
+use tokio::{
+    sync::{mpsc, oneshot, watch},
+    task::{Id, JoinError, JoinSet},
+};
+use tracing::error;
 
 use crate::{
     actor::{
-        ActorExecutionResult, ActorExecutor, ActorInvocation, ActorInvocationFailure,
-        ActorMethodEviction, ActorMethodInvocation, ActorMethodOutcome, ActorSocketEffect,
-        ActorSocketInvocation, ActorSocketOutcome, validate_socket_effects,
+        ActorExecutionResult, ActorExecutor, ActorInvocation, ActorInvocationFailure, ActorKey,
+        ActorSocketEvent, ActorSocketInvocation,
     },
-    actor_state::{ActorExecutionAdmission, ActorExecutionLocks, ActorStorageKey},
-    control_plane::ControlPlaneClient,
-    state_log::StateSnapshot,
-    state_transport::{StateTransport, StateWrite},
-    storage_urls::StateWriteTicket,
+    actor_state::ActorStorageKey,
+    state_transport::StateTransport,
 };
 
-use super::HostEndpoint;
+use super::{
+    HostEndpoint,
+    actor_runtime::{ActorRuntime, InvocationTimings, StateCommitAuthority, socket_event_name},
+};
 
-const STATE_WRITE_TICKET_SAFETY: Duration = Duration::from_secs(5);
-
-#[async_trait]
-pub(crate) trait StateCommitAuthority: Send + Sync {
-    async fn prepare_state_write(
-        &self,
-        actor: &crate::actor::ActorKey,
-        host_id: &super::HostId,
-        owner_epoch: u64,
-        expected_version: u64,
-    ) -> Result<StateWriteTicket>;
-
-    #[allow(clippy::too_many_arguments)]
-    async fn commit_state(
-        &self,
-        actor: &crate::actor::ActorKey,
-        host_id: &super::HostId,
-        owner_epoch: u64,
-        expected_version: u64,
-        state_object: &str,
-        request_id: &str,
-    ) -> Result<CommittedState>;
-}
-
-#[derive(Debug)]
-pub(crate) struct CommittedState {
-    state_version: u64,
-    next_write: Option<StateWriteTicket>,
-}
-
-#[async_trait]
-impl StateCommitAuthority for ControlPlaneClient {
-    async fn prepare_state_write(
-        &self,
-        actor: &crate::actor::ActorKey,
-        host_id: &super::HostId,
-        owner_epoch: u64,
-        expected_version: u64,
-    ) -> Result<StateWriteTicket> {
-        ControlPlaneClient::prepare_state_write(self, actor, host_id, owner_epoch, expected_version)
-            .await
-    }
-
-    async fn commit_state(
-        &self,
-        actor: &crate::actor::ActorKey,
-        host_id: &super::HostId,
-        owner_epoch: u64,
-        expected_version: u64,
-        state_object: &str,
-        request_id: &str,
-    ) -> Result<CommittedState> {
-        let (state_version, next_write) = ControlPlaneClient::commit_state(
-            self,
-            actor,
-            host_id,
-            owner_epoch,
-            expected_version,
-            state_object,
-            request_id,
-        )
-        .await?;
-        Ok(CommittedState {
-            state_version,
-            next_write,
-        })
-    }
-}
+const MAX_ADMITTED_INVOCATIONS_PER_ACTOR: usize = 33;
+const HOST_COMMAND_CAPACITY: usize = 256;
 
 pub(crate) struct ActorHost {
     endpoint: HostEndpoint,
-    namespace_id: String,
-    executor: Arc<dyn ActorExecutor>,
-    commits: Arc<dyn StateCommitAuthority>,
-    state: Arc<dyn StateTransport>,
-    executions: ActorExecutionLocks,
-    cached_state: Mutex<HashMap<ActorStorageKey, CachedActorState>>,
-    accepting: AtomicBool,
-    active: AtomicUsize,
-    activity_tx: watch::Sender<usize>,
-    idle: Notify,
+    commands: mpsc::Sender<HostCommand>,
+    activity: watch::Receiver<usize>,
 }
 
 impl ActorHost {
@@ -119,24 +38,26 @@ impl ActorHost {
         commits: Arc<dyn StateCommitAuthority>,
         state: Arc<dyn StateTransport>,
     ) -> Self {
-        let (activity_tx, _) = watch::channel(0);
-        Self {
-            endpoint,
+        let (commands, incoming) = mpsc::channel(HOST_COMMAND_CAPACITY);
+        let (activity_tx, activity) = watch::channel(0);
+        let dispatcher = HostDispatcher::new(
+            endpoint.clone(),
             namespace_id,
             executor,
             commits,
             state,
-            executions: ActorExecutionLocks::new(),
-            cached_state: Mutex::new(HashMap::new()),
-            accepting: AtomicBool::new(true),
-            active: AtomicUsize::new(0),
             activity_tx,
-            idle: Notify::new(),
+        );
+        tokio::spawn(dispatcher.run(incoming));
+        Self {
+            endpoint,
+            commands,
+            activity,
         }
     }
 
     pub(crate) fn activity(&self) -> watch::Receiver<usize> {
-        self.activity_tx.subscribe()
+        self.activity.clone()
     }
 
     pub(crate) fn id(&self) -> &super::HostId {
@@ -150,18 +71,13 @@ impl ActorHost {
         state_version: u64,
         state_read_url: String,
     ) -> Result<ActorExecutionResult> {
-        let mut timings = InvocationTimings::new();
-        let outcome = self
-            .invoke_actor_once(
-                &invocation,
-                owner_epoch,
-                state_version,
-                &state_read_url,
-                &mut timings,
-            )
-            .await;
-        self.log_invocation(&invocation, &timings, &outcome);
-        outcome
+        self.submit(
+            ActorOperation::Method(invocation),
+            owner_epoch,
+            state_version,
+            state_read_url,
+        )
+        .await
     }
 
     pub(crate) async fn handle_socket_event(
@@ -171,813 +87,387 @@ impl ActorHost {
         state_version: u64,
         state_read_url: String,
     ) -> Result<ActorExecutionResult> {
-        let persistence = ActorInvocation {
-            request_id: invocation.request_id.clone(),
-            actor: invocation.actor.clone(),
-            method: socket_event_name(&invocation.event).into(),
-            args: Vec::new(),
-        };
-        let mut timings = InvocationTimings::new();
-        let outcome = self
-            .handle_socket_event_once(
-                invocation,
-                owner_epoch,
-                state_version,
-                &state_read_url,
-                &persistence,
-                &mut timings,
-            )
-            .await;
-        self.log_invocation(&persistence, &timings, &outcome);
-        outcome
-    }
-
-    async fn handle_socket_event_once(
-        &self,
-        invocation: ActorSocketInvocation,
-        owner_epoch: u64,
-        state_version: u64,
-        state_read_url: &str,
-        persistence: &ActorInvocation,
-        timings: &mut InvocationTimings,
-    ) -> Result<ActorExecutionResult> {
-        let disconnecting = matches!(
-            &invocation.event,
-            crate::actor::ActorSocketEvent::Disconnect { .. }
-        );
-        if let Some(result) = self.validate_operation(persistence, disconnecting)? {
-            return Ok(result);
-        }
-        let _activity = ActivityGuard::begin(self);
-        let object = invocation.actor.storage_key();
-        let _execution = match self.executions.admit(&object).await? {
-            ActorExecutionAdmission::Acquired(guard) => guard,
-            ActorExecutionAdmission::Full => {
-                return Ok(ActorExecutionResult::HostUnavailable);
-            }
-        };
-        timings.queue_admitted_at_ms = Some(timings.elapsed_ms());
-        if !disconnecting && !self.accepting.load(Ordering::SeqCst) {
-            return Ok(ActorExecutionResult::HostUnavailable);
-        }
-
-        let mut cached = self
-            .take_or_load_state(&object, owner_epoch, state_version, state_read_url, timings)
-            .await?;
-        if self
-            .finish_pending_commit(persistence, &mut cached)
-            .await
-            .is_err()
-        {
-            self.store_cached_state(object, cached)?;
-            return Ok(ActorExecutionResult::Failed {
-                failure: ActorInvocationFailure::outcome_unknown_after_execution(),
-            });
-        }
-        timings.pending_commit_resolved_at_ms = Some(timings.elapsed_ms());
-        let outcome = self.execute_socket_event(invocation, cached.state()).await;
-        timings.actor_execution_completed_at_ms = Some(timings.elapsed_ms());
-        let (next_state, effects) = match outcome {
-            Ok(outcome) => outcome,
-            Err(result) => {
-                self.store_cached_state(object, cached)?;
-                return Ok(result);
-            }
-        };
-        if cached.state.as_ref() == Some(&next_state) {
-            self.store_cached_state(object, cached)?;
-            return Ok(ActorExecutionResult::Completed {
-                result: Value::Null,
-                effects,
-            });
-        }
-        let published = self
-            .publish_result(
-                persistence,
-                owner_epoch,
-                &mut cached,
-                Value::Null,
-                next_state,
-            )
-            .await;
-        timings.state_publication_completed_at_ms = Some(timings.elapsed_ms());
-        if published.is_err() {
-            self.evict(&persistence.actor).await;
-        }
-        self.store_cached_state(object, cached)?;
-        match published {
-            Ok(ActorExecutionResult::Completed { .. }) => Ok(ActorExecutionResult::Completed {
-                result: Value::Null,
-                effects,
-            }),
-            Ok(result) => Ok(result),
-            Err(_) => Ok(ActorExecutionResult::Failed {
-                failure: ActorInvocationFailure::outcome_unknown_after_execution(),
-            }),
-        }
-    }
-
-    async fn invoke_actor_once(
-        &self,
-        invocation: &ActorInvocation,
-        owner_epoch: u64,
-        state_version: u64,
-        state_read_url: &str,
-        timings: &mut InvocationTimings,
-    ) -> Result<ActorExecutionResult> {
-        if let Some(result) = self.validate_invocation(invocation)? {
-            return Ok(result);
-        }
-        let _activity = ActivityGuard::begin(self);
-        let object = invocation.actor.storage_key();
-        let _execution = match self.executions.admit(&object).await? {
-            ActorExecutionAdmission::Acquired(guard) => guard,
-            ActorExecutionAdmission::Full => return Ok(ActorExecutionResult::HostUnavailable),
-        };
-        timings.queue_admitted_at_ms = Some(timings.elapsed_ms());
-        if !self.accepting.load(Ordering::SeqCst) {
-            return Ok(ActorExecutionResult::HostUnavailable);
-        }
-
-        let mut cached = self
-            .take_or_load_state(&object, owner_epoch, state_version, state_read_url, timings)
-            .await?;
-        if let Err(error) = self.finish_pending_commit(invocation, &mut cached).await {
-            self.store_cached_state(object, cached)?;
-            warn!(
-                actor = %invocation.actor.storage_key(),
-                error = %format!("{error:#}"),
-                "pending actor state commit remains unresolved"
-            );
-            return Ok(ActorExecutionResult::Failed {
-                failure: ActorInvocationFailure::outcome_unknown_after_execution(),
-            });
-        }
-        timings.pending_commit_resolved_at_ms = Some(timings.elapsed_ms());
-        if let Some(result) = cached.replay(&invocation.request_id) {
-            self.store_cached_state(object, cached)?;
-            return Ok(ActorExecutionResult::Completed {
-                result,
-                effects: Vec::new(),
-            });
-        }
-
-        let executed = self
-            .execute_method(invocation, cached.state(), Vec::new())
-            .await;
-        timings.actor_execution_completed_at_ms = Some(timings.elapsed_ms());
-        let (result, next_state, effects) = match executed {
-            Ok(outcome) => outcome,
-            Err(failure) => {
-                self.store_cached_state(object, cached)?;
-                return Ok(failure);
-            }
-        };
-        if cached.state.as_ref() == Some(&next_state) {
-            self.store_cached_state(object, cached)?;
-            return Ok(ActorExecutionResult::Completed { result, effects });
-        }
-
-        let published = self
-            .publish_result(invocation, owner_epoch, &mut cached, result, next_state)
-            .await;
-        timings.state_publication_completed_at_ms = Some(timings.elapsed_ms());
-        if published.is_err() {
-            self.evict(&invocation.actor).await;
-        }
-        self.store_cached_state(object, cached)?;
-        match published {
-            Ok(ActorExecutionResult::Completed { result, .. }) => {
-                Ok(ActorExecutionResult::Completed { result, effects })
-            }
-            Ok(result) => Ok(result),
-            Err(error) => {
-                warn!(
-                    actor = %invocation.actor.storage_key(),
-                    error = %format!("{error:#}"),
-                    "actor completed but state publication could not be confirmed"
-                );
-                Ok(ActorExecutionResult::Failed {
-                    failure: ActorInvocationFailure::outcome_unknown_after_execution(),
-                })
-            }
-        }
-    }
-
-    async fn take_or_load_state(
-        &self,
-        object: &ActorStorageKey,
-        owner_epoch: u64,
-        state_version: u64,
-        state_read_url: &str,
-        timings: &mut InvocationTimings,
-    ) -> Result<CachedActorState> {
-        let cached = self.take_cached_state(object)?;
-        timings.state_cache_checked_at_ms = Some(timings.elapsed_ms());
-        if let Some(cached) = cached
-            && cached.owner_epoch == owner_epoch
-        {
-            return Ok(cached);
-        }
-        if state_version == 0 {
-            ensure!(
-                state_read_url.is_empty(),
-                "uninitialized actor has a state URL"
-            );
-            return Ok(CachedActorState::new(owner_epoch));
-        }
-        ensure!(
-            !state_read_url.is_empty(),
-            "initialized actor has no state URL"
-        );
-        let loaded = self
-            .state
-            .read(state_read_url)
-            .await
-            .context("load actor state")?;
-        timings.state_downloaded_at_ms = Some(timings.elapsed_ms());
-        let cached = CachedActorState::from_loaded(owner_epoch, state_version, &loaded)?;
-        timings.state_decoded_at_ms = Some(timings.elapsed_ms());
-        Ok(cached)
-    }
-
-    fn take_cached_state(&self, object: &ActorStorageKey) -> Result<Option<CachedActorState>> {
-        Ok(self
-            .cached_state
-            .lock()
-            .map_err(|_| anyhow::anyhow!("actor state cache lock poisoned"))?
-            .remove(object))
-    }
-
-    fn store_cached_state(&self, object: ActorStorageKey, state: CachedActorState) -> Result<()> {
-        self.cached_state
-            .lock()
-            .map_err(|_| anyhow::anyhow!("actor state cache lock poisoned"))?
-            .insert(object, state);
-        Ok(())
-    }
-
-    async fn execute_method(
-        &self,
-        invocation: &ActorInvocation,
-        state: Option<&Value>,
-        connections: Vec<crate::actor::ActorSocketConnection>,
-    ) -> std::result::Result<(Value, Value, Vec<ActorSocketEffect>), ActorExecutionResult> {
-        let outcome = self
-            .executor
-            .invoke(
-                ActorMethodInvocation {
-                    request_id: invocation.request_id.clone(),
-                    actor: invocation.actor.clone(),
-                    method: invocation.method.clone(),
-                    args: invocation.args.clone(),
-                    connections,
-                },
-                state,
-            )
-            .await;
-        match outcome {
-            Ok(ActorMethodOutcome::Completed {
-                result,
-                state,
-                effects,
-            }) => match validate_socket_effects(&effects) {
-                Ok(()) => Ok((result, state, effects)),
-                Err(error) => {
-                    self.evict(&invocation.actor).await;
-                    Err(failed(
-                        "actor_error",
-                        format!("actor returned invalid socket effects: {error:#}"),
-                    ))
-                }
-            },
-            Ok(ActorMethodOutcome::Failed(failure)) => {
-                self.evict(&invocation.actor).await;
-                let code = match failure.code.as_str() {
-                    "resource_exhausted" => "resource_exhausted",
-                    _ => "actor_error",
-                };
-                Err(failed(code, failure.message))
-            }
-            Err(error) => {
-                self.evict(&invocation.actor).await;
-                Err(failed(
-                    "actor_error",
-                    format!("actor executor failed: {error:#}"),
-                ))
-            }
-        }
-    }
-
-    async fn execute_socket_event(
-        &self,
-        invocation: ActorSocketInvocation,
-        state: Option<&Value>,
-    ) -> std::result::Result<(Value, Vec<ActorSocketEffect>), ActorExecutionResult> {
-        let actor = invocation.actor.clone();
-        match self.executor.handle_socket(invocation, state).await {
-            Ok(ActorSocketOutcome::Handled { state, effects }) => {
-                match validate_socket_effects(&effects) {
-                    Ok(()) => Ok((state, effects)),
-                    Err(error) => {
-                        self.evict(&actor).await;
-                        Err(failed(
-                            "actor_error",
-                            format!("actor returned invalid socket effects: {error:#}"),
-                        ))
-                    }
-                }
-            }
-            Ok(ActorSocketOutcome::Failed(failure)) => {
-                let code = match failure.code.as_str() {
-                    "resource_exhausted" => "resource_exhausted",
-                    _ => "actor_error",
-                };
-                Err(failed(code, failure.message))
-            }
-            Err(error) => Err(failed(
-                "actor_error",
-                format!("actor executor failed: {error:#}"),
-            )),
-        }
-    }
-
-    async fn publish_result(
-        &self,
-        invocation: &ActorInvocation,
-        owner_epoch: u64,
-        cached: &mut CachedActorState,
-        result: Value,
-        next_state: Value,
-    ) -> Result<ActorExecutionResult> {
-        let mut timings = StateWriteTimings::new();
-        let next_version = cached.state_version.checked_add(1);
-        let outcome = self
-            .publish_result_once(
-                invocation,
-                owner_epoch,
-                cached,
-                result,
-                next_state,
-                &mut timings,
-            )
-            .await;
-        self.log_state_write(invocation, owner_epoch, next_version, &timings, &outcome);
-        outcome
-    }
-
-    async fn publish_result_once(
-        &self,
-        invocation: &ActorInvocation,
-        owner_epoch: u64,
-        cached: &mut CachedActorState,
-        result: Value,
-        next_state: Value,
-        timings: &mut StateWriteTimings,
-    ) -> Result<ActorExecutionResult> {
-        let next_version = cached
-            .state_version
-            .checked_add(1)
-            .context("actor state version overflow")?;
-        let ticket = match cached.next_write.take() {
-            Some(ticket)
-                if ticket.state_version == next_version
-                    && ticket.expires_at_ms
-                        > unix_millis()?.saturating_add(i64::try_from(
-                            STATE_WRITE_TICKET_SAFETY.as_millis(),
-                        )?) =>
-            {
-                ticket
-            }
-            _ => {
-                self.commits
-                    .prepare_state_write(
-                        &invocation.actor,
-                        &self.endpoint.id,
-                        owner_epoch,
-                        cached.state_version,
-                    )
-                    .await?
-            }
-        };
-        ensure!(
-            ticket.state_version == next_version,
-            "state write ticket has the wrong version"
-        );
-        timings.write_ticket_ready_at_ms = Some(timings.elapsed_ms());
-        let snapshot = StateSnapshot::new(
-            next_version,
+        self.submit(
+            ActorOperation::Socket(invocation),
             owner_epoch,
-            invocation.request_id.clone(),
-            next_state,
-            result.clone(),
-        )?;
-        timings.snapshot_created_at_ms = Some(timings.elapsed_ms());
-        let bytes = snapshot.encode()?;
-        timings.snapshot_encoded_at_ms = Some(timings.elapsed_ms());
-        let write = self.state.write(&ticket.url, bytes).await?;
-        timings.snapshot_uploaded_at_ms = Some(timings.elapsed_ms());
-        ensure!(
-            matches!(write, StateWrite::Written | StateWrite::AlreadyExists),
-            "actor snapshot was not stored"
-        );
-        cached.pending = Some(PendingStateCommit { snapshot, ticket });
-        self.finish_pending_commit(invocation, cached).await?;
-        timings.commit_rpc_completed_at_ms = Some(timings.elapsed_ms());
-        Ok(ActorExecutionResult::Completed {
-            result,
-            effects: Vec::new(),
-        })
-    }
-
-    fn log_state_write(
-        &self,
-        invocation: &ActorInvocation,
-        owner_epoch: u64,
-        state_version: Option<u64>,
-        timings: &StateWriteTimings,
-        outcome: &Result<ActorExecutionResult>,
-    ) {
-        match outcome {
-            Ok(_) => info!(
-                event = "actor_state_write",
-                request_id = %invocation.request_id,
-                namespace_id = %invocation.actor.namespace_id,
-                actor_type = %invocation.actor.actor_type,
-                actor_id = %invocation.actor.actor_id,
-                host_id = %self.endpoint.id,
-                owner_epoch,
-                state_version,
-                started_at_ms = 0,
-                write_ticket_ready_at_ms = timings.write_ticket_ready_at_ms,
-                snapshot_created_at_ms = timings.snapshot_created_at_ms,
-                snapshot_encoded_at_ms = timings.snapshot_encoded_at_ms,
-                snapshot_uploaded_at_ms = timings.snapshot_uploaded_at_ms,
-                commit_rpc_completed_at_ms = timings.commit_rpc_completed_at_ms,
-                completed_at_ms = timings.elapsed_ms(),
-                outcome = "committed",
-                "immutable actor state committed"
-            ),
-            Err(error) => warn!(
-                event = "actor_state_write",
-                request_id = %invocation.request_id,
-                namespace_id = %invocation.actor.namespace_id,
-                actor_type = %invocation.actor.actor_type,
-                actor_id = %invocation.actor.actor_id,
-                host_id = %self.endpoint.id,
-                owner_epoch,
-                state_version,
-                started_at_ms = 0,
-                write_ticket_ready_at_ms = timings.write_ticket_ready_at_ms,
-                snapshot_created_at_ms = timings.snapshot_created_at_ms,
-                snapshot_encoded_at_ms = timings.snapshot_encoded_at_ms,
-                snapshot_uploaded_at_ms = timings.snapshot_uploaded_at_ms,
-                commit_rpc_completed_at_ms = timings.commit_rpc_completed_at_ms,
-                completed_at_ms = timings.elapsed_ms(),
-                outcome = "failed",
-                error = %format!("{error:#}"),
-                "immutable actor state commit failed"
-            ),
-        }
-    }
-
-    async fn finish_pending_commit(
-        &self,
-        invocation: &ActorInvocation,
-        cached: &mut CachedActorState,
-    ) -> Result<()> {
-        let Some(pending) = &cached.pending else {
-            return Ok(());
-        };
-        let committed = self
-            .commits
-            .commit_state(
-                &invocation.actor,
-                &self.endpoint.id,
-                cached.owner_epoch,
-                cached.state_version,
-                &pending.ticket.object_name,
-                &pending.snapshot.request_id,
-            )
-            .await?;
-        ensure!(
-            committed.state_version == pending.snapshot.state_version,
-            "control plane committed the wrong actor state version"
-        );
-        let pending = cached.pending.take().expect("pending commit checked above");
-        cached.state_version = pending.snapshot.state_version;
-        cached.state = Some(pending.snapshot.state);
-        cached.last_request_id = Some(pending.snapshot.request_id);
-        cached.last_result = Some(pending.snapshot.result);
-        cached.next_write = committed.next_write;
-        Ok(())
-    }
-
-    fn log_invocation(
-        &self,
-        invocation: &ActorInvocation,
-        timings: &InvocationTimings,
-        outcome: &Result<ActorExecutionResult>,
-    ) {
-        match outcome {
-            Ok(result) => self.log_invocation_result(
-                invocation,
-                timings,
-                actor_execution_outcome(result),
-                actor_execution_failure_code(result).unwrap_or(""),
-                None,
-            ),
-            Err(error) => self.log_invocation_result(
-                invocation,
-                timings,
-                "host_error",
-                "",
-                Some(format!("{error:#}")),
-            ),
-        }
-    }
-
-    fn log_invocation_result(
-        &self,
-        invocation: &ActorInvocation,
-        timings: &InvocationTimings,
-        outcome: &str,
-        failure_code: &str,
-        error: Option<String>,
-    ) {
-        info!(
-                event = "actor_host_invocation",
-                request_id = %invocation.request_id,
-                namespace_id = %invocation.actor.namespace_id,
-                actor_type = %invocation.actor.actor_type,
-                actor_id = %invocation.actor.actor_id,
-                method = %invocation.method,
-                host_id = %self.endpoint.id,
-                started_at_ms = 0,
-                queue_admitted_at_ms = timings.queue_admitted_at_ms,
-                state_cache_checked_at_ms = timings.state_cache_checked_at_ms,
-                state_downloaded_at_ms = timings.state_downloaded_at_ms,
-                state_decoded_at_ms = timings.state_decoded_at_ms,
-                pending_commit_resolved_at_ms = timings.pending_commit_resolved_at_ms,
-                actor_execution_completed_at_ms = timings.actor_execution_completed_at_ms,
-                state_publication_completed_at_ms = timings.state_publication_completed_at_ms,
-                completed_at_ms = timings.elapsed_ms(),
-                outcome,
-                failure_code,
-                error,
-                "actor host invocation completed"
-        );
+            state_version,
+            state_read_url,
+        )
+        .await
     }
 
     pub(crate) async fn drain(&self, timeout: Duration) -> Result<()> {
-        self.accepting.store(false, Ordering::SeqCst);
         tokio::time::timeout(timeout, async {
-            while self.active.load(Ordering::SeqCst) != 0 {
-                self.idle.notified().await;
-            }
+            let (reply, done) = oneshot::channel();
+            self.commands
+                .send(HostCommand::Drain(reply))
+                .await
+                .context("actor dispatcher stopped")?;
+            done.await
+                .context("actor dispatcher stopped while draining")
         })
         .await
-        .context("actor invocations did not drain before shutdown")?;
-        Ok(())
+        .context("actor invocations did not drain before shutdown")?
     }
 
-    fn validate_invocation(
+    async fn submit(
         &self,
-        invocation: &ActorInvocation,
-    ) -> Result<Option<ActorExecutionResult>> {
-        self.validate_operation(invocation, false)
-    }
-
-    fn validate_operation(
-        &self,
-        invocation: &ActorInvocation,
-        allowed_while_draining: bool,
-    ) -> Result<Option<ActorExecutionResult>> {
-        if !allowed_while_draining && !self.accepting.load(Ordering::SeqCst) {
-            return Ok(Some(ActorExecutionResult::HostUnavailable));
-        }
-        invocation.validate()?;
-        if invocation.actor.namespace_id != self.namespace_id {
-            anyhow::bail!("actor invocation crossed the host namespace");
-        }
-        if !self.executor.supports(&invocation.actor.actor_type) {
-            return Ok(Some(failed(
-                "actor_error",
-                "actor type is not loaded by this host",
-            )));
-        }
-        Ok(None)
-    }
-
-    async fn evict(&self, actor: &crate::actor::ActorKey) {
-        if let Err(error) = self
-            .executor
-            .evict(ActorMethodEviction {
-                actor: actor.clone(),
-            })
-            .await
-        {
-            warn!(error = %format!("{error:#}"), "failed to evict actor after invocation failure");
-        }
-    }
-
-    fn begin_activity(&self) {
-        let active = self.active.fetch_add(1, Ordering::SeqCst) + 1;
-        let _ = self.activity_tx.send(active);
-    }
-
-    fn finish_activity(&self) {
-        let active = self.active.fetch_sub(1, Ordering::SeqCst) - 1;
-        let _ = self.activity_tx.send(active);
-        if active == 0 {
-            self.idle.notify_waiters();
-        }
-    }
-}
-
-fn socket_event_name(event: &crate::actor::ActorSocketEvent) -> &'static str {
-    match event {
-        crate::actor::ActorSocketEvent::Connect { .. } => "onConnect",
-        crate::actor::ActorSocketEvent::Message { .. } => "onMessage",
-        crate::actor::ActorSocketEvent::Disconnect { .. } => "onDisconnect",
-    }
-}
-
-struct CachedActorState {
-    owner_epoch: u64,
-    state_version: u64,
-    state: Option<Value>,
-    last_request_id: Option<String>,
-    last_result: Option<Value>,
-    next_write: Option<StateWriteTicket>,
-    pending: Option<PendingStateCommit>,
-}
-
-struct PendingStateCommit {
-    snapshot: StateSnapshot,
-    ticket: StateWriteTicket,
-}
-
-impl CachedActorState {
-    fn new(owner_epoch: u64) -> Self {
-        Self {
-            owner_epoch,
-            state_version: 0,
-            state: None,
-            last_request_id: None,
-            last_result: None,
-            next_write: None,
-            pending: None,
-        }
-    }
-
-    fn from_loaded(owner_epoch: u64, state_version: u64, loaded: &[u8]) -> Result<Self> {
-        let snapshot = StateSnapshot::decode(loaded)?;
-        ensure!(
-            snapshot.state_version == state_version,
-            "actor snapshot version does not match its state head"
-        );
-        ensure!(
-            snapshot.owner_epoch <= owner_epoch,
-            "actor snapshot belongs to a newer owner epoch"
-        );
-        Ok(Self {
+        operation: ActorOperation,
+        owner_epoch: u64,
+        state_version: u64,
+        state_read_url: String,
+    ) -> Result<ActorExecutionResult> {
+        let (reply, result) = oneshot::channel();
+        let request = ActorRequest {
+            operation,
             owner_epoch,
             state_version,
-            state: Some(snapshot.state),
-            last_request_id: Some(snapshot.request_id),
-            last_result: Some(snapshot.result),
-            next_write: None,
-            pending: None,
+            state_read_url,
+            timings: InvocationTimings::new(),
+            reply,
+        };
+        self.commands
+            .send(HostCommand::Invoke(Box::new(request)))
+            .await
+            .context("actor dispatcher stopped")?;
+        result.await.unwrap_or_else(|_| {
+            Ok(ActorExecutionResult::Failed {
+                failure: ActorInvocationFailure::outcome_unknown_after_execution(),
+            })
         })
     }
-
-    fn state(&self) -> Option<&Value> {
-        self.state.as_ref()
-    }
-
-    fn replay(&self, request_id: &str) -> Option<Value> {
-        (self.last_request_id.as_deref() == Some(request_id))
-            .then(|| self.last_result.clone())
-            .flatten()
-    }
 }
 
-struct InvocationTimings {
-    started_at: Instant,
-    queue_admitted_at_ms: Option<f64>,
-    state_cache_checked_at_ms: Option<f64>,
-    state_downloaded_at_ms: Option<f64>,
-    state_decoded_at_ms: Option<f64>,
-    pending_commit_resolved_at_ms: Option<f64>,
-    actor_execution_completed_at_ms: Option<f64>,
-    state_publication_completed_at_ms: Option<f64>,
+struct HostDispatcher {
+    endpoint: HostEndpoint,
+    namespace_id: String,
+    executor: Arc<dyn ActorExecutor>,
+    commits: Arc<dyn StateCommitAuthority>,
+    state: Arc<dyn StateTransport>,
+    actors: HashMap<ActorStorageKey, ActorMailbox>,
+    tasks: JoinSet<()>,
+    accepting: watch::Sender<bool>,
+    activity: watch::Sender<usize>,
+    active: usize,
+    drained: Vec<oneshot::Sender<()>>,
 }
 
-impl InvocationTimings {
-    fn new() -> Self {
+impl HostDispatcher {
+    fn new(
+        endpoint: HostEndpoint,
+        namespace_id: String,
+        executor: Arc<dyn ActorExecutor>,
+        commits: Arc<dyn StateCommitAuthority>,
+        state: Arc<dyn StateTransport>,
+        activity: watch::Sender<usize>,
+    ) -> Self {
         Self {
-            started_at: Instant::now(),
-            queue_admitted_at_ms: None,
-            state_cache_checked_at_ms: None,
-            state_downloaded_at_ms: None,
-            state_decoded_at_ms: None,
-            pending_commit_resolved_at_ms: None,
-            actor_execution_completed_at_ms: None,
-            state_publication_completed_at_ms: None,
+            endpoint,
+            namespace_id,
+            executor,
+            commits,
+            state,
+            actors: HashMap::new(),
+            tasks: JoinSet::new(),
+            accepting: watch::channel(true).0,
+            activity,
+            active: 0,
+            drained: Vec::new(),
         }
     }
 
-    fn elapsed_ms(&self) -> f64 {
-        elapsed_ms(self.started_at)
-    }
-}
-
-struct StateWriteTimings {
-    started_at: Instant,
-    write_ticket_ready_at_ms: Option<f64>,
-    snapshot_created_at_ms: Option<f64>,
-    snapshot_encoded_at_ms: Option<f64>,
-    snapshot_uploaded_at_ms: Option<f64>,
-    commit_rpc_completed_at_ms: Option<f64>,
-}
-
-impl StateWriteTimings {
-    fn new() -> Self {
-        Self {
-            started_at: Instant::now(),
-            write_ticket_ready_at_ms: None,
-            snapshot_created_at_ms: None,
-            snapshot_encoded_at_ms: None,
-            snapshot_uploaded_at_ms: None,
-            commit_rpc_completed_at_ms: None,
+    async fn run(mut self, mut commands: mpsc::Receiver<HostCommand>) {
+        let (completed, mut completions) = mpsc::channel(HOST_COMMAND_CAPACITY);
+        loop {
+            tokio::select! {
+                biased;
+                Some(completion) = completions.recv() => self.complete(completion),
+                Some(result) = self.tasks.join_next_with_id(), if !self.tasks.is_empty() => self.task_stopped(result),
+                command = commands.recv() => match command {
+                    Some(HostCommand::Invoke(request)) => self.admit(*request, &completed),
+                    Some(HostCommand::Drain(reply)) => {
+                        self.accepting.send_replace(false);
+                        self.drained.retain(|waiter| !waiter.is_closed());
+                        self.drained.push(reply);
+                        self.publish_activity();
+                    }
+                    None => return,
+                }
+            }
         }
     }
 
-    fn elapsed_ms(&self) -> f64 {
-        elapsed_ms(self.started_at)
+    fn admit(&mut self, request: ActorRequest, completed: &mpsc::Sender<ActorCompletion>) {
+        if let Some(result) = self.validate(&request) {
+            request.finish(&self.endpoint, result);
+            return;
+        }
+        let object = request.operation.actor().storage_key();
+        if !self.actors.contains_key(&object) {
+            self.start_actor(object.clone(), completed.clone());
+        }
+        let mailbox = self.actors.get_mut(&object).expect("actor mailbox created");
+        if mailbox.admitted >= MAX_ADMITTED_INVOCATIONS_PER_ACTOR {
+            request.finish(&self.endpoint, Ok(ActorExecutionResult::HostUnavailable));
+            return;
+        }
+        match mailbox.sender.try_send(request) {
+            Ok(()) => {
+                mailbox.admitted += 1;
+                self.active += 1;
+                self.publish_activity();
+            }
+            Err(error) => {
+                error
+                    .into_inner()
+                    .finish(&self.endpoint, Ok(ActorExecutionResult::HostUnavailable));
+            }
+        }
+    }
+
+    fn validate(&self, request: &ActorRequest) -> Option<Result<ActorExecutionResult>> {
+        if !*self.accepting.borrow() && !request.operation.is_disconnect() {
+            return Some(Ok(ActorExecutionResult::HostUnavailable));
+        }
+        if let Err(error) = request.operation.validate(&self.namespace_id) {
+            return Some(Err(error));
+        }
+        if !self
+            .executor
+            .supports(&request.operation.actor().actor_type)
+        {
+            return Some(Ok(ActorExecutionResult::Failed {
+                failure: ActorInvocationFailure {
+                    code: "actor_error".into(),
+                    message: "actor type is not loaded by this host".into(),
+                },
+            }));
+        }
+        None
+    }
+
+    fn start_actor(&mut self, object: ActorStorageKey, completed: mpsc::Sender<ActorCompletion>) {
+        let runtime = ActorRuntime::new(
+            self.endpoint.clone(),
+            self.executor.clone(),
+            self.commits.clone(),
+            self.state.clone(),
+        );
+        let (sender, requests) = mpsc::channel(MAX_ADMITTED_INVOCATIONS_PER_ACTOR);
+        let task = self.tasks.spawn(run_actor(
+            object.clone(),
+            runtime,
+            requests,
+            completed,
+            self.accepting.subscribe(),
+        ));
+        self.actors.insert(
+            object,
+            ActorMailbox {
+                sender,
+                admitted: 0,
+                task_id: task.id(),
+            },
+        );
+    }
+
+    fn complete(&mut self, completion: ActorCompletion) {
+        let mailbox = self
+            .actors
+            .get_mut(&completion.object)
+            .expect("completed actor mailbox");
+        // A stopped task's remaining admissions may already have been released.
+        if mailbox.admitted > 0 {
+            mailbox.admitted -= 1;
+            self.active -= 1;
+        }
+        self.publish_activity();
+        let _ = completion.reply.send(completion.result);
+    }
+
+    fn task_stopped(&mut self, result: Result<(Id, ()), JoinError>) {
+        let id = match result {
+            Ok((id, ())) => id,
+            Err(error) => {
+                error!(error = %error, "actor task stopped unexpectedly");
+                error.id()
+            }
+        };
+        if let Some(mailbox) = self
+            .actors
+            .values_mut()
+            .find(|mailbox| mailbox.task_id == id)
+        {
+            self.active -= mailbox.admitted;
+            mailbox.admitted = 0;
+        }
+        self.publish_activity();
+    }
+
+    fn publish_activity(&mut self) {
+        self.activity.send_replace(self.active);
+        if self.active == 0 {
+            for waiter in self.drained.drain(..) {
+                let _ = waiter.send(());
+            }
+        }
     }
 }
 
-fn actor_execution_outcome(result: &ActorExecutionResult) -> &'static str {
-    match result {
-        ActorExecutionResult::Completed { .. } => "completed",
-        ActorExecutionResult::Failed { .. } => "failed",
-        ActorExecutionResult::Reroute => "reroute",
-        ActorExecutionResult::HostUnavailable => "host_unavailable",
+async fn run_actor(
+    object: ActorStorageKey,
+    mut runtime: ActorRuntime,
+    mut requests: mpsc::Receiver<ActorRequest>,
+    completed: mpsc::Sender<ActorCompletion>,
+    accepting: watch::Receiver<bool>,
+) {
+    while let Some(request) = requests.recv().await {
+        let result = if !*accepting.borrow() && !request.operation.is_disconnect() {
+            let result = Ok(ActorExecutionResult::HostUnavailable);
+            ActorRuntime::log_invocation(
+                runtime.endpoint(),
+                &request.operation.invocation(),
+                &request.timings,
+                &result,
+            );
+            result
+        } else {
+            match request.operation {
+                ActorOperation::Method(invocation) => {
+                    runtime
+                        .invoke_actor(
+                            invocation,
+                            request.owner_epoch,
+                            request.state_version,
+                            request.state_read_url,
+                            request.timings,
+                        )
+                        .await
+                }
+                ActorOperation::Socket(invocation) => {
+                    runtime
+                        .handle_socket_event(
+                            invocation,
+                            request.owner_epoch,
+                            request.state_version,
+                            request.state_read_url,
+                            request.timings,
+                        )
+                        .await
+                }
+            }
+        };
+        if completed
+            .send(ActorCompletion {
+                object: object.clone(),
+                reply: request.reply,
+                result,
+            })
+            .await
+            .is_err()
+        {
+            return;
+        }
     }
 }
 
-fn actor_execution_failure_code(result: &ActorExecutionResult) -> Option<&str> {
-    match result {
-        ActorExecutionResult::Failed { failure } => Some(&failure.code),
-        _ => None,
+enum HostCommand {
+    Invoke(Box<ActorRequest>),
+    Drain(oneshot::Sender<()>),
+}
+
+struct ActorMailbox {
+    sender: mpsc::Sender<ActorRequest>,
+    admitted: usize,
+    task_id: Id,
+}
+
+struct ActorRequest {
+    operation: ActorOperation,
+    owner_epoch: u64,
+    state_version: u64,
+    state_read_url: String,
+    timings: InvocationTimings,
+    reply: oneshot::Sender<Result<ActorExecutionResult>>,
+}
+
+struct ActorCompletion {
+    object: ActorStorageKey,
+    reply: oneshot::Sender<Result<ActorExecutionResult>>,
+    result: Result<ActorExecutionResult>,
+}
+
+impl ActorRequest {
+    fn finish(self, endpoint: &HostEndpoint, result: Result<ActorExecutionResult>) {
+        ActorRuntime::log_invocation(
+            endpoint,
+            &self.operation.invocation(),
+            &self.timings,
+            &result,
+        );
+        let _ = self.reply.send(result);
     }
 }
 
-fn elapsed_ms(started_at: Instant) -> f64 {
-    started_at.elapsed().as_secs_f64() * 1_000.0
+enum ActorOperation {
+    Method(ActorInvocation),
+    Socket(ActorSocketInvocation),
 }
 
-fn unix_millis() -> Result<i64> {
-    i64::try_from(
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .context("system clock is before the Unix epoch")?
-            .as_millis(),
-    )
-    .context("system clock exceeds supported state-write timestamp range")
-}
-
-fn failed(code: impl Into<String>, message: impl Into<String>) -> ActorExecutionResult {
-    ActorExecutionResult::Failed {
-        failure: ActorInvocationFailure {
-            code: code.into(),
-            message: message.into(),
-        },
+impl ActorOperation {
+    fn actor(&self) -> &ActorKey {
+        match self {
+            Self::Method(invocation) => &invocation.actor,
+            Self::Socket(invocation) => &invocation.actor,
+        }
     }
-}
 
-struct ActivityGuard<'a> {
-    host: &'a ActorHost,
-}
-
-impl<'a> ActivityGuard<'a> {
-    fn begin(host: &'a ActorHost) -> Self {
-        host.begin_activity();
-        Self { host }
+    fn is_disconnect(&self) -> bool {
+        matches!(
+            self,
+            Self::Socket(ActorSocketInvocation {
+                event: ActorSocketEvent::Disconnect { .. },
+                ..
+            })
+        )
     }
-}
 
-impl Drop for ActivityGuard<'_> {
-    fn drop(&mut self) {
-        self.host.finish_activity();
+    fn validate(&self, namespace: &str) -> Result<()> {
+        ensure!(
+            self.actor().namespace_id == namespace,
+            "actor invocation crossed the host namespace"
+        );
+        self.invocation().validate()
+    }
+
+    fn invocation(&self) -> Cow<'_, ActorInvocation> {
+        match self {
+            Self::Method(invocation) => Cow::Borrowed(invocation),
+            Self::Socket(invocation) => Cow::Owned(ActorInvocation {
+                request_id: invocation.request_id.clone(),
+                actor: invocation.actor.clone(),
+                method: socket_event_name(&invocation.event).into(),
+                args: Vec::new(),
+            }),
+        }
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use std::sync::atomic::{AtomicU64, Ordering};
+    use super::super::actor_runtime::CommittedState;
+    use crate::{
+        actor::{ActorMethodInvocation, ActorMethodOutcome, ActorSocketEffect, ActorSocketOutcome},
+        state_log::StateSnapshot,
+        state_transport::StateWrite,
+        storage_urls::StateWriteTicket,
+    };
+    use async_trait::async_trait;
+    use serde_json::Value;
+    use std::sync::{
+        Mutex,
+        atomic::{AtomicU64, AtomicUsize, Ordering},
+    };
 
     use serde_json::json;
 
@@ -991,6 +481,280 @@ mod tests {
     struct ExhaustedExecutor;
 
     struct InvalidEffectsExecutor;
+
+    struct ControlledExecutor {
+        started: tokio::sync::mpsc::UnboundedSender<String>,
+        release: Arc<tokio::sync::Semaphore>,
+    }
+
+    #[async_trait]
+    impl ActorExecutor for ControlledExecutor {
+        fn supports(&self, _: &str) -> bool {
+            true
+        }
+
+        async fn invoke(
+            &self,
+            invocation: ActorMethodInvocation,
+            state: Option<&Value>,
+        ) -> Result<ActorMethodOutcome> {
+            self.started.send(invocation.request_id.clone())?;
+            if invocation.request_id == "panic" {
+                panic!("actor executor panicked");
+            }
+            if invocation.request_id == "first" {
+                self.release.acquire().await?.forget();
+            }
+            let count = state.and_then(|value| value["count"].as_u64()).unwrap_or(0) + 1;
+            Ok(ActorMethodOutcome::Completed {
+                result: json!(count),
+                state: json!({"count": count}),
+                effects: Vec::new(),
+            })
+        }
+
+        async fn handle_socket(
+            &self,
+            invocation: ActorSocketInvocation,
+            state: Option<&Value>,
+        ) -> Result<ActorSocketOutcome> {
+            let result = self
+                .invoke(
+                    ActorMethodInvocation {
+                        request_id: invocation.request_id,
+                        actor: invocation.actor,
+                        method: "onMessage".into(),
+                        args: Vec::new(),
+                        connections: invocation.connections,
+                    },
+                    state,
+                )
+                .await?;
+            match result {
+                ActorMethodOutcome::Completed { state, effects, .. } => {
+                    Ok(ActorSocketOutcome::Handled { state, effects })
+                }
+                ActorMethodOutcome::Failed(failure) => Ok(ActorSocketOutcome::Failed(failure)),
+            }
+        }
+    }
+
+    fn controlled_host() -> (
+        Arc<ActorHost>,
+        tokio::sync::mpsc::UnboundedReceiver<String>,
+        Arc<tokio::sync::Semaphore>,
+    ) {
+        let (started, receiver) = tokio::sync::mpsc::unbounded_channel();
+        let release = Arc::new(tokio::sync::Semaphore::new(0));
+        let host = ActorHost::new(
+            HostEndpoint {
+                id: super::super::HostId::new("host-1"),
+                route: "http://host.invalid/".into(),
+            },
+            "project-1".into(),
+            Arc::new(ControlledExecutor {
+                started,
+                release: release.clone(),
+            }),
+            Arc::new(FakeAuthority::default()),
+            Arc::new(FakeStateTransport::default()),
+        );
+        (Arc::new(host), receiver, release)
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_failed_actor_task_releases_admission_and_does_not_restart_unknown_state()
+    -> Result<()> {
+        for _ in 0..64 {
+            let (host, mut started, release) = controlled_host();
+            let mut activity = host.activity();
+            let caller = host.clone();
+            let first = tokio::spawn(async move { invoke(&caller, "first").await });
+            assert_eq!(started.recv().await.as_deref(), Some("first"));
+            let caller = host.clone();
+            let panicking = tokio::spawn(async move { invoke(&caller, "panic").await });
+            tokio::time::timeout(
+                Duration::from_secs(2),
+                activity.wait_for(|count| *count == 2),
+            )
+            .await??;
+            release.add_permits(1);
+            assert_eq!(
+                tokio::time::timeout(Duration::from_secs(2), first).await???,
+                completed(1)
+            );
+            let result = tokio::time::timeout(Duration::from_secs(2), panicking).await???;
+            assert!(
+                matches!(result, ActorExecutionResult::Failed { failure } if failure.code == "outcome_unknown")
+            );
+            assert_eq!(
+                invoke(&host, "after-panic").await?,
+                ActorExecutionResult::HostUnavailable
+            );
+            host.drain(Duration::from_secs(1)).await?;
+            assert_eq!(*activity.borrow(), 0);
+        }
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn caller_cancellation_cannot_release_an_actor_during_its_commit() -> Result<()> {
+        let (commit_started, mut committing) = mpsc::unbounded_channel();
+        let release = Arc::new(tokio::sync::Semaphore::new(0));
+        let authority = Arc::new(FakeAuthority {
+            paused_commit: Some((commit_started, release.clone())),
+            ..Default::default()
+        });
+        let executor = Arc::new(IncrementingExecutor {
+            invocations: AtomicU64::new(0),
+        });
+        let host = Arc::new(ActorHost::new(
+            HostEndpoint {
+                id: super::super::HostId::new("host-1"),
+                route: "http://host.invalid/".into(),
+            },
+            "project-1".into(),
+            executor.clone(),
+            authority.clone(),
+            Arc::new(FakeStateTransport::default()),
+        ));
+        let caller = host.clone();
+        let first = tokio::spawn(async move { invoke(&caller, "first").await });
+        assert_eq!(
+            tokio::time::timeout(Duration::from_secs(2), committing.recv()).await?,
+            Some(())
+        );
+        first.abort();
+        assert!(first.await.unwrap_err().is_cancelled());
+        let caller = host.clone();
+        let mut second = tokio::spawn(async move { invoke(&caller, "second").await });
+        assert!(
+            tokio::time::timeout(Duration::from_millis(30), &mut second)
+                .await
+                .is_err()
+        );
+        assert_eq!(executor.invocations.load(Ordering::Relaxed), 1);
+        release.add_permits(1);
+        assert_eq!(
+            tokio::time::timeout(Duration::from_secs(2), second).await???,
+            completed(2)
+        );
+        assert_eq!(*authority.commits.lock().unwrap(), [0, 1]);
+        host.drain(Duration::from_secs(1)).await?;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn cancelled_callers_do_not_interrupt_accepted_actor_operations() -> Result<()> {
+        for socket in [false, true] {
+            let (host, mut started, release) = controlled_host();
+            let caller = host.clone();
+            let first = tokio::spawn(async move {
+                if socket {
+                    caller
+                        .handle_socket_event(
+                            ActorSocketInvocation {
+                                request_id: "first".into(),
+                                actor: ActorKey {
+                                    namespace_id: "project-1".into(),
+                                    actor_type: "Counter".into(),
+                                    actor_id: "counter-1".into(),
+                                },
+                                event: crate::actor::ActorSocketEvent::Message {
+                                    connection_id: "socket-1".into(),
+                                    message: crate::actor::ActorSocketMessage::Text {
+                                        data: "increment".into(),
+                                    },
+                                },
+                                connections: Vec::new(),
+                            },
+                            1,
+                            0,
+                            String::new(),
+                        )
+                        .await
+                } else {
+                    invoke(&caller, "first").await
+                }
+            });
+            assert_eq!(started.recv().await.as_deref(), Some("first"));
+            first.abort();
+            assert!(first.await.unwrap_err().is_cancelled());
+            let caller = host.clone();
+            let second = tokio::spawn(async move { invoke(&caller, "second").await });
+            assert!(
+                tokio::time::timeout(Duration::from_millis(30), started.recv())
+                    .await
+                    .is_err(),
+                "the next call overtook an accepted operation"
+            );
+            release.add_permits(1);
+            assert_eq!(
+                tokio::time::timeout(Duration::from_secs(2), second).await???,
+                completed(2)
+            );
+            host.drain(Duration::from_secs(1)).await?;
+        }
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn actor_admission_is_bounded_without_blocking_other_actors_and_drain_rejects_queued_work()
+    -> Result<()> {
+        let (host, mut started, release) = controlled_host();
+        let mut activity = host.activity();
+        let caller = host.clone();
+        let first = tokio::spawn(async move { invoke(&caller, "first").await });
+        assert_eq!(started.recv().await.as_deref(), Some("first"));
+        let mut queued = Vec::new();
+        for index in 0..32 {
+            let caller = host.clone();
+            queued.push(tokio::spawn(async move {
+                invoke(&caller, &format!("queued-{index}")).await
+            }));
+        }
+        tokio::time::timeout(
+            Duration::from_secs(2),
+            activity.wait_for(|count| *count == 33),
+        )
+        .await??;
+        assert_eq!(
+            invoke(&host, "overflow").await?,
+            ActorExecutionResult::HostUnavailable
+        );
+        let other = host.invoke_actor(
+            ActorInvocation {
+                request_id: "other".into(),
+                actor: ActorKey {
+                    namespace_id: "project-1".into(),
+                    actor_type: "Counter".into(),
+                    actor_id: "other".into(),
+                },
+                method: "increment".into(),
+                args: Vec::new(),
+            },
+            1,
+            0,
+            String::new(),
+        );
+        assert_eq!(
+            tokio::time::timeout(Duration::from_secs(2), other).await??,
+            completed(1)
+        );
+        assert!(host.drain(Duration::from_millis(30)).await.is_err());
+        assert_eq!(
+            invoke(&host, "draining").await?,
+            ActorExecutionResult::HostUnavailable
+        );
+        release.add_permits(1);
+        assert_eq!(first.await??, completed(1));
+        for caller in queued {
+            assert_eq!(caller.await??, ActorExecutionResult::HostUnavailable);
+        }
+        host.drain(Duration::from_secs(1)).await?;
+        assert_eq!(*activity.borrow(), 0);
+        Ok(())
+    }
 
     #[async_trait]
     impl ActorExecutor for IncrementingExecutor {
@@ -1084,6 +848,7 @@ mod tests {
         preparations: Mutex<Vec<u64>>,
         commits: Mutex<Vec<u64>>,
         commit_failures: AtomicUsize,
+        paused_commit: Option<(mpsc::UnboundedSender<()>, Arc<tokio::sync::Semaphore>)>,
     }
 
     #[async_trait]
@@ -1106,9 +871,15 @@ mod tests {
             _owner_epoch: u64,
             expected_version: u64,
             _state_object: &str,
-            _request_id: &str,
+            request_id: &str,
         ) -> Result<CommittedState> {
             self.commits.lock().unwrap().push(expected_version);
+            if request_id == "first"
+                && let Some((started, release)) = &self.paused_commit
+            {
+                started.send(())?;
+                release.acquire().await?.forget();
+            }
             if self
                 .commit_failures
                 .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |remaining| {

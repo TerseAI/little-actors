@@ -10,3 +10,6 @@
 !proto/**
 !src
 !src/**
+!providers
+!providers/modal-go
+!providers/modal-go/**
