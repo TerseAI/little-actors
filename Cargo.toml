@@ -1,6 +1,6 @@
 [package]
 name = "little-durable-objects"
-version = "0.1.20"
+version = "0.1.21"
 edition = "2024"
 rust-version = "1.89"
 default-run = "little-durable-objects"

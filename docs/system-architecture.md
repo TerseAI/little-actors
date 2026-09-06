@@ -6,6 +6,8 @@ status.
 
 ```text
 Application server (outside this repository)
+    | start workflow sandbox without placement constraints
+    | read MODAL_REGION; pass it unchanged when requesting its token
     | project setup + issue workflow access tokens
     | web requests + admin secret
     v
@@ -107,8 +109,14 @@ Central service -- access check / message notice ----> Application server
 ```
 
 Workflows keep host addresses until their call tokens near expiry or the host
-asks them to find a new address. A new object starts in the caller's configured
-region; an existing object keeps its recorded region when its host is replaced.
+asks them to find a new address. A new object uses the region in the caller's
+token; an existing object keeps its recorded region when its host is replaced.
+For Modal workflows, the application server reads `MODAL_REGION` after sandbox
+creation and before starting the workflow, on every execution including resumes.
+It passes that value unchanged as `storageRegion` when requesting the workflow
+token. The signed token retains the reported value. On initial object creation,
+the central service maps known cloud region IDs to its storage-region names.
+Unknown mappings or missing buckets cause an error; no fallback region is chosen.
 Registering changed project code also attempts to stop hosts for the previous
 version. Optional image preparation starts a temporary Modal machine that exits
 without running an actor.
@@ -183,7 +191,7 @@ it excludes the earlier time Modal spends preparing the machine.
 | Responsibility | Main files |
 | --- | --- |
 | Start the central service and expose its request handlers | [process.rs](../src/control_plane/process.rs), [public_api.rs](../src/control_plane/public_api.rs) |
-| Choose hosts, replace old code, check host access, approve state | [service.rs](../src/control_plane/service.rs) |
+| Choose hosts, replace old code, check host access, approve state | [service.rs](../src/control_plane/service.rs), [regions.rs](../src/control_plane/regions.rs) |
 | Keep live connections and contact the application server | [websocket.rs](../src/control_plane/websocket.rs), [socket_auth.rs](../src/control_plane/socket_auth.rs), [event_sink.rs](../src/control_plane/event_sink.rs) |
 | Make workflow calls and forward outgoing messages | [remoteClient.ts](../npm/workflow/remoteClient.ts) |
 | Run helper commands and manage Modal hosts | [command_process.rs](../src/sandbox/command_process.rs), [provider.go](../providers/modal-go/provider.go), [modal.go](../providers/modal-go/modal.go) |

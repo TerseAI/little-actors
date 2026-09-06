@@ -810,6 +810,14 @@ fn select_target_region(
     if let Some(placement) = current {
         return Ok(placement.home_region.clone());
     }
+    let storage_region = if configured_regions
+        .iter()
+        .any(|region| region == storage_region)
+    {
+        storage_region
+    } else {
+        super::regions::storage_region(storage_region)?
+    };
     ensure!(
         configured_regions
             .iter()
@@ -1552,6 +1560,33 @@ mod tests {
             "north-america-east"
         );
         assert!(select_target_region(None, "europe-west", &regions).is_err());
+        for (reported, expected) in [
+            ("us-east-1", "north-america-east"),
+            ("us-west-2", "north-america-west"),
+            ("us-central1", "north-america-central"),
+            ("us-central1-a", "north-america-central"),
+            ("us-ashburn-1", "north-america-east"),
+            ("westus3", "north-america-west"),
+        ] {
+            assert_eq!(select_target_region(None, reported, &regions)?, expected);
+            assert_eq!(
+                select_target_region(Some(&current), reported, &regions)?,
+                "north-america-east"
+            );
+        }
+        for unsupported in [
+            "",
+            "unknown",
+            "us-east-999",
+            "us-central1-unknown",
+            "eu-west-1",
+            "southcentralus",
+        ] {
+            assert!(
+                select_target_region(None, unsupported, &regions).is_err(),
+                "{unsupported}"
+            );
+        }
         Ok(())
     }
 

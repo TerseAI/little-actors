@@ -299,7 +299,7 @@ mod tests {
         let issued = issuer.issue_workflow(
             "project-1",
             "execution-1",
-            "north-america-central",
+            "us-central1-a",
             unix_millis()? + 10_000,
         )?;
 
@@ -307,7 +307,7 @@ mod tests {
 
         assert_eq!(principal.scope.namespace_id, "project-1");
         assert_eq!(principal.process_role, ActorProcessRole::Workflow);
-        assert_eq!(principal.region, "north-america-central");
+        assert_eq!(principal.region, "us-central1-a");
         let jwks: serde_json::Value = serde_json::from_slice(&issuer.jwks_json()?)?;
         assert_eq!(jwks["keys"][0]["kid"], "test-key");
         assert_eq!(jwks["keys"][0]["crv"], "Ed25519");

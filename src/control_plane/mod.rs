@@ -6,6 +6,7 @@ mod issuer;
 mod process;
 mod protocol;
 mod public_api;
+mod regions;
 mod service;
 mod socket_auth;
 mod websocket;
