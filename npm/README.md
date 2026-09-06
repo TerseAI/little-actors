@@ -8,16 +8,20 @@ Requires Node.js 20 or newer.
 pnpm add little-durable-objects
 ```
 
-Workflow sandboxes receive one system-issued project JWT. The client uses it to resolve a short-lived actor target through the control plane, then invokes the regional actor host directly over gRPC:
+Set these environment variables in the workflow process before its first actor call:
+
+```sh
+export DURABLE_OBJECT_TOKEN='<issued-workflow-token>'
+export DURABLE_OBJECT_NAMESPACE_ID='my-project'
+export DURABLE_OBJECT_CONTROL_PLANE_URL='https://objects.example.com'
+```
+
+Use the workflow token issued by the control plane, never the admin token. For a separate WebSocket gateway, also set `DURABLE_OBJECT_SOCKET_GATEWAY_URL`; otherwise it uses the control-plane URL. Terse supplies these variables when it starts a workflow.
+
+The SDK reads the environment on first use, resolves a short-lived actor target through the control plane, and invokes the regional actor host directly over gRPC:
 
 ```ts
-import { Actor, configureDurableObjects } from "little-durable-objects"
-
-configureDurableObjects({
-  token: process.env.DURABLE_OBJECT_TOKEN!,
-  namespaceId: process.env.DURABLE_OBJECT_NAMESPACE_ID!,
-  controlPlaneUrl: process.env.DURABLE_OBJECT_CONTROL_PLANE_URL!,
-})
+import { Actor } from "little-durable-objects"
 
 export class Counter extends Actor {
   count = 0
@@ -57,14 +61,6 @@ await ChatRoom.get("lobby").broadcast("streamed output")
 ```
 
 The control-plane gateway retains live sockets, metadata, and tags. Every successful connection automatically receives `{ "type": "state", "state": { ... } }` with the actor's current durable properties, so `onConnect` is only needed for custom behavior. Each lifecycle event wakes the actor host as needed, and ordinary workflow actor methods forward returned socket effects to the gateway. A workflow can use `Actor.get(id).broadcast(...)` for transient streaming without invoking the actor or persisting state. `this.connections`, `this.broadcast(...)`, `socket.setTags(...)`, `socket.close(...)`, and connect-time `socket.reject(...)` cover connection membership and the full lifecycle without a context object.
-
-Calling `configureDurableObjects` is optional when these environment variables are already present:
-
-```text
-DURABLE_OBJECT_TOKEN
-DURABLE_OBJECT_NAMESPACE_ID
-DURABLE_OBJECT_CONTROL_PLANE_URL
-```
 
 The control plane selects one sandbox provider globally. For Modal, set `DURABLE_OBJECT_SANDBOX_PROVIDER=modal`; optionally override its executable with `DURABLE_OBJECT_SANDBOX_COMMAND`.
 

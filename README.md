@@ -67,18 +67,20 @@ cargo install little-durable-objects --locked
     POST /v1/namespaces/{namespaceId}/workflow-tokens
     ```
 
-6. Give the issued project token to the workflow and call the actor. The package resolves a short-lived actor target through the control plane, caches it, and invokes the regional host directly over gRPC:
+6. Set the workflow's environment before its first actor call. Use the issued workflow token, never the admin token:
+
+    ```sh
+    export DURABLE_OBJECT_TOKEN='<issued-workflow-token>'
+    export DURABLE_OBJECT_NAMESPACE_ID='my-project'
+    export DURABLE_OBJECT_CONTROL_PLANE_URL='https://objects.example.com'
+    ```
+
+    For a separate WebSocket gateway, also set `DURABLE_OBJECT_SOCKET_GATEWAY_URL`; otherwise it uses the control-plane URL. Terse supplies these variables when it starts a workflow.
+
+    The SDK reads the environment on first use, resolves a short-lived actor target, and invokes the regional host directly over gRPC:
 
     ```ts
-    import { configureDurableObjects } from "little-durable-objects"
-
     import { Counter } from "./durable-objects.js"
-
-    configureDurableObjects({
-        token: process.env.DURABLE_OBJECT_TOKEN!,
-        namespaceId: "my-project",
-        controlPlaneUrl: "https://objects.example.com"
-    })
 
     await Counter.get("account-1").increment()
     ```
@@ -107,7 +109,7 @@ export class ChatRoom extends Actor {
 }
 ```
 
-Connect from a trusted Node.js workflow with the same configured client:
+Connect from a trusted Node.js workflow using the same environment variables:
 
 ```ts
 const socket = await ChatRoom.get("lobby").connect({

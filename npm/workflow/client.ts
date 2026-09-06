@@ -2,9 +2,6 @@ import { AsyncLocalStorage } from "node:async_hooks"
 
 import type { ActorConnection, ActorSocketMessage } from "../shared/socket.js"
 
-import { configuredSettings } from "./clientSettings.js"
-import type { DurableObjectsClientOptions } from "./remoteClient.js"
-
 interface ActorClientTransport {
     invoke(actorType: string, actorId: string, method: string, args: readonly unknown[]): Promise<unknown>
     connect(actorType: string, actorId: string, metadata: unknown): Promise<ActorConnection>
@@ -17,18 +14,12 @@ function actorClient(): ActorClientTransport {
     return scopedClients.getStore() ?? defaultClient
 }
 
-function configureDurableObjects(options: DurableObjectsClientOptions): void {
-    defaultClient = new LazyActorClient(configuredSettings(options))
-}
-
 function runWithActorClient<T>(client: ActorClientTransport, operation: () => T): T {
     return scopedClients.run(client, operation)
 }
 
 class LazyActorClient implements ActorClientTransport {
     private client: Promise<ActorClientTransport> | undefined
-
-    constructor(private readonly options?: DurableObjectsClientOptions) {}
 
     async invoke(actorType: string, actorId: string, method: string, args: readonly unknown[]): Promise<unknown> {
         return (await this.load()).invoke(actorType, actorId, method, args)
@@ -44,7 +35,7 @@ class LazyActorClient implements ActorClientTransport {
 
     private load(): Promise<ActorClientTransport> {
         this.client ??= import("./remoteClient.js")
-            .then(({ RemoteActorClient }) => new RemoteActorClient(this.options))
+            .then(({ RemoteActorClient }) => new RemoteActorClient())
             .catch(error => {
                 this.client = undefined
                 throw error
@@ -53,7 +44,7 @@ class LazyActorClient implements ActorClientTransport {
     }
 }
 
-let defaultClient: ActorClientTransport = new LazyActorClient()
+const defaultClient: ActorClientTransport = new LazyActorClient()
 
-export { actorClient, configureDurableObjects, runWithActorClient }
-export type { ActorClientTransport, DurableObjectsClientOptions }
+export { actorClient, runWithActorClient }
+export type { ActorClientTransport }

@@ -40,6 +40,7 @@ use super::{
 };
 
 const HOST_TOKEN_RENEWAL_WINDOW_SECONDS: i64 = 10 * 60;
+const FALLBACK_REGION: &str = "north-america-central";
 
 #[derive(Clone)]
 pub struct ControlPlaneService {
@@ -705,8 +706,9 @@ impl ControlPlaneService {
             if let Some(target) = active {
                 return Ok(target);
             }
-            let region = self.target_region(current.as_ref(), storage_region)?;
-            let lease = self.provisioner.ensure_host(&spec, &region).await?;
+            let (region, lease) = self
+                .ensure_actor_host(&spec, current.as_ref(), storage_region)
+                .await?;
             if let Some(timings) = timings.as_deref_mut() {
                 timings.host_ensured_at_ms = Some(timings.elapsed_ms());
             }
@@ -729,6 +731,41 @@ impl ControlPlaneService {
                 }
                 PlacementClaim::Acquired(_) | PlacementClaim::Current(_) => continue,
             }
+        }
+    }
+
+    async fn ensure_actor_host(
+        &self,
+        spec: &HostLaunchSpec,
+        current: Option<&ObjectPlacement>,
+        requested_region: &str,
+    ) -> Result<(String, HostLease)> {
+        let region = self.target_region(current, requested_region)?;
+        match self.provisioner.ensure_host(spec, &region).await {
+            Ok(lease) => Ok((region, lease)),
+            Err(error)
+                if current.is_none()
+                    && region != FALLBACK_REGION
+                    && self
+                        .storage_urls
+                        .regions()
+                        .iter()
+                        .any(|r| r == FALLBACK_REGION) =>
+            {
+                warn!(
+                    event = "actor_region_fallback",
+                    namespace_id = %spec.namespace_id,
+                    requested_region,
+                    region,
+                    fallback_region = FALLBACK_REGION,
+                    error = %format!("{error:#}"),
+                    "actor host provisioning failed; trying fallback for new actor"
+                );
+                let lease = self.provisioner.ensure_host(spec, FALLBACK_REGION).await
+                    .with_context(|| format!("host provisioning failed in {region}: {error:#}; fallback {FALLBACK_REGION} also failed"))?;
+                Ok((FALLBACK_REGION.to_owned(), lease))
+            }
+            Err(error) => Err(error),
         }
     }
 
@@ -804,7 +841,7 @@ impl ControlPlaneService {
 
 fn select_target_region(
     current: Option<&ObjectPlacement>,
-    storage_region: &str,
+    requested_region: &str,
     configured_regions: &[String],
 ) -> Result<String> {
     if let Some(placement) = current {
@@ -812,19 +849,33 @@ fn select_target_region(
     }
     let storage_region = if configured_regions
         .iter()
-        .any(|region| region == storage_region)
+        .any(|region| region == requested_region)
     {
-        storage_region
+        Some(requested_region)
     } else {
-        super::regions::storage_region(storage_region)?
+        super::regions::storage_region(requested_region).ok()
     };
+    if let Some(region) = storage_region
+        && configured_regions
+            .iter()
+            .any(|configured| configured == region)
+    {
+        return Ok(region.to_owned());
+    }
     ensure!(
         configured_regions
             .iter()
-            .any(|region| region == storage_region),
-        "workflow storage region has no Standard bucket"
+            .any(|region| region == FALLBACK_REGION),
+        "workflow region {requested_region:?} maps to {storage_region:?}, which has no Standard bucket; fallback {FALLBACK_REGION:?} also has no Standard bucket; configured storage regions: {configured_regions:?}"
     );
-    Ok(storage_region.to_owned())
+    warn!(
+        event = "actor_region_fallback",
+        requested_region,
+        mapped_region = storage_region,
+        fallback_region = FALLBACK_REGION,
+        "workflow region has no configured bucket; using fallback for new actor"
+    );
+    Ok(FALLBACK_REGION.to_owned())
 }
 
 #[async_trait]
@@ -1138,7 +1189,7 @@ mod tests {
         }
     }
 
-    struct FakeStorageUrls;
+    struct FakeStorageUrls(&'static [&'static str]);
 
     #[async_trait]
     impl StorageUrlSigner for FakeStorageUrls {
@@ -1163,7 +1214,7 @@ mod tests {
         }
 
         fn regions(&self) -> Vec<String> {
-            vec!["us-east".into()]
+            self.0.iter().map(|region| (*region).to_owned()).collect()
         }
     }
 
@@ -1244,7 +1295,7 @@ mod tests {
                 leases: Mutex::new(HashMap::new()),
             }),
             Arc::new(LocalObjectPlacementStore::default()),
-            Arc::new(FakeStorageUrls),
+            Arc::new(FakeStorageUrls(&["us-east"])),
             auth,
             registry,
             issuer,
@@ -1294,7 +1345,7 @@ mod tests {
         let service = ControlPlaneService::new(
             leases,
             placements,
-            Arc::new(FakeStorageUrls),
+            Arc::new(FakeStorageUrls(&["us-east"])),
             auth,
             registry,
             issuer,
@@ -1333,7 +1384,7 @@ mod tests {
                 leases: Mutex::new(HashMap::new()),
             }),
             Arc::new(LocalObjectPlacementStore::default()),
-            Arc::new(FakeStorageUrls),
+            Arc::new(FakeStorageUrls(&["us-east"])),
             auth,
             Arc::new(LocalAdminRegistry::default()),
             issuer,
@@ -1455,7 +1506,7 @@ mod tests {
                 leases: Mutex::new(HashMap::new()),
             }),
             Arc::new(LocalObjectPlacementStore::default()),
-            Arc::new(FakeStorageUrls),
+            Arc::new(FakeStorageUrls(&["us-east"])),
             auth,
             Arc::new(LocalAdminRegistry::default()),
             issuer,
@@ -1559,7 +1610,6 @@ mod tests {
             select_target_region(Some(&current), "north-america-west", &regions)?,
             "north-america-east"
         );
-        assert!(select_target_region(None, "europe-west", &regions).is_err());
         for (reported, expected) in [
             ("us-east-1", "north-america-east"),
             ("us-west-2", "north-america-west"),
@@ -1582,10 +1632,179 @@ mod tests {
             "eu-west-1",
             "southcentralus",
         ] {
-            assert!(
-                select_target_region(None, unsupported, &regions).is_err(),
+            assert_eq!(
+                select_target_region(None, unsupported, &regions)?,
+                "north-america-central",
                 "{unsupported}"
             );
+            assert_eq!(
+                select_target_region(Some(&current), unsupported, &[])?,
+                "north-america-east"
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn missing_bucket_error_identifies_the_reported_and_mapped_regions() {
+        let regions = vec!["north-america-west".into()];
+        let error = select_target_region(None, "southcentralus", &regions)
+            .unwrap_err()
+            .to_string();
+
+        assert!(error.contains("southcentralus"), "{error}");
+        assert!(error.contains("north-america-south"), "{error}");
+        assert!(error.contains("north-america-central"), "{error}");
+        assert!(error.contains("north-america-west"), "{error}");
+    }
+
+    #[test]
+    fn configured_workflow_region_is_preferred_over_the_fallback() -> Result<()> {
+        let regions = vec!["north-america-central".into(), "north-america-south".into()];
+        assert_eq!(
+            select_target_region(None, "southcentralus", &regions)?,
+            "north-america-south"
+        );
+        assert_eq!(
+            select_target_region(None, "europe-west", &regions)?,
+            "north-america-central"
+        );
+        assert!(select_target_region(None, "unknown", &[]).is_err());
+        assert!(select_target_region(None, "unknown", &["north-america-east".into()]).is_err());
+        Ok(())
+    }
+
+    struct FakeRoutingProvisioner {
+        failed_regions: Vec<&'static str>,
+        calls: Mutex<Vec<String>>,
+    }
+
+    #[async_trait]
+    impl HostProvisioner for FakeRoutingProvisioner {
+        async fn ensure_host(&self, _spec: &HostLaunchSpec, region: &str) -> Result<HostLease> {
+            self.calls.lock().unwrap().push(region.to_owned());
+            ensure!(
+                !self.failed_regions.contains(&region),
+                "host unavailable in {region}"
+            );
+            Ok(HostLease {
+                id: HostId::new(format!("host.v1.project.revision.{region}")),
+                session_id: "session".into(),
+                route: "https://host.example.com".into(),
+                expires_at_ms: u64::MAX,
+            })
+        }
+
+        async fn warm_image(&self, _spec: &HostLaunchSpec, _region: &str) -> Result<ImageWarmup> {
+            unreachable!()
+        }
+
+        async fn terminate_hosts(
+            &self,
+            _spec: &HostLaunchSpec,
+            _regions: &[String],
+        ) -> Result<HostTermination> {
+            unreachable!()
+        }
+    }
+
+    #[tokio::test]
+    async fn provisioning_fallback_only_applies_before_initial_placement() -> Result<()> {
+        let central = "north-america-central";
+        let south = "north-america-south";
+        for (failed_regions, existing, reported, expected_region, expected_calls) in [
+            (vec![], false, "southcentralus", Some(south), vec![south]),
+            (vec![], false, "eu-west-1", Some(central), vec![central]),
+            (
+                vec![],
+                false,
+                "unmapped-region",
+                Some(central),
+                vec![central],
+            ),
+            (
+                vec![south],
+                false,
+                "southcentralus",
+                Some(central),
+                vec![south, central],
+            ),
+            (vec![south], true, "eastus", None, vec![south]),
+            (
+                vec![south, central],
+                false,
+                "southcentralus",
+                None,
+                vec![south, central],
+            ),
+            (vec![central], false, "unmapped-region", None, vec![central]),
+        ] {
+            let issuer = test_issuer()?;
+            let auth = ActorJwtVerifier::for_scope(
+                issuer.verifier_keys_json()?,
+                "issuer",
+                "invocation",
+                ActorTokenPurpose::Invocation,
+                Duration::from_secs(60),
+            )?;
+            let registry = Arc::new(LocalAdminRegistry::default());
+            registry
+                .ensure_namespace_and_register_deployment(&HostLaunchSpec {
+                    namespace_id: "project".into(),
+                    code_revision: "revision".into(),
+                    image_ref: "image".into(),
+                    working_directory: "/app".into(),
+                    actor_entrypoint: None,
+                })
+                .await?;
+            let placements = Arc::new(LocalObjectPlacementStore::default());
+            let actor = ActorKey {
+                namespace_id: "project".into(),
+                actor_type: "Counter".into(),
+                actor_id: "one".into(),
+            };
+            if existing {
+                placements
+                    .claim(&actor.storage_key(), None, &HostId::new("old-host"), south)
+                    .await?;
+            }
+            let before = placements.get(&actor.storage_key()).await?;
+            let provisioner = Arc::new(FakeRoutingProvisioner {
+                failed_regions,
+                calls: Mutex::new(vec![]),
+            });
+            let service = ControlPlaneService::new(
+                Arc::new(FakeLeaseStore {
+                    leases: Mutex::new(HashMap::new()),
+                }),
+                placements.clone(),
+                Arc::new(FakeStorageUrls(&[
+                    "north-america-central",
+                    "north-america-south",
+                ])),
+                auth,
+                registry,
+                issuer,
+                provisioner.clone(),
+            );
+            let result = service.route_actor(&actor, reported, None).await;
+            assert_eq!(*provisioner.calls.lock().unwrap(), expected_calls);
+            if let Some(region) = expected_region {
+                let routed = result?;
+                assert_eq!(routed.placement.home_region, region);
+                assert_eq!(routed.placement.owner, routed.lease.id);
+                assert_eq!(
+                    placements.get(&actor.storage_key()).await?,
+                    Some(routed.placement)
+                );
+            } else {
+                assert!(result.is_err());
+                if expected_calls.len() == 2 {
+                    let error = format!("{:#}", result.err().unwrap());
+                    assert!(error.contains(south) && error.contains(central), "{error}");
+                }
+                assert_eq!(placements.get(&actor.storage_key()).await?, before);
+            }
         }
         Ok(())
     }

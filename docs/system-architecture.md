@@ -93,6 +93,8 @@ than restarting it with an uncertain state.
 The host below is the same object host shown above.
 
 ```text
+Workflow starts with its token, namespace, and service URLs in environment variables.
+
 Workflow       -- find host + project access token --> Central service
 Workflow       <-- host address + limited call token - Central service
 Workflow       -- call an object method -------------> Object host
@@ -108,15 +110,24 @@ Central service -- access check / message notice ----> Application server
                   (optional, separately configured)
 ```
 
+The workflow SDK reads `DURABLE_OBJECT_TOKEN`, `DURABLE_OBJECT_NAMESPACE_ID`, and
+`DURABLE_OBJECT_CONTROL_PLANE_URL` on first use. Set
+`DURABLE_OBJECT_SOCKET_GATEWAY_URL` when the socket gateway has a separate origin;
+otherwise it uses the control-plane URL. The application server supplies these
+variables before starting the workflow.
+
 Workflows keep host addresses until their call tokens near expiry or the host
-asks them to find a new address. A new object uses the region in the caller's
+asks them to find a new address. A new object prefers the region in the caller's
 token; an existing object keeps its recorded region when its host is replaced.
 For Modal workflows, the application server reads `MODAL_REGION` after sandbox
 creation and before starting the workflow, on every execution including resumes.
 It passes that value unchanged as `storageRegion` when requesting the workflow
 token. The signed token retains the reported value. On initial object creation,
 the central service maps known cloud region IDs to its storage-region names.
-Unknown mappings or missing buckets cause an error; no fallback region is chosen.
+New objects fall back to `north-america-central` for unknown mappings, missing
+buckets, or a failed first host launch. The fallback must have a configured
+Standard bucket. It is tried once, before recording the object's home region;
+existing objects and failed state reads or writes never switch regions.
 Registering changed project code also attempts to stop hosts for the previous
 version. Optional image preparation starts a temporary Modal machine that exits
 without running an actor.
