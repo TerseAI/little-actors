@@ -1,129 +1,169 @@
 # little-durable-objects
 
-A multi-tenant durable-object runtime built in Rust.
+Coordinating state across machines adds latency. Traditional protocols such as as [two-phase commit (2PC)](https://arxiv.org/abs/cs/0408036) and [Paxos](https://lamport.azurewebsites.net/pubs/paxos-simple.pdf) introduce a lot of overhead. Actors simplify application updates by giving each piece of state one owner.
 
-![Little Durable Architecture](docs/llittle-do-diagram.png)
+## What are actors?
 
-## Install
+1. An actor is
+2. Different names identify different actors.
+3. Calls to the same actor execute one at a time
+4. Successful calls save state. The runtime restores the state when the actor runs again.
 
-Install the TypeScript API in actor and workflow projects:
+This is helpful for:
+
+- Managing AI agent state
+- Collaborative document editing, like Google Docs
+- Multiplayer game or chat rooms
+
+## Build a chat room in your terminal
+
+Run two chat clients in separate terminals. Both receive every message, and the room remembers the conversation when you reconnect or restart the server.
+
+Requires **Node.js 20+ and npm**. The CLI downloads the runtime, with SQLite included.
+
+The local CLI is not published yet. To run this checkout, follow [Use a local checkout](docs/reference/cli.md#use-a-local-checkout) and replace the install command below with `npm link /path/to/little-durable-objects/npm`.
+
+### 1. Create a project
 
 ```sh
-pnpm add little-durable-objects
+mkdir chat-example
+cd chat-example
+npm init -y
+npm pkg set type=module
+npm install little-durable-objects
+mkdir src
 ```
 
-Install the Rust runtime from crates.io:
+This installs the SDK, CLI, and TypeScript support.
 
-```sh
-cargo install little-durable-objects --locked
-```
+### 2. Create the room
 
-## Quickstart
-
-1. Create a Postgres database and one GCS `STANDARD` bucket. Give the service account in `GOOGLE_APPLICATION_CREDENTIALS` object access to the bucket.
-
-2. Build the Rust runtime, TypeScript package, and Go provider:
-
-    ```sh
-    pnpm install
-    pnpm build
-    (cd providers/modal-go && go build -o ../../target/release/little-durable-objects-modal-go .)
-    ```
-
-3. Start the control plane. Its HTTP origin serves the public REST API and the internal host gRPC API, so it must be reachable from Modal with HTTP/2 enabled.
-
-    ```sh
-    export DURABLE_OBJECT_PROCESS_ROLE=control_plane
-    export DURABLE_OBJECT_POSTGRES_URL='postgresql://localhost/durable_objects?sslmode=disable'
-    export DURABLE_OBJECT_STANDARD_BUCKETS='{"north-america-east":"my-actor-state-bucket"}'
-    export GOOGLE_APPLICATION_CREDENTIALS=/path/to/service-account.json
-    export DURABLE_OBJECT_CONTROL_PLANE_BIND=0.0.0.0:7100
-    export DURABLE_OBJECT_CONTROL_PLANE_URL=https://objects.example.com
-    export DURABLE_OBJECT_JWT_SIGNING_KEY="$(openssl genpkey -algorithm Ed25519 -outform DER | base64 | tr -d '\n')"
-    export DURABLE_OBJECT_API_KEY="$(openssl rand -hex 32)"
-    export DURABLE_OBJECT_SANDBOX_PROVIDER=modal
-    export DURABLE_OBJECT_SANDBOX_COMMAND="$PWD/target/release/little-durable-objects-modal-go"
-    export MODAL_TOKEN_ID=...
-    export MODAL_TOKEN_SECRET=...
-
-    ./target/release/little-durable-objects
-    ```
-
-4. Export actors from `src/durable-objects.ts` in your project:
-
-    ```ts
-    import { Actor } from "little-durable-objects"
-
-    export class Counter extends Actor {
-        count = 0
-        async increment(): Promise<number> {
-            return ++this.count
-        }
-    }
-    ```
-
-5. From your trusted backend, call the JSON API using `Authorization: Bearer $DURABLE_OBJECT_API_KEY`:
-
-    ```text
-    PUT  /v1/namespaces/{namespaceId}/deployment
-    POST /v1/namespaces/{namespaceId}/session-scoped-token
-    ```
-
-6. Set the workflow's environment before its first actor call. Use the issued session token, never the API key:
-
-    ```sh
-    export DURABLE_OBJECT_TOKEN='<issued-workflow-token>'
-    export DURABLE_OBJECT_NAMESPACE_ID='my-project'
-    export DURABLE_OBJECT_CONTROL_PLANE_URL='https://objects.example.com'
-    ```
-
-    For a separate WebSocket gateway, also set `DURABLE_OBJECT_SOCKET_GATEWAY_URL`; otherwise it uses the control-plane URL. Terse supplies these variables when it starts a workflow.
-
-    The SDK reads the environment on first use, resolves a short-lived actor target, and invokes the regional host directly over gRPC:
-
-    ```ts
-    import { Counter } from "./durable-objects.js"
-
-    await Counter.get("account-1").increment()
-    ```
-
-## WebSockets
-
-Actors can own WebSockets without a context object or an explicit accept step. Define any lifecycle hooks you need and attach JSON-serializable, typed metadata to each connection:
+Create `src/durable-objects.ts`:
 
 ```ts
 import { Actor } from "little-durable-objects"
 import type { ActorSocket } from "little-durable-objects"
 
-interface Session {
-    userId: string
-    connectedAt: number
-}
-
 export class ChatRoom extends Actor {
-    async onMessage(socket: ActorSocket<Session>, message: string | Uint8Array): Promise<void> {
+    history: string[] = []
+
+    async onMessage(_socket: ActorSocket, message: string | Uint8Array): Promise<void> {
+        if (typeof message !== "string") return
+        this.history.push(message)
         this.broadcast(message)
     }
-
-    async onDisconnect(socket: ActorSocket<Session>, code: number, reason: string, wasClean: boolean): Promise<void> {
-        console.log(socket.metadata.userId, code, reason, wasClean)
-    }
 }
 ```
 
-Connect from a trusted Node.js workflow using the same environment variables:
+`history` is saved actor state. Each incoming message appends to it and broadcasts to everyone in the room, including the sender. When a client connects, the runtime automatically sends the saved state, including the full history.
+
+### 3. Create the terminal client
+
+Create `src/chat.ts`:
 
 ```ts
-const socket = await ChatRoom.get("lobby").connect({
-    userId: "user-1",
-    connectedAt: Date.now()
-})
+import { createInterface as readLines } from "node:readline"
 
-socket.addEventListener("message", event => console.log(event.data))
-socket.send("hello")
+import { ChatRoom } from "./durable-objects.js"
 
-await ChatRoom.get("lobby").broadcast("streamed output")
+const name = process.argv[2] ?? "Anonymous"
+const socket = await ChatRoom.get("lobby").connect({})
+const terminal = readLines({ input: process.stdin, output: process.stdout })
+
+socket.addEventListener("message", ({ data }) => console.log(String(data)))
+socket.addEventListener("close", () => terminal.close())
+
+for await (const line of terminal) {
+    socket.send(`${name}: ${line}`)
+}
+socket.close()
 ```
+
+Both clients use `ChatRoom.get("lobby")`, so they share one actor. A different room name creates a separate conversation with its own history.
+
+### 4. Start the server
+
+In terminal 1, from the project directory:
+
+```sh
+npx little-durable-objects dev
+```
+
+Leave this running. It starts the local server and registers your actor file. SQLite metadata and snapshots go in `.little-durable-objects/`.
+
+Wait for this line before connecting:
+
+```text
+Local actors ready at http://127.0.0.1:7100
+```
+
+### 5. Open two listeners and chat
+
+In terminal 2, from the same project directory, join as Alice:
+
+```sh
+npx little-durable-objects run src/chat.ts Alice
+```
+
+In terminal 3, join as Bob:
+
+```sh
+npx little-durable-objects run src/chat.ts Bob
+```
+
+`run` supplies local credentials automatically. Wait for both clients to print the initial state:
+
+```json
+{"type":"state","state":{"history":[]}}
+```
+
+Leave both running: each listens for messages and lets you send your own. The client prints incoming data directly, so saved history appears as JSON and live messages appear as text.
+
+Once both have joined, type `Hello, Bob!` in Alice's terminal and press Enter. Then type `Hey, Alice!` in Bob's terminal and press Enter. Both clients receive:
+
+```text
+Alice: Hello, Bob!
+Bob: Hey, Alice!
+```
+
+### 6. Bring the history back
+
+Press Ctrl-C in Bob's terminal, then run his command again:
+
+```sh
+npx little-durable-objects run src/chat.ts Bob
+```
+
+Before Bob types anything, his client shows the saved conversation:
+
+```json
+{"type":"state","state":{"history":["Alice: Hello, Bob!","Bob: Hey, Alice!"]}}
+```
+
+To try a full restart, stop both clients and the server with Ctrl-C. Start the server again in terminal 1:
+
+```sh
+npx little-durable-objects dev
+```
+
+Wait for the ready line, then rerun Alice's and Bob's commands. Both receive the same history and can keep chatting. The messages live in `.little-durable-objects/`, so keep that directory between runs.
+
+**Local storage is for learning and development.** Losing the machine or deleting the state directory loses your actors.
+
+Use `dev --help` for options, including `--port`, `--entrypoint`, and `--data-dir`. Pass the same `--data-dir` to `dev` and `run`. Restart `dev` after actor code changes. To store snapshots in a bucket, see [local execution with GCS](docs/guides/self-hosting.md#local-execution-with-gcs).
+
+Supported: macOS and Linux, on ARM64 and x64. Linux needs glibc 2.35+ and OpenSSL 3, such as Ubuntu 22.04+. On Windows, use WSL 2.
+
+## Host it yourself
+
+Follow the [self-hosting guide](docs/guides/self-hosting.md) for configuration and deployment.
+
+## Reference
+
+- [CLI reference](docs/reference/cli.md): commands, options, local builds, configuration, and troubleshooting.
+- [API reference](docs/reference/api.md): actors, saved state, WebSockets, errors, deployments, and authentication.
+
+![Control plane, actor hosts, and persistent storage](docs/llittle-do-diagram.png)
 
 ## License
 

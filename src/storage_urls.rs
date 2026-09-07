@@ -9,6 +9,9 @@ use serde::{Deserialize, Serialize};
 use crate::{actor::ActorKey, placement::validate_region};
 
 mod iam;
+mod local;
+
+pub use local::LocalStorage;
 
 const SIGNED_URL_TTL: Duration = Duration::from_secs(60);
 pub const STATE_CONTENT_TYPE: &str = "application/json";

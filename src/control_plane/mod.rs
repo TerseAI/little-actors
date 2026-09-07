@@ -1,8 +1,9 @@
-mod admin;
+pub(crate) mod admin;
 mod auth;
 mod client;
 mod event_sink;
 mod issuer;
+mod local;
 mod process;
 mod protocol;
 mod public_api;
@@ -16,6 +17,8 @@ use std::time::Duration;
 pub(crate) const SUPPORTED_CONTROL_PLANE_PAYLOAD_BYTES: usize = 16 * 1024 * 1024;
 pub(crate) const MAX_CONTROL_PLANE_MESSAGE_BYTES: usize = SUPPORTED_CONTROL_PLANE_PAYLOAD_BYTES;
 pub(crate) const CONTROL_PLANE_REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
+
+pub use local::{DevOptions, serve_local};
 
 #[cfg(test)]
 pub(crate) use self::auth::ActorInvocationCapability;

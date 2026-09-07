@@ -7,6 +7,8 @@ async function checkPackage() {
     if (metadata.name !== "little-durable-objects") throw new Error("unexpected package name")
     if (metadata.license !== "MIT") throw new Error("package license must be MIT")
     for (const entry of Object.values(metadata.exports)) await checkExport(entry)
+    const cli = metadata.bin?.[metadata.name]
+    if (!cli || !(await readFile(cli, "utf8")).startsWith("#!/usr/bin/env node\n")) throw new Error("package must include its executable CLI")
     await access("dist/generated/durable_object.proto")
     await import("../dist/workflow/actorHostGrpc.js")
     await Promise.all(metadata.files.filter(path => !path.includes("dist")).map(path => access(path)))

@@ -13,6 +13,9 @@ categories = ["asynchronous", "network-programming"]
 include = ["/src/**", "/tests/**", "/proto/**", "/migrations/**", "/build.rs", "/README.md", "/LICENSE.md"]
 
 [dependencies]
+clap = { version = "4", features = ["derive"] }
+tokio-rusqlite = { version = "0.7", features = ["bundled"] }
+tempfile = "3"
 axum = { version = "0.8", features = ["ws"] }
 bytes = "1"
 prost = "0.14"
@@ -49,5 +52,4 @@ tonic-prost-build = "0.14"
 
 [dev-dependencies]
 futures-util = "0.3"
-tempfile = "3"
 tokio-tungstenite = "0.29"

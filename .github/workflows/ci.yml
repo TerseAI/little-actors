@@ -55,6 +55,20 @@ jobs:
               env:
                   DURABLE_OBJECT_TEST_POSTGRES_URL: postgresql://postgres:postgres@127.0.0.1:5432/durable_objects_test?sslmode=disable
               run: cargo test --locked --no-fail-fast
+            - uses: pnpm/action-setup@v4
+              with:
+                  version: 10.17.1
+            - uses: actions/setup-node@v4
+              with:
+                  node-version: "22.19.0"
+                  cache: pnpm
+            - run: pnpm install --frozen-lockfile
+            - run: pnpm --dir npm build
+            - run: cargo build --locked
+            - name: Test the local tutorial without cloud services
+              env:
+                  DURABLE_OBJECT_TEST_BINARY: ${{ github.workspace }}/target/debug/little-durable-objects
+              run: node --test scripts/local-runtime.test.mjs
 
     npm:
         name: TypeScript package

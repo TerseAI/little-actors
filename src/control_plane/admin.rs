@@ -7,14 +7,14 @@ use std::{
 use anyhow::{Context, Result, ensure};
 use async_trait::async_trait;
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use subtle::ConstantTimeEq;
 
 use crate::{actor::ActorScope, postgres::PostgresDatabase};
 
 use super::{ActorJwtIssuer, issuer::IssuedActorToken};
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct HostLaunchSpec {
     pub namespace_id: String,

@@ -10,6 +10,9 @@ use serde::{Deserialize, Serialize};
 use crate::host::HostId;
 
 mod command_process;
+mod local;
+
+pub(crate) use local::LocalSandboxProvider;
 
 const PROVIDER_REQUEST_TIMEOUT: Duration = Duration::from_secs(120);
 const MAX_PROVIDER_OUTPUT_BYTES: usize = 1024 * 1024;

@@ -222,7 +222,7 @@ fn placement_from_row(
     })
 }
 
-fn validate_state_commit(request: &StateCommitRequest) -> Result<()> {
+pub(crate) fn validate_state_commit(request: &StateCommitRequest) -> Result<()> {
     request.object.validate()?;
     ensure!(
         !request.owner.as_str().is_empty(),
@@ -247,7 +247,7 @@ fn validate_state_commit(request: &StateCommitRequest) -> Result<()> {
     Ok(())
 }
 
-fn is_replayed_commit(current: &ObjectPlacement, request: &StateCommitRequest) -> bool {
+pub(crate) fn is_replayed_commit(current: &ObjectPlacement, request: &StateCommitRequest) -> bool {
     current.state_version == request.expected_version.saturating_add(1)
         && current.state_object.as_deref() == Some(&request.state_object)
         && current.last_request_id.as_deref() == Some(&request.request_id)

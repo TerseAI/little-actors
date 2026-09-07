@@ -3,7 +3,7 @@
     "private": true,
     "license": "MIT",
     "scripts": {
-        "build": "cargo build --release && pnpm --dir npm build",
+        "build": "node scripts/build-runtime.mjs && pnpm --dir npm build",
         "dev": "cargo run --release",
         "format": "cargo fmt --all && pnpm --dir npm format && prettier --write \"scripts/*.mjs\"",
         "format:check": "cargo fmt --all -- --check && pnpm --dir npm format:check && prettier --check \"scripts/*.mjs\"",
@@ -14,7 +14,8 @@
     },
     "devDependencies": {
         "@trivago/prettier-plugin-sort-imports": "^6.0.2",
-        "prettier": "^3.8.1"
+        "prettier": "^3.8.1",
+        "wscat": "6.1.0"
     },
     "packageManager": "pnpm@10.17.1"
 }
