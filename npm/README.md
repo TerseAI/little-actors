@@ -32,7 +32,7 @@ Once both clients have joined, type a message and press Enter. Both receive it. 
 
 `dev --help` lists options. `token` prints a one-hour local credential for tools such as `wscat`.
 
-These CLI commands are unreleased and unavailable in npm version `0.1.24`.
+These CLI commands require version `0.1.25` or later.
 
 ## Hosted clients
 

@@ -8,7 +8,7 @@ Run two chat clients in separate terminals. Both receive every message, and the 
 
 Requires **Node.js 20+ and npm**. The CLI downloads the runtime, with SQLite included.
 
-The local CLI is not published yet. To run this checkout, follow [Local development](docs/guides/local-development.md) and replace the install command below with `npm link /path/to/little-durable-objects/npm`.
+The local CLI is available in version `0.1.25` and later. To run a source checkout, follow [Local development](docs/guides/local-development.md).
 
 ### 1. Create a project
 

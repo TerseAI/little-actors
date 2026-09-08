@@ -2,7 +2,7 @@
 
 The `little-durable-objects` command starts actors, runs TypeScript clients, and issues local credentials. It is installed with the Node.js package. For a complete example, see the [chat tutorial](../../README.md#build-a-chat-room-in-your-terminal).
 
-This page describes the CLI in this checkout. These commands are not included in npm version `0.1.24`; follow [local development](../guides/local-development.md) to build and link the checkout.
+These commands require npm version `0.1.25` or later. Follow [local development](../guides/local-development.md) to build and link a source checkout.
 
 - [Find your actors](#find-your-actors)
 - [Run the development server](#run-the-development-server)

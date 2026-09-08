@@ -11,7 +11,7 @@ Recommended setup:
 
 WebSocket connections live in control-plane memory: clients must reconnect after a restart. Multiple instances require gateway routing.
 
-This example uses published version `0.1.24`. Its container includes Rust and the Go provider; neither compiler is required. The local CLI remains unreleased.
+This example uses version `0.1.25`. Its container includes the Rust runtime and Go provider; neither compiler is required.
 
 ## 1. Configure storage and credentials
 
@@ -59,7 +59,7 @@ docker run --rm --name durable-objects \
     -p 7100:7100 \
     --env-file control-plane.env \
     --mount type=bind,source=/absolute/path/to/service-account.json,target=/credentials/gcs.json,readonly \
-    us-central1-docker.pkg.dev/fluid-analogy-473415-c2/public/little-durable-objects:0.1.24
+    us-central1-docker.pkg.dev/fluid-analogy-473415-c2/public/little-durable-objects:0.1.25
 ```
 
 For an attached Google service account, omit the credential variable and mount.
@@ -80,13 +80,13 @@ Expect JSON with a `keys` array. Your first actor call will also exercise host p
 In your counter project, pin the SDK to the runtime version:
 
 ```sh
-npm install --save-exact little-durable-objects@0.1.24
+npm install --save-exact little-durable-objects@0.1.25
 ```
 
 Create a `Dockerfile` in your counter project:
 
 ```dockerfile
-FROM us-central1-docker.pkg.dev/fluid-analogy-473415-c2/public/little-durable-objects:0.1.24 AS runtime
+FROM us-central1-docker.pkg.dev/fluid-analogy-473415-c2/public/little-durable-objects:0.1.25 AS runtime
 
 FROM node:22-bookworm
 COPY --from=runtime /usr/local/bin/little-durable-objects /usr/local/bin/little-durable-objects
