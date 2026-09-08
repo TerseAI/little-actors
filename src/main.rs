@@ -4,7 +4,7 @@ use little_durable_objects::{
     control_plane::{ControlPlaneProcessConfig, DevOptions, serve_control_plane, serve_local},
     host::{ActorHostConfig, serve_actor_host},
 };
-use tokio::io::AsyncReadExt;
+use tokio::sync::oneshot;
 use tracing::{error, info};
 use tracing_subscriber::EnvFilter;
 
@@ -83,12 +83,11 @@ async fn wait_for_signal() {
 }
 
 async fn wait_for_parent_stdin_close() {
-    let mut stdin = tokio::io::stdin();
-    let mut buffer = [0_u8; 1];
-    loop {
-        match stdin.read(&mut buffer).await {
-            Ok(0) | Err(_) => return,
-            Ok(_) => {}
-        }
-    }
+    let (closed, receiver) = oneshot::channel();
+    // Tokio's stdin read cannot be cancelled and would block runtime shutdown after a signal.
+    std::thread::spawn(move || {
+        let _ = std::io::copy(&mut std::io::stdin().lock(), &mut std::io::sink());
+        let _ = closed.send(());
+    });
+    let _ = receiver.await;
 }
