@@ -11,7 +11,7 @@ Recommended setup:
 
 WebSocket connections live in control-plane memory: clients must reconnect after a restart. Multiple instances require gateway routing.
 
-This example uses version `0.1.25`. Its container includes the Rust runtime and Go provider; neither compiler is required.
+This example uses version `0.1.26`. Its container includes the Rust runtime and Go provider; neither compiler is required.
 
 ## 1. Configure storage and credentials
 
@@ -59,7 +59,7 @@ docker run --rm --name durable-objects \
     -p 7100:7100 \
     --env-file control-plane.env \
     --mount type=bind,source=/absolute/path/to/service-account.json,target=/credentials/gcs.json,readonly \
-    us-central1-docker.pkg.dev/fluid-analogy-473415-c2/public/little-durable-objects:0.1.25
+    us-central1-docker.pkg.dev/fluid-analogy-473415-c2/public/little-actors:0.1.26
 ```
 
 For an attached Google service account, omit the credential variable and mount.
@@ -80,16 +80,16 @@ Expect JSON with a `keys` array. Your first actor call will also exercise host p
 In your counter project, pin the SDK to the runtime version:
 
 ```sh
-npm install --save-exact little-durable-objects@0.1.25
+npm install --save-exact little-actors@0.1.26
 ```
 
 Create a `Dockerfile` in your counter project:
 
 ```dockerfile
-FROM us-central1-docker.pkg.dev/fluid-analogy-473415-c2/public/little-durable-objects:0.1.25 AS runtime
+FROM us-central1-docker.pkg.dev/fluid-analogy-473415-c2/public/little-actors:0.1.26 AS runtime
 
 FROM node:22-bookworm
-COPY --from=runtime /usr/local/bin/little-durable-objects /usr/local/bin/little-durable-objects
+COPY --from=runtime /usr/local/bin/little-actors /usr/local/bin/little-actors
 WORKDIR /app
 COPY package.json package-lock.json ./
 RUN npm ci --omit=dev
@@ -209,13 +209,13 @@ To save snapshots in GCS while running actors locally:
 export DURABLE_OBJECT_STANDARD_BUCKETS='{"north-america-east":"my-actor-state-bucket"}'
 export GOOGLE_APPLICATION_CREDENTIALS='/absolute/path/to/service-account.json'
 
-npx little-durable-objects dev --storage gcs --data-dir .gcs-demo
+npx little-actors dev --storage gcs --data-dir .gcs-demo
 ```
 
 In a second terminal in the same project:
 
 ```sh
-npx little-durable-objects run --data-dir .gcs-demo src/client.ts
+npx little-actors run --data-dir .gcs-demo src/client.ts
 ```
 
 With a new state directory, the counter prints `1`, then `2`; rerunning prints `3`, then `4`.

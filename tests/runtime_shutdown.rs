@@ -27,7 +27,7 @@ async fn closing_parent_stdin_stops_the_runtime() -> Result<()> {
 async fn assert_shutdown(signal: Option<&str>) -> Result<()> {
     let project = tempfile::tempdir()?;
     std::fs::write(project.path().join("actors.ts"), "export {}\n")?;
-    let mut child = Command::new(env!("CARGO_BIN_EXE_little-durable-objects"))
+    let mut child = Command::new(env!("CARGO_BIN_EXE_little-actors"))
         .args(["dev", "--port", "0", "--entrypoint", "actors.ts"])
         .arg("--project")
         .arg(project.path())

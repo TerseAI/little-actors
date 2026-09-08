@@ -17,7 +17,7 @@ test("the local CLI runs actors and restores acknowledged state after shutdown",
     const project = await mkdtemp(path.join(tmpdir(), "ldo-local-"))
     t.after(() => rm(project, { recursive: true, force: true }))
     await prepareProject(project)
-    const cli = path.join(project, "node_modules/little-durable-objects/dist/cli.js")
+    const cli = path.join(project, "node_modules/little-actors/dist/cli.js")
     const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !/^(DURABLE_OBJECT_|MODAL_|GOOGLE_)/u.test(key)))
     env.DURABLE_OBJECT_BINARY = path.resolve(binary)
     env.DURABLE_OBJECT_PARENT_LIFETIME_STDIN = "1"
@@ -59,12 +59,12 @@ async function prepareProject(project) {
         await execute("npm", ["install", "--no-audit", "--no-fund", path.resolve(process.env.DURABLE_OBJECT_TEST_PACKAGE)], { cwd: project, timeout: 60_000 })
     } else {
         await mkdir(path.join(project, "node_modules"))
-        await symlink(path.join(root, "npm"), path.join(project, "node_modules/little-durable-objects"), "dir")
+        await symlink(path.join(root, "npm"), path.join(project, "node_modules/little-actors"), "dir")
     }
     await mkdir(path.join(project, "src"))
     await writeFile(
         path.join(project, "src/durable-objects.ts"),
-        `import { Actor } from "little-durable-objects"
+        `import { Actor } from "little-actors"
 export class Counter extends Actor {
     count = 0
     async increment() { return ++this.count }

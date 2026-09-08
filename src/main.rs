@@ -1,6 +1,6 @@
 use anyhow::Result;
 use clap::{Parser, Subcommand};
-use little_durable_objects::{
+use little_actors::{
     control_plane::{ControlPlaneProcessConfig, DevOptions, serve_control_plane, serve_local},
     host::{ActorHostConfig, serve_actor_host},
 };

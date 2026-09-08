@@ -4,7 +4,7 @@ WORKDIR /build
 COPY providers/modal-go/go.mod providers/modal-go/go.sum ./
 RUN go mod download
 COPY providers/modal-go/ ./
-RUN CGO_ENABLED=0 go build -mod=readonly -trimpath -ldflags="-s -w" -o /out/little-durable-objects-modal-go .
+RUN CGO_ENABLED=0 go build -mod=readonly -trimpath -ldflags="-s -w" -o /out/little-actors-modal-go .
 
 FROM rust:1.89.0-bookworm AS builder
 
@@ -22,9 +22,9 @@ RUN apt-get update -qq \
     && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends ca-certificates libssl3 \
     && rm -rf /var/lib/apt/lists/*
 
-COPY --from=builder /build/target/release/little-durable-objects /usr/local/bin/little-durable-objects
-COPY --from=modal-builder /out/little-durable-objects-modal-go /usr/local/bin/little-durable-objects-modal-go
+COPY --from=builder /build/target/release/little-actors /usr/local/bin/little-actors
+COPY --from=modal-builder /out/little-actors-modal-go /usr/local/bin/little-actors-modal-go
 
-ENV RUST_LOG=warn,little_durable_objects=info
-ENV DURABLE_OBJECT_SANDBOX_COMMAND=little-durable-objects-modal-go
-ENTRYPOINT ["/usr/local/bin/little-durable-objects"]
+ENV RUST_LOG=warn,little_actors=info
+ENV DURABLE_OBJECT_SANDBOX_COMMAND=little-actors-modal-go
+ENTRYPOINT ["/usr/local/bin/little-actors"]

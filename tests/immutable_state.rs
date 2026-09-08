@@ -1,5 +1,5 @@
 use anyhow::Result;
-use little_durable_objects::state_log::StateSnapshot;
+use little_actors::state_log::StateSnapshot;
 use serde_json::json;
 
 #[test]

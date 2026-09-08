@@ -19,31 +19,26 @@ export class LocalCli {
     constructor(private readonly actions: CliActions) {}
 
     program(version: string): Command {
-        const program = new Command()
-            .name("little-durable-objects")
-            .description("Run durable TypeScript actors locally or in the cloud")
-            .version(version)
-            .enablePositionalOptions()
-            .showHelpAfterError()
+        const program = new Command().name("little-actors").description("Run durable TypeScript actors locally or in the cloud").version(version).enablePositionalOptions().showHelpAfterError()
         program
             .command("dev")
             .description("Start local actors with automatic SQLite and file storage")
             .option("--project <directory>", "actor project directory", ".")
             .option("--port <number>", "loopback port (0 selects a free port)", portNumber, 7100)
             .option("--entrypoint <file>", "actor source file, relative to the project", "src/durable-objects.ts")
-            .option("--data-dir <directory>", "state directory (default: <project>/.little-durable-objects)")
+            .option("--data-dir <directory>", "state directory (default: <project>/.little-actors)")
             .addOption(new Option("--storage <backend>", "where to save actor snapshots").choices(["local", "gcs"]).default("local"))
             .action(options => this.actions.dev(options))
         program
             .command("run <script> [args...]")
             .description("Run a TypeScript client with credentials from the local runtime")
-            .option("--data-dir <directory>", "runtime state directory", ".little-durable-objects")
+            .option("--data-dir <directory>", "runtime state directory", ".little-actors")
             .passThroughOptions()
             .action((script, args, options) => this.actions.run(script, args, options))
         program
             .command("token")
             .description("Print a one-hour local session token for tools such as wscat")
-            .option("--data-dir <directory>", "runtime state directory", ".little-durable-objects")
+            .option("--data-dir <directory>", "runtime state directory", ".little-actors")
             .action(options => this.actions.token(options))
         program
             .command("start")

@@ -21,7 +21,7 @@ mkdir chat-example
 cd chat-example
 npm init -y
 npm pkg set type=module
-npm link /absolute/path/to/little-durable-objects/npm
+npm link /absolute/path/to/little-actors/npm
 mkdir src
 ```
 
@@ -32,8 +32,8 @@ Link the repository's `npm/` directory, which contains the package and CLI. The 
 Create the actor and client files from the [chat tutorial](../../README.md#build-a-chat-room-in-your-terminal), then start the server from the demo directory:
 
 ```sh
-DURABLE_OBJECT_BINARY=/absolute/path/to/little-durable-objects/target/debug/little-durable-objects \
-  npx --no-install little-durable-objects dev
+DURABLE_OBJECT_BINARY=/absolute/path/to/little-actors/target/debug/little-actors \
+  npx --no-install little-actors dev
 ```
 
 The binary override is needed for `dev`: linking the JavaScript package alone does not select a locally built runtime. `--no-install` keeps `npx` from installing a package if the link is missing.
@@ -41,11 +41,11 @@ The binary override is needed for `dev`: linking the JavaScript package alone do
 After the ready message, open two more terminals in the demo directory. Run one command per terminal:
 
 ```sh
-npx --no-install little-durable-objects run src/chat.ts Alice
+npx --no-install little-actors run src/chat.ts Alice
 ```
 
 ```sh
-npx --no-install little-durable-objects run src/chat.ts Bob
+npx --no-install little-actors run src/chat.ts Bob
 ```
 
 `run` and `token` use the running server, so they do not need `DURABLE_OBJECT_BINARY`.

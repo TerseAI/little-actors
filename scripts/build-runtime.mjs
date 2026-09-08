@@ -25,18 +25,18 @@ export class RuntimeBuilder {
     }
 
     async compile(staging) {
-        await this.run("cargo", ["build", "--locked", "--release", "--bin", "little-durable-objects"], { cwd: this.root })
-        await copyFile(path.join(this.root, "target/release/little-durable-objects"), path.join(staging, "little-durable-objects"))
-        await this.run("go", ["build", "-mod=readonly", "-trimpath", "-ldflags=-s -w", "-o", path.join(staging, "little-durable-objects-modal-go"), "."], {
+        await this.run("cargo", ["build", "--locked", "--release", "--bin", "little-actors"], { cwd: this.root })
+        await copyFile(path.join(this.root, "target/release/little-actors"), path.join(staging, "little-actors"))
+        await this.run("go", ["build", "-mod=readonly", "-trimpath", "-ldflags=-s -w", "-o", path.join(staging, "little-actors-modal-go"), "."], {
             cwd: path.join(this.root, "providers/modal-go"),
             env: { ...process.env, CGO_ENABLED: "0" }
         })
     }
 
     async package(staging, output) {
-        const name = `little-durable-objects-${this.platform}-${this.arch}.tar.gz`
+        const name = `little-actors-${this.platform}-${this.arch}.tar.gz`
         const archive = path.join(staging, name)
-        await this.run("tar", ["-czf", archive, "-C", staging, "little-durable-objects", "little-durable-objects-modal-go"])
+        await this.run("tar", ["-czf", archive, "-C", staging, "little-actors", "little-actors-modal-go"])
         const checksum = createHash("sha256")
             .update(await readFile(archive))
             .digest("hex")

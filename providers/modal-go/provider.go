@@ -234,7 +234,7 @@ func hostParams(request ensureRequest) (*modal.SandboxCreateParams, error) {
 	return &modal.SandboxCreateParams{
 		Name:    resourceName(request.NamespaceID, request.CodeRevision, request.CanonicalRegion),
 		Timeout: 24 * time.Hour, IdleTimeout: time.Duration(request.HostIdleTimeoutMS) * time.Millisecond,
-		Command: []string{"sh", "-c", bootstrap, "durable-object-host-bootstrap", "/usr/local/bin/little-durable-objects", stderrFile, readyFile},
+		Command: []string{"sh", "-c", bootstrap, "durable-object-host-bootstrap", "/usr/local/bin/little-actors", stderrFile, readyFile},
 		Workdir: request.WorkingDirectory, Env: hostEnvironment(request), H2Ports: []int{7101},
 		ReadinessProbe: probe, Regions: []string{region}, Cloud: modalCloud(request.CanonicalRegion),
 	}, nil

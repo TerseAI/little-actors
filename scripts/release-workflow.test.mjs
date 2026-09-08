@@ -9,7 +9,7 @@ test("release images use the established Terse Artifact Registry", () => {
     const workflow = read(".github/workflows/release.yml")
 
     assert.match(workflow, /REGISTRY: us-central1-docker\.pkg\.dev/)
-    assert.match(workflow, /IMAGE: us-central1-docker\.pkg\.dev\/fluid-analogy-473415-c2\/public\/little-durable-objects/)
+    assert.match(workflow, /IMAGE: us-central1-docker\.pkg\.dev\/fluid-analogy-473415-c2\/public\/little-actors/)
     assert.match(workflow, /google-github-actions\/auth@/)
     assert.match(workflow, /actions\/attest@/)
     assert.doesNotMatch(workflow, /push-to-registry: true/)
@@ -27,8 +27,8 @@ test("runtime images include the one-shot Go provider", () => {
     assert.match(dockerfile, /FROM golang:1\.27\.1-bookworm AS modal-builder/)
     assert.match(dockerfile, /COPY providers\/modal-go\/ /)
     assert.match(dockerfile, /CGO_ENABLED=0 go build -mod=readonly -trimpath/)
-    assert.match(dockerfile, /COPY --from=modal-builder .* \/usr\/local\/bin\/little-durable-objects-modal-go/)
-    assert.match(dockerfile, /DURABLE_OBJECT_SANDBOX_COMMAND=little-durable-objects-modal-go/)
+    assert.match(dockerfile, /COPY --from=modal-builder .* \/usr\/local\/bin\/little-actors-modal-go/)
+    assert.match(dockerfile, /DURABLE_OBJECT_SANDBOX_COMMAND=little-actors-modal-go/)
     assert.match(read(".dockerignore"), /!providers\/modal-go\/\*\*/)
 })
 

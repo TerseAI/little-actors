@@ -67,7 +67,7 @@ jobs:
             - run: cargo build --locked
             - name: Test the local tutorial without cloud services
               env:
-                  DURABLE_OBJECT_TEST_BINARY: ${{ github.workspace }}/target/debug/little-durable-objects
+                  DURABLE_OBJECT_TEST_BINARY: ${{ github.workspace }}/target/debug/little-actors
               run: node --test scripts/local-runtime.test.mjs
 
     npm:

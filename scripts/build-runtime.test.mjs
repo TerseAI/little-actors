@@ -17,7 +17,7 @@ test("native bundles contain both executable files and a matching download check
     const run = async (command, args, options) => {
         if (command === "cargo") {
             await mkdir(path.join(root, "target/release"), { recursive: true })
-            await writeFile(path.join(root, "target/release/little-durable-objects"), "runtime", { mode: 0o755 })
+            await writeFile(path.join(root, "target/release/little-actors"), "runtime", { mode: 0o755 })
         } else if (command === "go") {
             await writeFile(args[args.indexOf("-o") + 1], "provider", { mode: 0o755 })
         } else {
@@ -25,7 +25,7 @@ test("native bundles contain both executable files and a matching download check
         }
     }
     const archive = await new RuntimeBuilder({ root, platform: "linux", arch: "arm64" }, run).build()
-    assert.equal(path.basename(archive), "little-durable-objects-linux-arm64.tar.gz")
+    assert.equal(path.basename(archive), "little-actors-linux-arm64.tar.gz")
     const checksum = createHash("sha256")
         .update(await readFile(archive))
         .digest("hex")
@@ -34,8 +34,8 @@ test("native bundles contain both executable files and a matching download check
     await mkdir(extracted)
     await execute("tar", ["-xzf", archive, "-C", extracted])
     for (const [name, contents] of [
-        ["little-durable-objects", "runtime"],
-        ["little-durable-objects-modal-go", "provider"]
+        ["little-actors", "runtime"],
+        ["little-actors-modal-go", "provider"]
     ]) {
         assert.equal(await readFile(path.join(extracted, name), "utf8"), contents)
         await execute("test", ["-x", path.join(extracted, name)])
@@ -49,5 +49,5 @@ test("a compiler failure does not publish a native bundle", async t => {
         throw new Error("compiler failed")
     })
     await assert.rejects(builder.build(), /compiler failed/)
-    await assert.rejects(readFile(path.join(root, `dist-runtime/little-durable-objects-${process.platform}-${process.arch}.tar.gz`)), { code: "ENOENT" })
+    await assert.rejects(readFile(path.join(root, `dist-runtime/little-actors-${process.platform}-${process.arch}.tar.gz`)), { code: "ENOENT" })
 })

@@ -1,38 +1,38 @@
-# little-durable-objects
+# little-actors
 
 Named actors with serial method calls and saved state. Requires Node.js 20+.
 
 ```sh
-npm install little-durable-objects
+npm install little-actors
 ```
 
-Start with the [terminal chat tutorial](https://github.com/TerseAI/little-durable-objects#build-a-chat-room-in-your-terminal): two listeners, live messages, and history that survives restarts. It includes complete files and expected output.
+Start with the [terminal chat tutorial](https://github.com/TerseAI/little-actors#build-a-chat-room-in-your-terminal): two listeners, live messages, and history that survives restarts. It includes complete files and expected output.
 
 ## Local CLI
 
 Export actors from `src/durable-objects.ts`. In your project directory:
 
 ```sh
-npx little-durable-objects dev
+npx little-actors dev
 ```
 
 Wait for `Local actors ready at http://127.0.0.1:7100`. In another terminal:
 
 ```sh
-npx little-durable-objects run src/chat.ts Alice
+npx little-actors run src/chat.ts Alice
 ```
 
 Run a second listener in a third terminal:
 
 ```sh
-npx little-durable-objects run src/chat.ts Bob
+npx little-actors run src/chat.ts Bob
 ```
 
-Once both clients have joined, type a message and press Enter. Both receive it. Reconnect either client to see the saved conversation. The CLI supplies credentials and stores SQLite metadata and snapshots in `.little-durable-objects/`. State survives restarts; losing that directory loses the actors. Restart `dev` after actor code changes.
+Once both clients have joined, type a message and press Enter. Both receive it. Reconnect either client to see the saved conversation. The CLI supplies credentials and stores SQLite metadata and snapshots in `.little-actors/`. State survives restarts; losing that directory loses the actors. Restart `dev` after actor code changes.
 
 `dev --help` lists options. `token` prints a one-hour local credential for tools such as `wscat`.
 
-These CLI commands require version `0.1.25` or later.
+These CLI commands require version `0.1.26` or later.
 
 ## Hosted clients
 
@@ -46,7 +46,7 @@ export DURABLE_OBJECT_CONTROL_PLANE_URL='https://objects.example.com'
 
 Use a session token issued by your trusted backend. Terse supplies these variables to workflows. The SDK connects to the named actor and calls its methods.
 
-See [self-hosting](https://github.com/TerseAI/little-durable-objects/blob/main/docs/guides/self-hosting.md) for deployment and credentials. Runtime distributions bundle the Go provider.
+See [self-hosting](https://github.com/TerseAI/little-actors/blob/main/docs/guides/self-hosting.md) for deployment and credentials. Runtime distributions bundle the Go provider.
 
 ## WebSocket API
 
@@ -68,10 +68,10 @@ WebSockets use the control-plane URL unless `DURABLE_OBJECT_SOCKET_GATEWAY_URL` 
 
 ## Reference
 
-- [CLI reference](https://github.com/TerseAI/little-durable-objects/blob/main/docs/reference/cli.md): commands, options, and environment variables.
-- [TypeScript API reference](https://github.com/TerseAI/little-durable-objects/blob/main/docs/reference/api.md): actors, methods, connections, types, and errors.
-- [HTTP and WebSocket reference](https://github.com/TerseAI/little-durable-objects/blob/main/docs/reference/http.md): deployments, tokens, connections, and callbacks.
-- [Local development](https://github.com/TerseAI/little-durable-objects/blob/main/docs/guides/local-development.md): build and link a source checkout.
+- [CLI reference](https://github.com/TerseAI/little-actors/blob/main/docs/reference/cli.md): commands, options, and environment variables.
+- [TypeScript API reference](https://github.com/TerseAI/little-actors/blob/main/docs/reference/api.md): actors, methods, connections, types, and errors.
+- [HTTP and WebSocket reference](https://github.com/TerseAI/little-actors/blob/main/docs/reference/http.md): deployments, tokens, connections, and callbacks.
+- [Local development](https://github.com/TerseAI/little-actors/blob/main/docs/guides/local-development.md): build and link a source checkout.
 
 ## License
 

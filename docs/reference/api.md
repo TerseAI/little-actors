@@ -1,6 +1,6 @@
 # TypeScript API reference
 
-This page documents the public exports of `little-durable-objects`. Requires Node.js 20+ and an ES module project. For a working application, see the [chat tutorial](../../README.md#build-a-chat-room-in-your-terminal).
+This page documents the public exports of `little-actors`. Requires Node.js 20+ and an ES module project. For a working application, see the [chat tutorial](../../README.md#build-a-chat-room-in-your-terminal).
 
 - [Actor](#actor)
 - [Actor references](#actor-references)
@@ -15,13 +15,13 @@ Deployment management and direct WebSocket connections are documented in the [HT
 ## Actor
 
 ```ts
-import { Actor } from "little-durable-objects"
+import { Actor } from "little-actors"
 ```
 
 Base class for actors with saved state. Export a named subclass from your actor entrypoint, normally `src/durable-objects.ts`:
 
 ```ts
-import { Actor } from "little-durable-objects"
+import { Actor } from "little-actors"
 
 export class ChatRoom extends Actor {
     history: string[] = []
@@ -272,7 +272,7 @@ To save and broadcast together, invoke an actor method that updates a field and 
 ## ActorSocket
 
 ```ts
-import type { ActorSocket } from "little-durable-objects"
+import type { ActorSocket } from "little-actors"
 ```
 
 Actor-side connection passed to lifecycle hooks and listed in `this.connections`. `ActorSocket<Metadata>` describes the metadata shape; its default metadata type is JSON-compatible values. Import it as a type; it is not a constructor.
@@ -408,7 +408,7 @@ Sending and broadcasting do not acknowledge persistence or recipient delivery. A
 ## ActorConnection
 
 ```ts
-import type { ActorConnection } from "little-durable-objects"
+import type { ActorConnection } from "little-actors"
 ```
 
 Client-side connection returned by [`reference.connect()`](#referenceconnect). The SDK handles authentication and initialization; application code handles message encoding, validation, display, and replay beyond the initial saved state. Import it as a type; it is not a constructor.
@@ -500,7 +500,7 @@ The initial state is a JSON text message with shape `{"type":"state","state":{..
 ## ActorInvocationError
 
 ```ts
-import { ActorInvocationError } from "little-durable-objects"
+import { ActorInvocationError } from "little-actors"
 ```
 
 An `Error` subclass for failed remote operations. Its `name` is `"ActorInvocationError"`.
@@ -516,7 +516,7 @@ new ActorInvocationError(code: string, requestId: string, message: string)
 - `message` (`string`, required) — Failure description, available through the inherited `message` property.
 
 ```ts
-import { ActorInvocationError } from "little-durable-objects"
+import { ActorInvocationError } from "little-actors"
 
 import { ChatRoom } from "./durable-objects.js"
 
@@ -565,12 +565,12 @@ Validation, actor definition, configuration, serialization, and socket failures 
 
 ## Types
 
-These types are exported from `little-durable-objects` alongside `ActorSocket` and `ActorConnection`.
+These types are exported from `little-actors` alongside `ActorSocket` and `ActorConnection`.
 
 ### ActorClass
 
 ```ts
-import type { ActorClass } from "little-durable-objects"
+import type { ActorClass } from "little-actors"
 ```
 
 ```text
@@ -584,7 +584,7 @@ An actor class whose prototype has type `Instance`. The type describes the class
 ### ActorBroadcastOptions
 
 ```ts
-import type { ActorBroadcastOptions } from "little-durable-objects"
+import type { ActorBroadcastOptions } from "little-actors"
 ```
 
 Recipient filters for [`Actor.broadcast()`](#actorbroadcast). Both properties are readonly and optional; filters and exclusions can be combined.
@@ -611,7 +611,7 @@ Deliver only to connections having **all** listed tags. Omitted or empty means n
 type ActorSocketMessage = string | Uint8Array
 ```
 
-Text or binary data accepted by actor-side send and broadcast methods and passed to `onMessage`. Import with `import type { ActorSocketMessage } from "little-durable-objects"`.
+Text or binary data accepted by actor-side send and broadcast methods and passed to `onMessage`. Import with `import type { ActorSocketMessage } from "little-actors"`.
 
 ### ActorSocketState (type)
 
@@ -619,7 +619,7 @@ Text or binary data accepted by actor-side send and broadcast methods and passed
 type ActorSocketState = "connecting" | "open" | "closed"
 ```
 
-Actor-side connection state. Import with `import type { ActorSocketState } from "little-durable-objects"`. Client connections instead expose numeric [`readyState`](#actorconnectionreadystate).
+Actor-side connection state. Import with `import type { ActorSocketState } from "little-actors"`. Client connections instead expose numeric [`readyState`](#actorconnectionreadystate).
 
 ## Client configuration
 

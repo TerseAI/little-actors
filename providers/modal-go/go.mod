@@ -1,4 +1,4 @@
-module github.com/TerseAI/little-durable-objects/providers/modal-go
+module github.com/TerseAI/little-actors/providers/modal-go
 
 go 1.25.0
 

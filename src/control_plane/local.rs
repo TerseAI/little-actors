@@ -67,7 +67,7 @@ pub async fn serve_local(
     let directory = options
         .data_dir
         .clone()
-        .unwrap_or_else(|| project.join(".little-durable-objects"));
+        .unwrap_or_else(|| project.join(".little-actors"));
     let _lock = prepare_directory(&directory)?;
     let listener = TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, options.port))
         .await
@@ -96,7 +96,7 @@ pub async fn serve_local(
     let ready = publish_connection(&directory, &origin, &api_key, &storage.region);
     if ready.is_ok() {
         println!(
-            "Local actors ready at {origin}\nState: {}\nRun a client: npx little-durable-objects run src/client.ts\nRestart this command after changing actor code.",
+            "Local actors ready at {origin}\nState: {}\nRun a client: npx little-actors run src/client.ts\nRestart this command after changing actor code.",
             directory.display()
         );
         if matches!(options.storage, DevStorage::Local) {

@@ -44,7 +44,7 @@ async function runRuntime(args: string[]): Promise<number> {
               version: await version(),
               platform: process.platform,
               arch: process.arch,
-              cacheDirectory: process.env.DURABLE_OBJECT_CACHE_DIR ?? path.join(homedir(), ".cache/little-durable-objects")
+              cacheDirectory: process.env.DURABLE_OBJECT_CACHE_DIR ?? path.join(homedir(), ".cache/little-actors")
           }).install()
     return runProcess(
         executable,
@@ -76,7 +76,7 @@ async function localSession(directory: string) {
     const connection = await readFile(path.resolve(directory, "runtime.json"), "utf8")
         .then(JSON.parse)
         .catch(() => {
-            throw new Error("No local runtime found. Start `npx little-durable-objects dev` in this project first; use the same --data-dir for both commands.")
+            throw new Error("No local runtime found. Start `npx little-actors dev` in this project first; use the same --data-dir for both commands.")
         })
     const response = await fetch(`${connection.controlPlaneUrl}/v1/namespaces/${connection.namespaceId}/session-scoped-token`, {
         method: "POST",
@@ -84,7 +84,7 @@ async function localSession(directory: string) {
         body: JSON.stringify({ executionId: `local-${randomUUID()}`, deadlineUnixMs: Date.now() + 3_600_000, storageRegion: connection.storageRegion }),
         signal: AbortSignal.timeout(10_000)
     }).catch(() => {
-        throw new Error("Cannot reach the local runtime. Start `npx little-durable-objects dev` again.")
+        throw new Error("Cannot reach the local runtime. Start `npx little-actors dev` again.")
     })
     if (!response.ok) throw new Error(`Local runtime could not issue a client token (HTTP ${response.status}). Restart it and try again.`)
     const { token } = (await response.json()) as { token: string }

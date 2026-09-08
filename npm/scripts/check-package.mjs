@@ -4,7 +4,7 @@ await checkPackage()
 
 async function checkPackage() {
     const metadata = JSON.parse(await readFile("package.json", "utf8"))
-    if (metadata.name !== "little-durable-objects") throw new Error("unexpected package name")
+    if (metadata.name !== "little-actors") throw new Error("unexpected package name")
     if (metadata.license !== "MIT") throw new Error("package license must be MIT")
     for (const entry of Object.values(metadata.exports)) await checkExport(entry)
     const cli = metadata.bin?.[metadata.name]

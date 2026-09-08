@@ -270,7 +270,7 @@ fn sandbox_provider_config(
     Ok(SandboxProviderConfig {
         provider_name,
         command: get("DURABLE_OBJECT_SANDBOX_COMMAND")
-            .unwrap_or_else(|| "little-durable-objects-modal-go".into()),
+            .unwrap_or_else(|| "little-actors-modal-go".into()),
         environment,
         runtime: HostSandboxRuntimeConfig {
             control_plane_url,

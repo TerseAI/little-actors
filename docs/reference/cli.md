@@ -1,8 +1,8 @@
 # Command Line Interface
 
-The `little-durable-objects` command starts actors, runs TypeScript clients, and issues local credentials. It is installed with the Node.js package. For a complete example, see the [chat tutorial](../../README.md#build-a-chat-room-in-your-terminal).
+The `little-actors` command starts actors, runs TypeScript clients, and issues local credentials. It is installed with the Node.js package. For a complete example, see the [chat tutorial](../../README.md#build-a-chat-room-in-your-terminal).
 
-These commands require npm version `0.1.25` or later. Follow [local development](../guides/local-development.md) to build and link a source checkout.
+These commands require npm version `0.1.26` or later. Follow [local development](../guides/local-development.md) to build and link a source checkout.
 
 - [Find your actors](#find-your-actors)
 - [Run the development server](#run-the-development-server)
@@ -22,7 +22,7 @@ The development server looks for `src/durable-objects.ts` in the current directo
 Select a different project or actor file with `--project` and `--entrypoint`:
 
 ```sh
-npx little-durable-objects dev --project ./chat-example --entrypoint src/actors.ts
+npx little-actors dev --project ./chat-example --entrypoint src/actors.ts
 ```
 
 The entrypoint resolves relative to the project. In this example, the server loads `chat-example/src/actors.ts`. The project must have the SDK installed or linked.
@@ -30,7 +30,7 @@ The entrypoint resolves relative to the project. In this example, the server loa
 ## Run the development server
 
 ```sh
-npx little-durable-objects dev
+npx little-actors dev
 ```
 
 Starts a server on IPv4 loopback, loads the actor entrypoint, and registers it in the `local` namespace. Keep it running while using clients. Wait for the ready message before connecting:
@@ -39,25 +39,25 @@ Starts a server on IPv4 loopback, loads the actor entrypoint, and registers it i
 Local actors ready at http://127.0.0.1:7100
 ```
 
-Local mode needs no cloud credentials, database URL, bucket, or signing key. SQLite metadata and snapshots are saved in `.little-durable-objects/` by default.
+Local mode needs no cloud credentials, database URL, bucket, or signing key. SQLite metadata and snapshots are saved in `.little-actors/` by default.
 
 ### dev options
 
 ```text
-little-durable-objects dev [options]
+little-actors dev [options]
 ```
 
 - `--project <directory>` — Project containing the actor code and installed SDK. Defaults to `.`.
 - `--entrypoint <file>` — Actor file relative to the project. Defaults to `src/durable-objects.ts`.
 - `--port <number>` — Loopback port, an integer from `0` through `65535`. Defaults to `7100`; `0` selects an available port.
-- `--data-dir <directory>` — Persistent state and connection settings. Defaults to `<project>/.little-durable-objects`. An explicit relative path resolves from the shell's working directory.
+- `--data-dir <directory>` — Persistent state and connection settings. Defaults to `<project>/.little-actors`. An explicit relative path resolves from the shell's working directory.
 - `--storage <backend>` — Snapshot storage, either `local` (default) or `gcs`. Local metadata stays in the data directory for both backends.
 - `-h`, `--help` — Print command help.
 
 ### Choose a port
 
 ```sh
-npx little-durable-objects dev --port 7200
+npx little-actors dev --port 7200
 ```
 
 Use `--port 0` to select an available port. The ready message prints the selected origin; `run` and `token` read it automatically from the data directory.
@@ -65,7 +65,7 @@ Use `--port 0` to select an available port. The ready message prints the selecte
 ### Keep state across restarts
 
 ```sh
-npx little-durable-objects dev --data-dir ./chat-state
+npx little-actors dev --data-dir ./chat-state
 ```
 
 Keep the entire data directory to preserve actors across restarts. Only one `dev` process can use it at a time. Separate projects can run with different data directories and ports.
@@ -79,7 +79,7 @@ Local storage is intended for development. Deleting the directory or losing its 
 ```sh
 export DURABLE_OBJECT_STANDARD_BUCKETS='{"north-america-east":"my-actor-state-bucket"}'
 export GOOGLE_APPLICATION_CREDENTIALS='/absolute/path/to/service-account.json'
-npx little-durable-objects dev --storage gcs --data-dir .gcs-demo
+npx little-actors dev --storage gcs --data-dir .gcs-demo
 ```
 
 GCS mode uses Google Application Default Credentials and a nonempty region-to-bucket map. Bucket values are names without `gs://` or slashes. Local metadata still lives in the data directory and must be preserved.
@@ -89,7 +89,7 @@ Changing the storage backend or bucket map requires a separate data directory; s
 ## Run a client
 
 ```sh
-npx little-durable-objects run src/chat.ts Alice
+npx little-actors run src/chat.ts Alice
 ```
 
 Runs a TypeScript or JavaScript client in Node.js using credentials from the running development server. The script path is relative to the current working directory. The CLI does not change directories or type-check the script.
@@ -97,19 +97,19 @@ Runs a TypeScript or JavaScript client in Node.js using credentials from the run
 ### run arguments and options
 
 ```text
-little-durable-objects run [options] <script> [args...]
+little-actors run [options] <script> [args...]
 ```
 
 - `<script>` — Required client file to execute.
 - `[args...]` — Arguments passed to the client after its filename. Defaults to no arguments.
-- `--data-dir <directory>` — Directory belonging to the running local server. Defaults to `.little-durable-objects`, relative to the current directory.
+- `--data-dir <directory>` — Directory belonging to the running local server. Defaults to `.little-actors`, relative to the current directory.
 - `-h`, `--help` — Print command help when placed before the script.
 
 Put CLI options **before** the script. Everything after its filename belongs to the client, including `--help` and `--data-dir`:
 
 ```sh
-npx little-durable-objects run --data-dir ./chat-state src/chat.ts Alice
-npx little-durable-objects run src/client.ts --room lobby --verbose
+npx little-actors run --data-dir ./chat-state src/chat.ts Alice
+npx little-actors run src/client.ts --room lobby --verbose
 ```
 
 In the first example, `process.argv[2]` is `Alice`. In the second, the client's arguments start with `--room`.
@@ -125,7 +125,7 @@ For hosted clients, configure the [SDK environment](api.md#client-configuration)
 ## Issue a local token
 
 ```sh
-npx little-durable-objects token
+npx little-actors token
 ```
 
 Requests a session token from the running local server. Standard output contains only the token followed by a newline. Errors go to standard error.
@@ -133,10 +133,10 @@ Requests a session token from the running local server. Standard output contains
 ### token options
 
 ```text
-little-durable-objects token [options]
+little-actors token [options]
 ```
 
-- `--data-dir <directory>` — Directory belonging to the running local server. Defaults to `.little-durable-objects`, relative to the current directory.
+- `--data-dir <directory>` — Directory belonging to the running local server. Defaults to `.little-actors`, relative to the current directory.
 - `-h`, `--help` — Print command help.
 
 The requested deadline is one hour in the future. Token issuance adds up to 30 seconds of grace, subject to the server's lifetime cap. Regenerate the token after a server restart.
@@ -146,7 +146,7 @@ The token permits application access throughout the `local` namespace. It is nei
 ### Connect with a WebSocket tool
 
 ```sh
-TOKEN="$(npx little-durable-objects token)"
+TOKEN="$(npx little-actors token)"
 npx --yes wscat \
     -c ws://127.0.0.1:7100/v1/namespaces/local/actors/ChatRoom/lobby/websocket \
     -H "Authorization: Bearer $TOKEN" \
@@ -159,7 +159,7 @@ Use the server's actual port, and pass `--data-dir` to `token` if the server use
 ## Start a hosted server
 
 ```sh
-npx little-durable-objects start
+npx little-actors start
 ```
 
 Starts the packaged server using self-hosting settings from the environment. It takes no positional arguments or command-specific options beyond `-h` / `--help`.
@@ -180,7 +180,7 @@ Path to an existing native executable used by `dev` and `start`. Relative paths 
 
 ### DURABLE_OBJECT_CACHE_DIR
 
-**Default:** `~/.cache/little-durable-objects`.
+**Default:** `~/.cache/little-actors`.
 
 Root directory for downloaded runtimes. Ignored when `DURABLE_OBJECT_BINARY` is set.
 
@@ -205,8 +205,8 @@ Runtime log filter, for example `warn` or `debug`.
 For a release that includes the CLI:
 
 ```sh
-npm install little-durable-objects
-npx little-durable-objects --help
+npm install little-actors
+npx little-actors --help
 ```
 
 The package includes the SDK, CLI, and TypeScript execution support. `dev` and `start` download a native runtime matching the installed package version if it is not cached. Downloads are verified against the release's SHA-256 checksum; `run`, `token`, and help do not download a runtime.
@@ -215,14 +215,14 @@ Prebuilt platforms are macOS and Linux on ARM64 and x64. Linux requires glibc 2.
 
 A prebuilt runtime does not require Rust. For source builds, see [local development](../guides/local-development.md#build-the-sdk-and-runtime).
 
-The default cache path is `~/.cache/little-durable-objects/<version>/<platform>-<arch>/`. Override its root with `DURABLE_OBJECT_CACHE_DIR`, or select an existing executable with `DURABLE_OBJECT_BINARY`.
+The default cache path is `~/.cache/little-actors/<version>/<platform>-<arch>/`. Override its root with `DURABLE_OBJECT_CACHE_DIR`, or select an existing executable with `DURABLE_OBJECT_BINARY`.
 
 ## Help and version
 
 ```sh
-npx little-durable-objects --help
-npx little-durable-objects dev --help
-npx little-durable-objects --version
+npx little-actors --help
+npx little-actors dev --help
+npx little-actors --version
 ```
 
 - `-h`, `--help` — Print help. Available on the root command and each subcommand.

@@ -1,6 +1,8 @@
-# little-durable-objects
+# little-actors
 
 Coordinating state across machines adds latency. Traditional protocols such as as [two-phase commit (2PC)](https://arxiv.org/abs/cs/0408036) and [Paxos](https://lamport.azurewebsites.net/pubs/paxos-simple.pdf) introduce a lot of overhead. Actors simplify application updates by giving each piece of state one owner.
+
+Previously published as `little-durable-objects`. Existing versions remain available; future releases use `little-actors`. Update npm imports and use matching `little-actors` runtime images when upgrading. The `DURABLE_OBJECT_*` environment variables remain unchanged. To reuse local state, pass `--data-dir .little-durable-objects` to `dev`, `run`, and `token`.
 
 ## Build a chat room in your terminal
 
@@ -8,7 +10,7 @@ Run two chat clients in separate terminals. Both receive every message, and the 
 
 Requires **Node.js 20+ and npm**. The CLI downloads the runtime, with SQLite included.
 
-The local CLI is available in version `0.1.25` and later. To run a source checkout, follow [Local development](docs/guides/local-development.md).
+The local CLI is available in version `0.1.26` and later. To run a source checkout, follow [Local development](docs/guides/local-development.md).
 
 ### 1. Create a project
 
@@ -17,7 +19,7 @@ mkdir chat-example
 cd chat-example
 npm init -y
 npm pkg set type=module
-npm install little-durable-objects
+npm install little-actors
 mkdir src
 ```
 
@@ -28,8 +30,8 @@ This installs the SDK, CLI, and TypeScript support.
 Create `src/durable-objects.ts`:
 
 ```ts
-import { Actor } from "little-durable-objects"
-import type { ActorSocket } from "little-durable-objects"
+import { Actor } from "little-actors"
+import type { ActorSocket } from "little-actors"
 
 export class ChatRoom extends Actor {
     history: string[] = []
@@ -73,10 +75,10 @@ Both clients use `ChatRoom.get("lobby")`, so they share one actor. A different r
 In terminal 1, from the project directory:
 
 ```sh
-npx little-durable-objects dev
+npx little-actors dev
 ```
 
-Leave this running. It starts the local server and registers your actor file. SQLite metadata and snapshots go in `.little-durable-objects/`.
+Leave this running. It starts the local server and registers your actor file. SQLite metadata and snapshots go in `.little-actors/`.
 
 Wait for this line before connecting:
 
@@ -89,13 +91,13 @@ Local actors ready at http://127.0.0.1:7100
 In terminal 2, from the same project directory, join as Alice:
 
 ```sh
-npx little-durable-objects run src/chat.ts Alice
+npx little-actors run src/chat.ts Alice
 ```
 
 In terminal 3, join as Bob:
 
 ```sh
-npx little-durable-objects run src/chat.ts Bob
+npx little-actors run src/chat.ts Bob
 ```
 
 `run` supplies local credentials automatically. Wait for both clients to print the initial state:
@@ -118,7 +120,7 @@ Bob: Hey, Alice!
 Press Ctrl-C in Bob's terminal, then run his command again:
 
 ```sh
-npx little-durable-objects run src/chat.ts Bob
+npx little-actors run src/chat.ts Bob
 ```
 
 Before Bob types anything, his client shows the saved conversation:
@@ -130,10 +132,10 @@ Before Bob types anything, his client shows the saved conversation:
 To try a full restart, stop both clients and the server with Ctrl-C. Start the server again in terminal 1:
 
 ```sh
-npx little-durable-objects dev
+npx little-actors dev
 ```
 
-Wait for the ready line, then rerun Alice's and Bob's commands. Both receive the same history and can keep chatting. The messages live in `.little-durable-objects/`, so keep that directory between runs.
+Wait for the ready line, then rerun Alice's and Bob's commands. Both receive the same history and can keep chatting. The messages live in `.little-actors/`, so keep that directory between runs.
 
 ## Host it yourself
 
@@ -145,7 +147,7 @@ Follow the [self-hosting guide](docs/guides/self-hosting.md) for configuration a
 - [TypeScript API reference](docs/reference/api.md): actor classes, methods, connections, types, and errors.
 - [HTTP and WebSocket reference](docs/reference/http.md): deployments, session tokens, direct connections, and callbacks.
 
-![Control plane, actor hosts, and persistent storage](docs/llittle-do-diagram.png)
+![Control plane, actor hosts, and persistent storage](docs/architecture.svg)
 
 ## License
 
