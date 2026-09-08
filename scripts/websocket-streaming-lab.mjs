@@ -458,8 +458,8 @@ function loadConfiguration(options) {
         collectGcp: options.collectGcp !== false,
         collectModal: options.collectModal !== false,
         gcpProject: options.gcpProject ?? "fluid-analogy-473415-c2",
-        gcpControlPlaneService: options.gcpControlPlaneService ?? "little-durable-objects",
-        gcpSocketService: options.gcpSocketService ?? "little-durable-objects-sockets",
+        gcpControlPlaneService: options.gcpControlPlaneService ?? "little-actors",
+        gcpSocketService: options.gcpSocketService ?? "little-actors-sockets",
         modalHostApp: options.modalHostApp ?? "durable-object-hosts",
         modalWorkflowApp: options.modalWorkflowApp ?? "terse-sdk-sandbox"
     }
