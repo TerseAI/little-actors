@@ -3,7 +3,7 @@ import { chmod, lstat, mkdir, mkdtemp, rename, rm, writeFile } from "node:fs/pro
 import path from "node:path"
 import { x } from "tar"
 
-const executables = ["little-durable-objects", "little-durable-objects-modal-go"]
+const executables = ["lac", "lac-modal-go"]
 const maximumBytes = 200 * 1024 * 1024
 
 interface RuntimeOptions {
@@ -44,7 +44,7 @@ export class RuntimeInstaller {
 
     private async unpack(directory: string): Promise<void> {
         const { version, platform, arch } = this.options
-        const url = `https://github.com/TerseAI/little-durable-objects/releases/download/v${version}/little-durable-objects-${platform}-${arch}.tar.gz`
+        const url = `https://github.com/TerseAI/little-actors/releases/download/v${version}/little-actors-${platform}-${arch}.tar.gz`
         const [archive, checksum] = await Promise.all([this.download(url), this.download(`${url}.sha256`)])
         const expected = checksum.toString("utf8").trim().split(/\s/u)[0]
         if (!/^[a-f0-9]{64}$/u.test(expected) || createHash("sha256").update(archive).digest("hex") !== expected) {

@@ -28,8 +28,10 @@ test("dev has local defaults and validates options before starting a runtime", a
         start: async () => {}
     }).program("1.2.3")
     for (const command of [program, ...program.commands]) command.exitOverride().configureOutput({ writeErr: () => {} })
+    assert.equal(program.name(), "lac")
+    assert.match(program.helpInformation(), /Usage: lac/)
     await program.parseAsync(["dev"], { from: "user" })
-    assert.deepEqual(calls, [{ port: 7100, project: ".", entrypoint: "src/durable-objects.ts", storage: "local" }])
+    assert.deepEqual(calls, [{ port: 7100, project: ".", entrypoint: "src/actors.ts", storage: "local" }])
     await assert.rejects(program.parseAsync(["dev", "--storage", "s3"], { from: "user" }), /Allowed choices/)
     await assert.rejects(program.parseAsync(["dev", "--port", "abc"], { from: "user" }), /port/i)
     assert.equal(calls.length, 1)

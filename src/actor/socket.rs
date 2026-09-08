@@ -39,14 +39,14 @@ fn validate_socket_effect(effect: &ActorSocketEffect) -> Result<()> {
         }
         ActorSocketEffect::Broadcast {
             message,
-            except_connection_ids,
+            exclude_connection_ids,
             tags,
         } => {
             ensure!(
-                except_connection_ids.len() <= MAX_SOCKET_TAGS,
+                exclude_connection_ids.len() <= MAX_SOCKET_TAGS,
                 "socket broadcast exclusions exceed {MAX_SOCKET_TAGS} entries"
             );
-            for connection_id in except_connection_ids {
+            for connection_id in exclude_connection_ids {
                 validate_connection_id(connection_id)?;
             }
             validate_socket_tags(tags)?;

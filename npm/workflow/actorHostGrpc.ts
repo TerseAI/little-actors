@@ -2,10 +2,10 @@ import { Metadata, credentials, loadPackageDefinition, status } from "@grpc/grpc
 import { loadSync } from "@grpc/proto-loader"
 import { fileURLToPath } from "node:url"
 
-import type { ProtoGrpcType } from "../generated/durable_object.js"
-import type { ActorHostServiceClient } from "../generated/durable_object/v1/ActorHostService.js"
-import type { HostInvokeActorRequest } from "../generated/durable_object/v1/HostInvokeActorRequest.js"
-import type { InvokeActorReply__Output } from "../generated/durable_object/v1/InvokeActorReply.js"
+import type { ProtoGrpcType } from "../generated/little_actors.js"
+import type { ActorHostServiceClient } from "../generated/little_actors/v1/ActorHostService.js"
+import type { HostInvokeActorRequest } from "../generated/little_actors/v1/HostInvokeActorRequest.js"
+import type { InvokeActorReply__Output } from "../generated/little_actors/v1/InvokeActorReply.js"
 import { ActorProtocolError } from "../shared/errors.js"
 import { parseSocketEffects } from "../shared/types.js"
 import type { JsonValue, SocketEffect } from "../shared/types.js"
@@ -125,13 +125,13 @@ function actorHostUrl(route: string): URL {
 }
 
 const definition = loadPackageDefinition(
-    loadSync(fileURLToPath(new URL("../generated/durable_object.proto", import.meta.url)), {
+    loadSync(fileURLToPath(new URL("../generated/little_actors.proto", import.meta.url)), {
         defaults: true,
         longs: Number,
         oneofs: true
     })
 ) as unknown as ProtoGrpcType
-const ActorHostClient = definition.durable_object.v1.ActorHostService
+const ActorHostClient = definition.little_actors.v1.ActorHostService
 
 export { GrpcActorHostTransport }
 export type { ActorHostReply, ActorHostTarget, ActorHostTransport, DirectActorInvocation }

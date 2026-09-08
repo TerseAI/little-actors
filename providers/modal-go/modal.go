@@ -84,7 +84,7 @@ func (s *sdkSandbox) Route(ctx context.Context) (string, error) {
 	if tunnel := tunnels[7101]; tunnel != nil {
 		return tunnel.URL(), nil
 	}
-	return "", fmt.Errorf("Modal did not create the durable-object HTTP/2 tunnel")
+	return "", fmt.Errorf("Modal did not create the actor HTTP/2 tunnel")
 }
 
 func (s *sdkSandbox) Metadata(ctx context.Context) ([]byte, error) {

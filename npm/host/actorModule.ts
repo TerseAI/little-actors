@@ -6,10 +6,10 @@ import type { ActorClass } from "../shared/actor.js"
 import { Actor, registerActorClass } from "../shared/actor.js"
 import { ActorConfigurationError, ActorDefinitionError } from "../shared/errors.js"
 
-const DEFAULT_ACTOR_ENTRYPOINT = "src/durable-objects.ts"
+const DEFAULT_ACTOR_ENTRYPOINT = "src/actors.ts"
 
 async function resolveActorEntrypoint(configured: string | undefined): Promise<string> {
-    if (configured === undefined && (await isFile("dist/durable-objects.js"))) configured = "dist/durable-objects.js"
+    if (configured === undefined && (await isFile("dist/actors.js"))) configured = "dist/actors.js"
     const entrypointPath = path.resolve(configured ?? DEFAULT_ACTOR_ENTRYPOINT)
     await requireFile(entrypointPath, configured === undefined ? `default actor entrypoint ${DEFAULT_ACTOR_ENTRYPOINT}` : `configured actor entrypoint ${configured}`)
     return pathToFileURL(entrypointPath).href

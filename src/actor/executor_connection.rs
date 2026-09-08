@@ -25,7 +25,7 @@ use tracing::{debug, info};
 
 use super::{ActorInvocationFailure, ActorKey};
 
-const ACTOR_EXECUTOR_PROTOCOL_VERSION: u32 = 14;
+const ACTOR_EXECUTOR_PROTOCOL_VERSION: u32 = 15;
 const MAX_PENDING_EXECUTOR_COMMANDS: usize = 64;
 pub(crate) const MAX_ACTOR_EXECUTOR_MESSAGE_BYTES: usize = 32 * 1024 * 1024;
 
@@ -92,7 +92,7 @@ pub enum ActorSocketEffect {
     },
     Broadcast {
         message: ActorSocketMessage,
-        except_connection_ids: Vec<String>,
+        exclude_connection_ids: Vec<String>,
         tags: Vec<String>,
     },
     Close {
@@ -949,7 +949,7 @@ mod tests {
             let mut stream = BufReader::new(stream);
             write_json_line(
                 &mut stream,
-                &json!({"type":"attach", "protocol":14, "actor_types":["counter"]}),
+                &json!({"type":"attach", "protocol":15, "actor_types":["counter"]}),
             )
             .await?;
             let _ = read_json_line(&mut stream).await?;
@@ -1191,10 +1191,10 @@ mod tests {
         let (reader, mut writer) = stream.into_split();
         let mut reader = BufReader::new(reader);
         writer
-            .write_all(b"{\"type\":\"attach\",\"protocol\":14,\"actor_types\":[\"counter\"]}\n")
+            .write_all(b"{\"type\":\"attach\",\"protocol\":15,\"actor_types\":[\"counter\"]}\n")
             .await?;
         ensure!(
-            read_json_line(&mut reader).await? == json!({ "type": "attached", "protocol": 14 })
+            read_json_line(&mut reader).await? == json!({ "type": "attached", "protocol": 15 })
         );
 
         let invocation = read_json_line(&mut reader).await?;
@@ -1254,10 +1254,10 @@ mod tests {
         let (reader, mut writer) = stream.into_split();
         let mut reader = BufReader::new(reader);
         writer
-            .write_all(b"{\"type\":\"attach\",\"protocol\":14,\"actor_types\":[\"counter\"]}\n")
+            .write_all(b"{\"type\":\"attach\",\"protocol\":15,\"actor_types\":[\"counter\"]}\n")
             .await?;
         ensure!(
-            read_json_line(&mut reader).await? == json!({ "type": "attached", "protocol": 14 })
+            read_json_line(&mut reader).await? == json!({ "type": "attached", "protocol": 15 })
         );
         let mut trailing = String::new();
         ensure!(

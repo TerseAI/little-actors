@@ -112,7 +112,7 @@ where
     let mut executor_task = Box::pin(executor_connection.run(stop.clone()));
     tokio::pin!(shutdown);
 
-    info!(host_id = %config.host_id, namespace_id = %config.namespace_id, route, "durable-object host is ready");
+    info!(host_id = %config.host_id, namespace_id = %config.namespace_id, route, "actor host is ready");
     let stop_result = wait_for_host_stop(
         server.as_mut(),
         executor_task.as_mut(),
@@ -127,7 +127,7 @@ where
     drop(javascript);
     let renewal_result = renewal.shutdown().await;
     let unregister_result = lease.unregister().await;
-    info!(host_id = %config.host_id, "durable-object host stopped");
+    info!(host_id = %config.host_id, "actor host stopped");
     stop_result?;
     renewal_result?;
     unregister_result
@@ -136,40 +136,40 @@ where
 impl ActorHostConfig {
     fn from_lookup(mut get: impl FnMut(&str) -> Option<String>) -> Result<Self> {
         let startup_started_at = Instant::now();
-        let control_plane_url = required(&mut get, "DURABLE_OBJECT_CONTROL_PLANE_URL")?;
+        let control_plane_url = required(&mut get, "LAC_CONTROL_PLANE_URL")?;
         let socket_gateway_url =
-            get("DURABLE_OBJECT_SOCKET_GATEWAY_URL").unwrap_or_else(|| control_plane_url.clone());
-        let host_token = required(&mut get, "DURABLE_OBJECT_HOST_TOKEN")?;
-        let jwt_public_keys = required(&mut get, "DURABLE_OBJECT_JWT_PUBLIC_KEYS")?;
-        let namespace_id = required(&mut get, "DURABLE_OBJECT_NAMESPACE_ID")?;
+            get("LAC_SOCKET_GATEWAY_URL").unwrap_or_else(|| control_plane_url.clone());
+        let host_token = required(&mut get, "LAC_HOST_TOKEN")?;
+        let jwt_public_keys = required(&mut get, "LAC_JWT_PUBLIC_KEYS")?;
+        let namespace_id = required(&mut get, "LAC_NAMESPACE_ID")?;
         ActorScope {
             namespace_id: namespace_id.clone(),
         }
         .validate()?;
-        let host_id = super::HostId::new(required(&mut get, "DURABLE_OBJECT_HOST_ID")?);
+        let host_id = super::HostId::new(required(&mut get, "LAC_HOST_ID")?);
         ensure!(
             host_id
                 .as_str()
                 .starts_with(&format!("host.v1.{namespace_id}.")),
-            "DURABLE_OBJECT_HOST_ID does not belong to DURABLE_OBJECT_NAMESPACE_ID"
+            "LAC_HOST_ID does not belong to LAC_NAMESPACE_ID"
         );
-        let session_id = required(&mut get, "DURABLE_OBJECT_SESSION_ID")?;
-        uuid::Uuid::parse_str(&session_id).context("DURABLE_OBJECT_SESSION_ID must be a UUID")?;
-        let executor_socket = get("DURABLE_OBJECT_EXECUTOR_SOCKET")
+        let session_id = required(&mut get, "LAC_SESSION_ID")?;
+        uuid::Uuid::parse_str(&session_id).context("LAC_SESSION_ID must be a UUID")?;
+        let executor_socket = get("LAC_EXECUTOR_SOCKET")
             .map(PathBuf::from)
-            .unwrap_or_else(|| PathBuf::from("/tmp/durable-object-executor.sock"));
-        let host_route = get("DURABLE_OBJECT_HOST_ROUTE");
+            .unwrap_or_else(|| PathBuf::from("/tmp/little-actors-executor.sock"));
+        let host_route = get("LAC_HOST_ROUTE");
         if let Some(route) = &host_route {
             tonic::transport::Endpoint::from_shared(route.clone())
-                .context("DURABLE_OBJECT_HOST_ROUTE must be a valid HTTP or HTTPS URI")?;
+                .context("LAC_HOST_ROUTE must be a valid HTTP or HTTPS URI")?;
         }
-        let public_route_file = get("DURABLE_OBJECT_HOST_PUBLIC_ROUTE_FILE").map(PathBuf::from);
+        let public_route_file = get("LAC_HOST_PUBLIC_ROUTE_FILE").map(PathBuf::from);
         let metadata = HostMetadataFile::from_lookup(&mut get)?;
         ensure!(
             public_route_file.is_none() || host_route.is_none(),
-            "DURABLE_OBJECT_HOST_PUBLIC_ROUTE_FILE cannot be combined with other host route settings"
+            "LAC_HOST_PUBLIC_ROUTE_FILE cannot be combined with other host route settings"
         );
-        let host_bind = get("DURABLE_OBJECT_HOST_BIND")
+        let host_bind = get("LAC_HOST_BIND")
             .unwrap_or_else(|| {
                 if host_route.is_some() || public_route_file.is_some() {
                     "0.0.0.0:7101"
@@ -179,31 +179,30 @@ impl ActorHostConfig {
                 .into()
             })
             .parse()
-            .context("DURABLE_OBJECT_HOST_BIND must be a socket address")?;
-        let jwt_issuer = get("DURABLE_OBJECT_JWT_ISSUER")
-            .unwrap_or_else(|| "durable-object-control-plane".into());
-        let invocation_jwt_audience = get("DURABLE_OBJECT_INVOKE_JWT_AUDIENCE")
-            .unwrap_or_else(|| "durable-object-invoke".into());
-        let jwt_max_lifetime =
-            duration_seconds(&mut get, "DURABLE_OBJECT_JWT_MAX_TTL_SECONDS", 86_400)?;
-        let lease_duration = duration_ms(&mut get, "DURABLE_OBJECT_LEASE_MS", 30_000)?;
-        let renew_every = duration_ms(&mut get, "DURABLE_OBJECT_RENEW_MS", 10_000)?;
+            .context("LAC_HOST_BIND must be a socket address")?;
+        let jwt_issuer =
+            get("LAC_JWT_ISSUER").unwrap_or_else(|| "little-actors-control-plane".into());
+        let invocation_jwt_audience =
+            get("LAC_INVOKE_JWT_AUDIENCE").unwrap_or_else(|| "little-actors-invoke".into());
+        let jwt_max_lifetime = duration_seconds(&mut get, "LAC_JWT_MAX_TTL_SECONDS", 86_400)?;
+        let lease_duration = duration_ms(&mut get, "LAC_LEASE_MS", 30_000)?;
+        let renew_every = duration_ms(&mut get, "LAC_RENEW_MS", 10_000)?;
         let host_idle_timeout = duration_ms(
             &mut get,
-            "DURABLE_OBJECT_HOST_IDLE_TIMEOUT_MS",
+            "LAC_HOST_IDLE_TIMEOUT_MS",
             DEFAULT_HOST_IDLE_TIMEOUT_MS,
         )?;
         ensure!(
             host_idle_timeout.as_millis() <= u128::from(MAX_IDLE_TIMEOUT_MS),
-            "DURABLE_OBJECT_HOST_IDLE_TIMEOUT_MS is too large"
+            "LAC_HOST_IDLE_TIMEOUT_MS is too large"
         );
         ensure!(
             lease_duration.as_millis() <= u128::from(MAX_HOST_LEASE_DURATION_MS),
-            "DURABLE_OBJECT_LEASE_MS is too large"
+            "LAC_LEASE_MS is too large"
         );
         ensure!(
             renew_every < lease_duration,
-            "DURABLE_OBJECT_RENEW_MS must be shorter than DURABLE_OBJECT_LEASE_MS"
+            "LAC_RENEW_MS must be shorter than LAC_LEASE_MS"
         );
         Ok(Self {
             socket_gateway_url,
@@ -232,14 +231,11 @@ impl ActorHostConfig {
 
 impl HostMetadataFile {
     fn from_lookup(get: &mut impl FnMut(&str) -> Option<String>) -> Result<Option<Self>> {
-        let Some(path) = get("DURABLE_OBJECT_HOST_METADATA_FILE") else {
+        let Some(path) = get("LAC_HOST_METADATA_FILE") else {
             return Ok(None);
         };
-        ensure!(
-            !path.is_empty(),
-            "DURABLE_OBJECT_HOST_METADATA_FILE must not be empty"
-        );
-        let canonical_region = required(get, "DURABLE_OBJECT_REGION")?;
+        ensure!(!path.is_empty(), "LAC_HOST_METADATA_FILE must not be empty");
+        let canonical_region = required(get, "LAC_REGION")?;
         crate::placement::validate_region(&canonical_region)?;
         Ok(Some(Self {
             path: path.into(),
@@ -552,7 +548,7 @@ fn spawn_javascript_process() -> Result<tokio::process::Child> {
     Command::new("node")
         .args([
             "--eval",
-            "import(\"little-durable-objects/host\").then(module => module.runDurableObjectHost())",
+            "import(\"little-actors/host\").then(module => module.runActorHost())",
         ])
         .stdin(Stdio::null())
         .stdout(Stdio::inherit())
@@ -607,7 +603,7 @@ mod tests {
         let config = ActorHostConfig::from_lookup(|name| values.get(name).cloned())?;
         assert_eq!(
             config.executor_socket,
-            PathBuf::from("/tmp/durable-object-executor.sock")
+            PathBuf::from("/tmp/little-actors-executor.sock")
         );
         assert_eq!(config.host_idle_timeout, Duration::from_secs(300));
         assert_eq!(config.jwt_max_lifetime, Duration::from_secs(86_400));
@@ -619,16 +615,10 @@ mod tests {
         let directory = tempfile::tempdir()?;
         let path = directory.path().join("host.json");
         let mut values = values();
-        values.insert("DURABLE_OBJECT_HOST_BIND".into(), "127.0.0.1:0".into());
-        values.insert(
-            "DURABLE_OBJECT_HOST_METADATA_FILE".into(),
-            path.display().to_string(),
-        );
-        values.insert("DURABLE_OBJECT_REGION".into(), "north-america-east".into());
-        values.insert(
-            "DURABLE_OBJECT_HOST_ROUTE".into(),
-            "https://host.example.com".into(),
-        );
+        values.insert("LAC_HOST_BIND".into(), "127.0.0.1:0".into());
+        values.insert("LAC_HOST_METADATA_FILE".into(), path.display().to_string());
+        values.insert("LAC_REGION".into(), "north-america-east".into());
+        values.insert("LAC_HOST_ROUTE".into(), "https://host.example.com".into());
         let config = ActorHostConfig::from_lookup(|name| values.get(name).cloned())?;
         let (_, route, _) = bind_host(&config, Instant::now(), &mut None, &mut None).await?;
         let metadata: serde_json::Value = serde_json::from_slice(&tokio::fs::read(&path).await?)?;
@@ -651,14 +641,14 @@ mod tests {
         let directory = tempfile::tempdir()?;
         let mut values = values();
         values.insert(
-            "DURABLE_OBJECT_HOST_METADATA_FILE".into(),
+            "LAC_HOST_METADATA_FILE".into(),
             directory
                 .path()
                 .join("missing/host.json")
                 .display()
                 .to_string(),
         );
-        values.insert("DURABLE_OBJECT_REGION".into(), "north-america-east".into());
+        values.insert("LAC_REGION".into(), "north-america-east".into());
         let config = ActorHostConfig::from_lookup(|name| values.get(name).cloned())?;
         assert!(
             bind_host(&config, Instant::now(), &mut None, &mut None)
@@ -672,12 +662,9 @@ mod tests {
     fn host_metadata_requires_a_valid_region() {
         for region in [None, Some(""), Some("bad/region")] {
             let mut values = values();
-            values.insert(
-                "DURABLE_OBJECT_HOST_METADATA_FILE".into(),
-                "/tmp/host.json".into(),
-            );
+            values.insert("LAC_HOST_METADATA_FILE".into(), "/tmp/host.json".into());
             if let Some(region) = region {
-                values.insert("DURABLE_OBJECT_REGION".into(), region.into());
+                values.insert("LAC_REGION".into(), region.into());
             }
             assert!(ActorHostConfig::from_lookup(|name| values.get(name).cloned()).is_err());
         }
@@ -705,7 +692,7 @@ mod tests {
         let path = directory.path().join("route");
         let mut values = values();
         values.insert(
-            "DURABLE_OBJECT_HOST_PUBLIC_ROUTE_FILE".into(),
+            "LAC_HOST_PUBLIC_ROUTE_FILE".into(),
             path.display().to_string(),
         );
         let config = ActorHostConfig::from_lookup(|name| values.get(name).cloned())?;
@@ -722,10 +709,10 @@ mod tests {
 
     #[test]
     fn public_route_file_cannot_be_combined_with_other_route_settings() {
-        for conflict in ["DURABLE_OBJECT_HOST_ROUTE"] {
+        for conflict in ["LAC_HOST_ROUTE"] {
             let mut values = values();
             values.insert(
-                "DURABLE_OBJECT_HOST_PUBLIC_ROUTE_FILE".into(),
+                "LAC_HOST_PUBLIC_ROUTE_FILE".into(),
                 "/tmp/input-route".into(),
             );
             values.insert(conflict.into(), "https://host.example.com".into());
@@ -751,18 +738,18 @@ mod tests {
     fn values() -> HashMap<String, String> {
         HashMap::from([
             (
-                "DURABLE_OBJECT_CONTROL_PLANE_URL".into(),
+                "LAC_CONTROL_PLANE_URL".into(),
                 "http://127.0.0.1:7100".into(),
             ),
-            ("DURABLE_OBJECT_HOST_TOKEN".into(), "host-jwt".into()),
-            ("DURABLE_OBJECT_JWT_PUBLIC_KEYS".into(), "{}".into()),
-            ("DURABLE_OBJECT_NAMESPACE_ID".into(), "project-1".into()),
+            ("LAC_HOST_TOKEN".into(), "host-jwt".into()),
+            ("LAC_JWT_PUBLIC_KEYS".into(), "{}".into()),
+            ("LAC_NAMESPACE_ID".into(), "project-1".into()),
             (
-                "DURABLE_OBJECT_HOST_ID".into(),
+                "LAC_HOST_ID".into(),
                 "host.v1.project-1.revision-1.host-1".into(),
             ),
             (
-                "DURABLE_OBJECT_SESSION_ID".into(),
+                "LAC_SESSION_ID".into(),
                 "00000000-0000-4000-8000-000000000001".into(),
             ),
         ])

@@ -1,5 +1,5 @@
 use anyhow::Result;
-use little_durable_objects::{
+use little_actors::{
     actor_state::ActorStorageKey,
     host::HostId,
     host_leases::{HostLeaseRegistry, HostLeaseRequest, HostLeaseStore},

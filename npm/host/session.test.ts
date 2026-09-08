@@ -22,14 +22,14 @@ test("discovers actors only inside the first execution Worker", { timeout: 5_000
         const lines = createInterface({ input: socket })
         lines.once("line", line => {
             assert.deepEqual(JSON.parse(line).actor_types, ["SessionCounter"])
-            socket.write(`${JSON.stringify({ type: "attached", protocol: 14 })}\n`)
+            socket.write(`${JSON.stringify({ type: "attached", protocol: 15 })}\n`)
             socket.end()
         })
     })
     server.listen(`${root}/executor.sock`)
     await once(server, "listening")
     const { ActorSession, ActorSessionSettings } = await import("./session.js")
-    const session = new ActorSession(ActorSessionSettings.fromEnvironment({ DURABLE_OBJECT_EXECUTOR_SOCKET: `${root}/executor.sock`, DURABLE_OBJECT_ENTRYPOINT: entrypoint }))
+    const session = new ActorSession(ActorSessionSettings.fromEnvironment({ LAC_EXECUTOR_SOCKET: `${root}/executor.sock`, LAC_ENTRYPOINT: entrypoint }))
     try {
         await session.start()
         await session.waitUntilDisconnected()
@@ -44,9 +44,9 @@ test("a stalled actor import times out and closes the Worker", { timeout: 1_000 
     let closed = 0
     const session = new ActorSession(
         ActorSessionSettings.fromEnvironment({
-            DURABLE_OBJECT_EXECUTOR_SOCKET: `/tmp/ta-unused-${process.pid}.sock`,
-            DURABLE_OBJECT_ENTRYPOINT: fileURLToPath(new URL("../fixtures/actorSession.js", import.meta.url)),
-            DURABLE_OBJECT_HOST_STARTUP_MS: "20"
+            LAC_EXECUTOR_SOCKET: `/tmp/ta-unused-${process.pid}.sock`,
+            LAC_ENTRYPOINT: fileURLToPath(new URL("../fixtures/actorSession.js", import.meta.url)),
+            LAC_HOST_STARTUP_MS: "20"
         }),
         () => ({
             ready: () => new Promise(() => {}),
@@ -101,8 +101,8 @@ test("the actor session carries only owned execution commands", async t => {
     let closed = 0
     const session = new ActorSession(
         ActorSessionSettings.fromEnvironment({
-            DURABLE_OBJECT_EXECUTOR_SOCKET: socketPath,
-            DURABLE_OBJECT_ENTRYPOINT: fileURLToPath(new URL("../fixtures/actorSession.js", import.meta.url))
+            LAC_EXECUTOR_SOCKET: socketPath,
+            LAC_ENTRYPOINT: fileURLToPath(new URL("../fixtures/actorSession.js", import.meta.url))
         }),
         options => {
             const supervisor = new ActorWorkerSupervisor(options)
@@ -123,10 +123,10 @@ test("the actor session carries only owned execution commands", async t => {
 
         assert.deepEqual(await readMessage(iterator), {
             type: "attach",
-            protocol: 14,
+            protocol: 15,
             actor_types: ["SessionCounter"]
         })
-        customerSocket.write(`${JSON.stringify({ type: "attached", protocol: 14 })}\n`)
+        customerSocket.write(`${JSON.stringify({ type: "attached", protocol: 15 })}\n`)
         await startup
 
         customerSocket.write(
@@ -171,7 +171,7 @@ test("the actor session carries only owned execution commands", async t => {
             assert.deepEqual(await readMessage(iterator), {
                 type: "socket_effects",
                 message_id: 100,
-                effects: [{ type: "broadcast", message: { type: "text", data }, except_connection_ids: [], tags: [] }]
+                effects: [{ type: "broadcast", message: { type: "text", data }, exclude_connection_ids: [], tags: [] }]
             })
             customerSocket.write(`${JSON.stringify({ type: "socket_effects_published", message_id: 100 })}\n`)
         }
@@ -254,8 +254,8 @@ test("a failed session connection cleans up the speculative Worker", async () =>
     let closed = 0
     const session = new ActorSession(
         ActorSessionSettings.fromEnvironment({
-            DURABLE_OBJECT_EXECUTOR_SOCKET: `/tmp/ta-missing-${process.pid}.sock`,
-            DURABLE_OBJECT_ENTRYPOINT: fileURLToPath(new URL("../fixtures/actorSession.js", import.meta.url))
+            LAC_EXECUTOR_SOCKET: `/tmp/ta-missing-${process.pid}.sock`,
+            LAC_ENTRYPOINT: fileURLToPath(new URL("../fixtures/actorSession.js", import.meta.url))
         }),
         () => ({
             async ready() {

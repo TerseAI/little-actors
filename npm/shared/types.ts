@@ -56,7 +56,7 @@ const socketEffectSchema = z.discriminatedUnion("type", [
     z.object({
         type: z.literal("broadcast"),
         message: socketMessageSchema,
-        except_connection_ids: z.array(socketConnectionIdSchema).max(128),
+        exclude_connection_ids: z.array(socketConnectionIdSchema).max(128),
         tags: socketTagsSchema
     }),
     z.object({ type: z.literal("close"), connection_id: socketConnectionIdSchema, code: socketCloseCodeSchema, reason: socketCloseReasonSchema }),
@@ -97,7 +97,7 @@ const evictCommandSchema = z.object({
 const executorCommandSchema = z.discriminatedUnion("type", [invokeCommandSchema, websocketEventCommandSchema, evictCommandSchema])
 
 const actorSessionServerMessageSchema = z.discriminatedUnion("type", [
-    z.object({ type: z.literal("attached"), protocol: z.literal(14) }),
+    z.object({ type: z.literal("attached"), protocol: z.literal(15) }),
     z.object({ type: z.literal("socket_effects_published"), message_id: z.number().int().nonnegative(), error: z.string().optional() }),
     z.object({
         type: z.literal("command"),
@@ -183,7 +183,7 @@ type ActorSessionClientMessage = AttachMessage | ReplyMessage | { readonly type:
 
 interface AttachMessage {
     readonly type: "attach"
-    readonly protocol: 14
+    readonly protocol: 15
     readonly actor_types: readonly string[]
 }
 
@@ -229,7 +229,7 @@ type SocketEvent = z.infer<typeof socketEventSchema>
 type WebSocketEventCommand = z.infer<typeof websocketEventCommandSchema>
 type SocketEffect =
     | { readonly type: "send"; readonly connection_id: string; readonly message: SocketMessage }
-    | { readonly type: "broadcast"; readonly message: SocketMessage; readonly except_connection_ids: readonly string[]; readonly tags: readonly string[] }
+    | { readonly type: "broadcast"; readonly message: SocketMessage; readonly exclude_connection_ids: readonly string[]; readonly tags: readonly string[] }
     | { readonly type: "close" | "reject"; readonly connection_id: string; readonly code: number; readonly reason: string }
     | { readonly type: "set_metadata"; readonly connection_id: string; readonly metadata: JsonValue }
     | { readonly type: "set_tags"; readonly connection_id: string; readonly tags: readonly string[] }

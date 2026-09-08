@@ -1,7 +1,7 @@
 use std::env;
 
 use anyhow::Result;
-use little_durable_objects::{
+use little_actors::{
     actor_state::ActorStorageKey,
     host::HostId,
     host_leases::{HostLeaseRegistry, HostLeaseRequest, HostLeaseStore, PostgresHostLeaseStore},
@@ -127,5 +127,5 @@ async fn postgres_state_commit_is_fenced_by_owner_version_and_active_lease() -> 
 }
 
 fn postgres_url() -> Option<String> {
-    env::var("DURABLE_OBJECT_TEST_POSTGRES_URL").ok()
+    env::var("LAC_TEST_POSTGRES_URL").ok()
 }

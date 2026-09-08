@@ -4,7 +4,7 @@ import { test } from "node:test"
 import type { ActorConnection } from "../shared/socket.js"
 
 import { RemoteActorClient } from "./remoteClient.js"
-import type { DurableObjectsClientOptions } from "./remoteClient.js"
+import type { ActorClientOptions } from "./remoteClient.js"
 
 const options = { token: " token ", namespaceId: "project-1", controlPlaneUrl: "https://CONTROL.example.com:443/" }
 
@@ -48,11 +48,11 @@ test("environment and explicit client settings report the same validation errors
     }
 })
 
-function environmentFor(settings: DurableObjectsClientOptions): NodeJS.ProcessEnv {
+function environmentFor(settings: ActorClientOptions): NodeJS.ProcessEnv {
     return {
-        DURABLE_OBJECT_TOKEN: settings.token,
-        DURABLE_OBJECT_NAMESPACE_ID: settings.namespaceId,
-        DURABLE_OBJECT_CONTROL_PLANE_URL: settings.controlPlaneUrl,
-        DURABLE_OBJECT_SOCKET_GATEWAY_URL: settings.socketGatewayUrl
+        LAC_TOKEN: settings.token,
+        LAC_NAMESPACE_ID: settings.namespaceId,
+        LAC_CONTROL_PLANE_URL: settings.controlPlaneUrl,
+        LAC_SOCKET_GATEWAY_URL: settings.socketGatewayUrl
     }
 }

@@ -44,7 +44,7 @@ export function summarizeTimeline(timeline) {
 export function summarizeGcpEntries(entries, expectedSocketEffects = 0) {
     const requests = entries.flatMap(entry => (entry.httpRequest ? [entry.httpRequest] : []))
     const socketEffects = requests.filter(request => request.requestUrl?.includes("/socket-effects"))
-    const actorExecute = requests.filter(request => request.requestUrl?.includes("/durable_object.v1.ActorControlPlaneService/Execute"))
+    const actorExecute = requests.filter(request => request.requestUrl?.includes("/little_actors.v1.ActorControlPlaneService/Execute"))
 
     return {
         socketEffects: {
@@ -458,9 +458,9 @@ function loadConfiguration(options) {
         collectGcp: options.collectGcp !== false,
         collectModal: options.collectModal !== false,
         gcpProject: options.gcpProject ?? "fluid-analogy-473415-c2",
-        gcpControlPlaneService: options.gcpControlPlaneService ?? "little-durable-objects",
-        gcpSocketService: options.gcpSocketService ?? "little-durable-objects-sockets",
-        modalHostApp: options.modalHostApp ?? "durable-object-hosts",
+        gcpControlPlaneService: options.gcpControlPlaneService ?? "little-actors",
+        gcpSocketService: options.gcpSocketService ?? "little-actors-sockets",
+        modalHostApp: options.modalHostApp ?? "little-actors-hosts",
         modalWorkflowApp: options.modalWorkflowApp ?? "terse-sdk-sandbox"
     }
 }
@@ -549,7 +549,7 @@ function printHelp() {
     console.log(`Usage: pnpm lab:websocket [options]
 
 Runs one isolated prompt through the local Multiplayer gateway, the deployed GCP
-Durable Object socket gateway, Terse, Modal, and OpenAI. Evidence is written to
+Little Actors socket gateway, Terse, Modal, and OpenAI. Evidence is written to
 .artifacts/websocket-streaming/<run-id>.
 
 Options:

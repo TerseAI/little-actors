@@ -35,7 +35,7 @@ func TestFreshHostPublishesOnlyRouteAndWaitsForReadiness(t *testing.T) {
 	if api.params.CPU != 0 || api.params.Timeout != 24*time.Hour || api.params.ReadinessProbe == nil {
 		t.Fatal("changed sandbox defaults")
 	}
-	if api.params.Env["DURABLE_OBJECT_HOST_METADATA_FILE"] != metadataFile || api.params.Env["DURABLE_OBJECT_HOST_TOKEN"] != r.HostToken {
+	if api.params.Env["LAC_HOST_METADATA_FILE"] != metadataFile || api.params.Env["LAC_HOST_TOKEN"] != r.HostToken {
 		t.Fatal(api.params.Env)
 	}
 }
@@ -51,7 +51,7 @@ func TestHostAttachesNamedSecretsAndSocketGateway(t *testing.T) {
 	if len(api.params.Secrets) != 1 || api.params.Secrets[0].Name != "project-secrets" {
 		t.Fatal("secret reference was not attached")
 	}
-	if api.params.Env["DURABLE_OBJECT_SOCKET_GATEWAY_URL"] != request.SocketGatewayURL {
+	if api.params.Env["LAC_SOCKET_GATEWAY_URL"] != request.SocketGatewayURL {
 		t.Fatal("gateway address was lost")
 	}
 }

@@ -46,7 +46,7 @@ class RemoteActorClient {
     private readonly targets = new Map<string, Promise<ActorHostTarget>>()
     private readonly connectWebSocket: WebSocketConnector
 
-    constructor(options?: DurableObjectsClientOptions, dependencies: RemoteActorClientDependencies = {}) {
+    constructor(options?: ActorClientOptions, dependencies: RemoteActorClientDependencies = {}) {
         this.environment = dependencies.environment ?? process.env
         this.fetchRequest = dependencies.fetch ?? globalThis.fetch
         this.requestId = dependencies.requestId ?? (() => globalThis.crypto.randomUUID())
@@ -106,7 +106,7 @@ class RemoteActorClient {
         await this.deliverSocketEffects(
             validateActorComponent("actor type", actorType),
             validateActorComponent("actor ID", actorId),
-            [{ type: "broadcast", message: socketMessage(message), except_connection_ids: [], tags: [] }],
+            [{ type: "broadcast", message: socketMessage(message), exclude_connection_ids: [], tags: [] }],
             requestId,
             "actor socket broadcast"
         )
@@ -201,7 +201,7 @@ class RemoteActorClient {
 
     private throwResponseFailure(response: Response, document: unknown, requestId: string): never {
         if (response.status === 401 || response.status === 403) {
-            throw new ActorInvocationError("unauthenticated", requestId, "the durable-object workflow token was rejected")
+            throw new ActorInvocationError("unauthenticated", requestId, "the actor workflow token was rejected")
         }
         const failure = errorDocumentSchema.safeParse(document)
         if (!failure.success) {
@@ -224,10 +224,10 @@ class RemoteActorClient {
     private get settings(): RemoteActorSettings {
         if (this.settingsValue !== undefined) return this.settingsValue
         this.settingsValue = configuredSettings({
-            token: this.environment.DURABLE_OBJECT_TOKEN,
-            namespaceId: this.environment.DURABLE_OBJECT_NAMESPACE_ID,
-            controlPlaneUrl: this.environment.DURABLE_OBJECT_CONTROL_PLANE_URL,
-            socketGatewayUrl: this.environment.DURABLE_OBJECT_SOCKET_GATEWAY_URL
+            token: this.environment.LAC_TOKEN,
+            namespaceId: this.environment.LAC_NAMESPACE_ID,
+            controlPlaneUrl: this.environment.LAC_CONTROL_PLANE_URL,
+            socketGatewayUrl: this.environment.LAC_SOCKET_GATEWAY_URL
         })
         return this.settingsValue
     }
@@ -308,7 +308,7 @@ interface RemoteActorSettings {
     readonly socketGatewayUrl: string
 }
 
-interface DurableObjectsClientOptions {
+interface ActorClientOptions {
     readonly token: string
     readonly namespaceId: string
     readonly controlPlaneUrl: string
@@ -329,4 +329,4 @@ interface RemoteActorClientDependencies {
 type WebSocketConnector = (url: string, token: string, metadata: JsonValue) => Promise<ActorConnection>
 
 export { RemoteActorClient }
-export type { DurableObjectsClientOptions, RemoteActorClientDependencies }
+export type { ActorClientOptions, RemoteActorClientDependencies }

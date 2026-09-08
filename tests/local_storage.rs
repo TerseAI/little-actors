@@ -4,7 +4,7 @@ use std::sync::{
 };
 
 use anyhow::Result;
-use little_durable_objects::{
+use little_actors::{
     actor::ActorKey,
     clock::Clock,
     storage_urls::{LocalStorage, StorageUrlSigner},

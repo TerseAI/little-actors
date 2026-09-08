@@ -99,21 +99,21 @@ func resourceName(namespace, revision, region string) string {
 
 func hostEnvironment(r ensureRequest) map[string]string {
 	env := map[string]string{
-		"DURABLE_OBJECT_PROCESS_ROLE": "host", "DURABLE_OBJECT_HOST_TOKEN": r.HostToken,
-		"DURABLE_OBJECT_JWT_PUBLIC_KEYS": r.JWTPublicKeys, "DURABLE_OBJECT_NAMESPACE_ID": r.NamespaceID,
-		"DURABLE_OBJECT_CONTROL_PLANE_URL": r.ControlPlaneURL, "DURABLE_OBJECT_JWT_ISSUER": r.JWTIssuer,
-		"DURABLE_OBJECT_INVOKE_JWT_AUDIENCE": r.InvocationJWTAudience, "DURABLE_OBJECT_HOST_ID": r.HostID,
-		"DURABLE_OBJECT_SESSION_ID": r.SessionID, "DURABLE_OBJECT_REGION": r.CanonicalRegion,
-		"DURABLE_OBJECT_CODE_REVISION": r.CodeRevision, "DURABLE_OBJECT_EXECUTOR_SOCKET": "/tmp/durable-object-executor.sock",
-		"DURABLE_OBJECT_HOST_READY_FILE": readyFile, "DURABLE_OBJECT_HOST_METADATA_FILE": metadataFile,
-		"DURABLE_OBJECT_HOST_BIND": "0.0.0.0:7101", "DURABLE_OBJECT_HOST_PUBLIC_ROUTE_FILE": routeFile,
-		"DURABLE_OBJECT_ACTOR_IDLE_TIMEOUT_MS": fmt.Sprint(r.ActorIdleTimeoutMS), "DURABLE_OBJECT_HOST_IDLE_TIMEOUT_MS": fmt.Sprint(r.HostIdleTimeoutMS),
+		"LAC_PROCESS_ROLE": "host", "LAC_HOST_TOKEN": r.HostToken,
+		"LAC_JWT_PUBLIC_KEYS": r.JWTPublicKeys, "LAC_NAMESPACE_ID": r.NamespaceID,
+		"LAC_CONTROL_PLANE_URL": r.ControlPlaneURL, "LAC_JWT_ISSUER": r.JWTIssuer,
+		"LAC_INVOKE_JWT_AUDIENCE": r.InvocationJWTAudience, "LAC_HOST_ID": r.HostID,
+		"LAC_SESSION_ID": r.SessionID, "LAC_REGION": r.CanonicalRegion,
+		"LAC_CODE_REVISION": r.CodeRevision, "LAC_EXECUTOR_SOCKET": "/tmp/little-actors-executor.sock",
+		"LAC_HOST_READY_FILE": readyFile, "LAC_HOST_METADATA_FILE": metadataFile,
+		"LAC_HOST_BIND": "0.0.0.0:7101", "LAC_HOST_PUBLIC_ROUTE_FILE": routeFile,
+		"LAC_ACTOR_IDLE_TIMEOUT_MS": fmt.Sprint(r.ActorIdleTimeoutMS), "LAC_HOST_IDLE_TIMEOUT_MS": fmt.Sprint(r.HostIdleTimeoutMS),
 	}
 	if r.ActorEntrypoint != "" {
-		env["DURABLE_OBJECT_ENTRYPOINT"] = r.ActorEntrypoint
+		env["LAC_ENTRYPOINT"] = r.ActorEntrypoint
 	}
 	if r.SocketGatewayURL != "" {
-		env["DURABLE_OBJECT_SOCKET_GATEWAY_URL"] = r.SocketGatewayURL
+		env["LAC_SOCKET_GATEWAY_URL"] = r.SocketGatewayURL
 	}
 	return env
 }

@@ -7,11 +7,11 @@ import { ActorSessionSettings } from "./session.js"
 
 test("a managed socket needs no local actor credentials", () => {
     const settings = ActorSessionSettings.fromEnvironment({
-        DURABLE_OBJECT_EXECUTOR_SOCKET: "/tmp/durable-object.sock",
-        DURABLE_OBJECT_ENTRYPOINT: "src/custom-actors.ts"
+        LAC_EXECUTOR_SOCKET: "/tmp/actor.sock",
+        LAC_ENTRYPOINT: "src/custom-actors.ts"
     })
 
-    assert.equal(settings.socketPath, "/tmp/durable-object.sock")
+    assert.equal(settings.socketPath, "/tmp/actor.sock")
     assert.equal(settings.actorEntrypoint, "src/custom-actors.ts")
     assert.equal(settings.startupTimeoutMs, 10_000)
     assert.equal(settings.actorIdleTimeoutMs, 60_000)
@@ -20,8 +20,8 @@ test("a managed socket needs no local actor credentials", () => {
 test("resident actor idle timeout is configurable and bounded", () => {
     assert.equal(
         ActorSessionSettings.fromEnvironment({
-            DURABLE_OBJECT_EXECUTOR_SOCKET: "/tmp/durable-object.sock",
-            DURABLE_OBJECT_ACTOR_IDLE_TIMEOUT_MS: "2500"
+            LAC_EXECUTOR_SOCKET: "/tmp/actor.sock",
+            LAC_ACTOR_IDLE_TIMEOUT_MS: "2500"
         }).actorIdleTimeoutMs,
         2_500
     )
@@ -29,8 +29,8 @@ test("resident actor idle timeout is configurable and bounded", () => {
         assert.throws(
             () =>
                 ActorSessionSettings.fromEnvironment({
-                    DURABLE_OBJECT_EXECUTOR_SOCKET: "/tmp/durable-object.sock",
-                    DURABLE_OBJECT_ACTOR_IDLE_TIMEOUT_MS: value
+                    LAC_EXECUTOR_SOCKET: "/tmp/actor.sock",
+                    LAC_ACTOR_IDLE_TIMEOUT_MS: value
                 }),
             ActorConfigurationError
         )
@@ -40,16 +40,16 @@ test("resident actor idle timeout is configurable and bounded", () => {
 test("actor-host startup timeout is configurable and bounded", () => {
     assert.equal(
         ActorSessionSettings.fromEnvironment({
-            DURABLE_OBJECT_EXECUTOR_SOCKET: "/tmp/durable-object.sock",
-            DURABLE_OBJECT_HOST_STARTUP_MS: "2500"
+            LAC_EXECUTOR_SOCKET: "/tmp/actor.sock",
+            LAC_HOST_STARTUP_MS: "2500"
         }).startupTimeoutMs,
         2_500
     )
     assert.throws(
         () =>
             ActorSessionSettings.fromEnvironment({
-                DURABLE_OBJECT_EXECUTOR_SOCKET: "/tmp/durable-object.sock",
-                DURABLE_OBJECT_HOST_STARTUP_MS: "0"
+                LAC_EXECUTOR_SOCKET: "/tmp/actor.sock",
+                LAC_HOST_STARTUP_MS: "0"
             }),
         ActorConfigurationError
     )

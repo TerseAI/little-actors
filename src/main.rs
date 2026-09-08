@@ -1,6 +1,6 @@
 use anyhow::Result;
 use clap::{Parser, Subcommand};
-use little_durable_objects::{
+use little_actors::{
     control_plane::{ControlPlaneProcessConfig, DevOptions, serve_control_plane, serve_local},
     host::{ActorHostConfig, serve_actor_host},
 };
@@ -18,7 +18,7 @@ async fn main() {
         )
         .init();
     if let Err(error) = run().await {
-        error!(error = %format!("{error:#}"), "durable-object process failed");
+        error!(error = %format!("{error:#}"), "actor process failed");
         std::process::exit(1);
     }
 }
@@ -29,7 +29,7 @@ async fn run() -> Result<()> {
         return serve_local(options, shutdown_signal()).await;
     }
     let shutdown = shutdown_signal();
-    match std::env::var("DURABLE_OBJECT_PROCESS_ROLE")
+    match std::env::var("LAC_PROCESS_ROLE")
         .as_deref()
         .unwrap_or("host")
     {
@@ -37,12 +37,13 @@ async fn run() -> Result<()> {
             serve_control_plane(ControlPlaneProcessConfig::from_env()?, shutdown).await
         }
         "host" => serve_actor_host(ActorHostConfig::from_env()?, shutdown).await,
-        role => anyhow::bail!("unsupported DURABLE_OBJECT_PROCESS_ROLE {role:?}"),
+        role => anyhow::bail!("unsupported LAC_PROCESS_ROLE {role:?}"),
     }
 }
 
 #[derive(Parser)]
 #[command(
+    name = "lac",
     version,
     about = "Run durable TypeScript actors locally or in the cloud"
 )]
@@ -58,7 +59,7 @@ enum Commands {
 }
 
 async fn shutdown_signal() {
-    if std::env::var_os("DURABLE_OBJECT_PARENT_LIFETIME_STDIN").is_none() {
+    if std::env::var_os("LAC_PARENT_LIFETIME_STDIN").is_none() {
         wait_for_signal().await;
         info!("shutdown signal received");
         return;

@@ -11,7 +11,7 @@ const clientOptionsSchema = z.object({
 
 function configuredSettings(options: unknown) {
     const result = clientOptionsSchema.safeParse(options)
-    if (!result.success) throw new ActorConfigurationError(`durable-object client settings are invalid: ${result.error.message}`)
+    if (!result.success) throw new ActorConfigurationError(`actor client settings are invalid: ${result.error.message}`)
     const controlPlaneUrl = validateOrigin(result.data.controlPlaneUrl)
     return { ...result.data, controlPlaneUrl, socketGatewayUrl: validateOrigin(result.data.socketGatewayUrl ?? controlPlaneUrl) }
 }

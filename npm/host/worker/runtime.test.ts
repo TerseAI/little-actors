@@ -53,7 +53,7 @@ export class ChatRoom extends Actor {
 
     async onMessage(socket: ActorSocket<ChatSession>, message: string | Uint8Array): Promise<void> {
         this.events.push(`message:${socket.metadata.userId}:${typeof message === "string" ? message : message.byteLength}`)
-        this.broadcast(message)
+        this.broadcast(message, { exclude: socket })
     }
 
     async onDisconnect(socket: ActorSocket<ChatSession>, code: number, reason: string): Promise<void> {
@@ -408,7 +408,7 @@ test("runs the full socket lifecycle and exposes live actor connections", async 
         {
             type: "websocket_handled",
             state: { events: ["connect:user-1:1", "message:user-1:hello"] },
-            effects: [{ type: "broadcast", message: { type: "text", data: "hello" }, except_connection_ids: [], tags: [] }]
+            effects: [{ type: "broadcast", message: { type: "text", data: "hello" }, exclude_connection_ids: ["connection-1"], tags: [] }]
         }
     )
 
@@ -426,7 +426,7 @@ test("runs the full socket lifecycle and exposes live actor connections", async 
             type: "invoked",
             result: null,
             state: { events: ["connect:user-1:1", "message:user-1:hello"] },
-            effects: [{ type: "broadcast", message: { type: "text", data: "announcement" }, except_connection_ids: [], tags: [] }]
+            effects: [{ type: "broadcast", message: { type: "text", data: "announcement" }, exclude_connection_ids: [], tags: [] }]
         }
     )
 

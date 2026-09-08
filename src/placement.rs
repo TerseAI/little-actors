@@ -77,7 +77,7 @@ impl ObjectPlacementStore for PostgresObjectPlacementStore {
             .database
             .query_opt(
                 "SELECT owner_host_id, owner_epoch, home_region, state_version, state_object, last_request_id \
-                 FROM durable_object_placements WHERE object_id = $1",
+                 FROM actor_placements WHERE object_id = $1",
                 &[&object.as_str()],
             )
             .await
@@ -98,7 +98,7 @@ impl ObjectPlacementStore for PostgresObjectPlacementStore {
             if let Some(row) = self
                 .database
                 .query_opt(
-                    "INSERT INTO durable_object_placements \
+                    "INSERT INTO actor_placements \
                      (object_id, owner_host_id, owner_epoch, home_region) \
                      VALUES ($1, $2, 1, $3) ON CONFLICT DO NOTHING \
                      RETURNING owner_host_id, owner_epoch, home_region, state_version, state_object, last_request_id",
@@ -125,7 +125,7 @@ impl ObjectPlacementStore for PostgresObjectPlacementStore {
         if let Some(row) = self
             .database
             .query_opt(
-                "UPDATE durable_object_placements \
+                "UPDATE actor_placements \
                  SET owner_host_id = $2, owner_epoch = owner_epoch + 1, updated_at = clock_timestamp() \
                  WHERE object_id = $1 AND owner_host_id = $3 AND owner_epoch = $4 AND home_region = $5 \
                  RETURNING owner_host_id, owner_epoch, home_region, state_version, state_object, last_request_id",
@@ -154,9 +154,9 @@ impl ObjectPlacementStore for PostgresObjectPlacementStore {
         let row = self
             .database
             .query_opt(
-                "UPDATE durable_object_placements AS placement \
+                "UPDATE actor_placements AS placement \
                  SET state_version = state_version + 1, state_object = $6, last_request_id = $7, updated_at = clock_timestamp() \
-                 FROM durable_object_host_leases AS lease \
+                 FROM actor_host_leases AS lease \
                  WHERE placement.object_id = $1 \
                    AND placement.owner_host_id = $2 \
                    AND placement.owner_epoch = $3 \

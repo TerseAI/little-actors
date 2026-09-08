@@ -23,7 +23,7 @@ impl PostgresDatabase {
         embedded::migrations::runner()
             .run_async(&mut **client)
             .await
-            .context("run durable-object PostgreSQL migrations")?;
+            .context("run actor PostgreSQL migrations")?;
         drop(client);
         Ok(Self { pool })
     }
@@ -92,7 +92,7 @@ mod tests {
 
     #[tokio::test]
     async fn independent_queries_can_use_different_database_connections() -> Result<()> {
-        let Ok(url) = std::env::var("DURABLE_OBJECT_TEST_POSTGRES_URL") else {
+        let Ok(url) = std::env::var("LAC_TEST_POSTGRES_URL") else {
             return Ok(());
         };
         let database = PostgresDatabase {

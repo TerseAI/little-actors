@@ -9,7 +9,7 @@ import { c } from "tar"
 import { RuntimeInstaller } from "./runtime.js"
 
 test("installs both executables from a verified release and reuses the cache offline", async t => {
-    const directory = await mkdtemp(path.join(tmpdir(), "ldo-install-"))
+    const directory = await mkdtemp(path.join(tmpdir(), "lac-install-"))
     t.after(() => rm(directory, { recursive: true, force: true }))
     const archive = await fixture(directory)
     const requests: string[] = []
@@ -22,7 +22,7 @@ test("installs both executables from a verified release and reuses the cache off
     assert.equal(await readFile(binary, "utf8"), "runtime")
     assert.equal(await readFile(`${binary}-modal-go`, "utf8"), "provider")
     assert.equal(requests.length, 2)
-    assert.ok(requests.every(url => url.includes("/v1.2.3/little-durable-objects-darwin-arm64.tar.gz")))
+    assert.ok(requests.every(url => url.includes("/v1.2.3/little-actors-darwin-arm64.tar.gz")))
     const offline = new RuntimeInstaller(options, async () => {
         throw new Error("offline")
     })
@@ -30,7 +30,7 @@ test("installs both executables from a verified release and reuses the cache off
 })
 
 test("rejects a damaged archive before exposing executables", async t => {
-    const directory = await mkdtemp(path.join(tmpdir(), "ldo-install-"))
+    const directory = await mkdtemp(path.join(tmpdir(), "lac-install-"))
     t.after(() => rm(directory, { recursive: true, force: true }))
     const installer = new RuntimeInstaller({ version: "1.2.3", platform: "linux", arch: "x64", cacheDirectory: directory }, async url =>
         url.endsWith(".sha256") ? Buffer.from("0".repeat(64)) : Buffer.from("corrupt")
@@ -46,9 +46,9 @@ test("unsupported systems get an actionable error without downloading", async ()
 })
 
 async function fixture(directory: string): Promise<Buffer> {
-    await writeFile(path.join(directory, "little-durable-objects"), "runtime")
-    await writeFile(path.join(directory, "little-durable-objects-modal-go"), "provider")
+    await writeFile(path.join(directory, "lac"), "runtime")
+    await writeFile(path.join(directory, "lac-modal-go"), "provider")
     const archive = path.join(directory, "runtime.tar.gz")
-    await c({ gzip: true, file: archive, cwd: directory }, ["little-durable-objects", "little-durable-objects-modal-go"])
+    await c({ gzip: true, file: archive, cwd: directory }, ["lac", "lac-modal-go"])
     return readFile(archive)
 }

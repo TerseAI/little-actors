@@ -35,13 +35,13 @@ jobs:
             postgres:
                 image: postgres:16
                 env:
-                    POSTGRES_DB: durable_objects_test
+                    POSTGRES_DB: little_actors_test
                     POSTGRES_PASSWORD: postgres
                     POSTGRES_USER: postgres
                 ports:
                     - 5432:5432
                 options: >-
-                    --health-cmd "pg_isready -U postgres -d durable_objects_test"
+                    --health-cmd "pg_isready -U postgres -d little_actors_test"
                     --health-interval 5s
                     --health-timeout 5s
                     --health-retries 10
@@ -53,7 +53,7 @@ jobs:
               run: cargo fmt --all -- --check
             - name: Run tests
               env:
-                  DURABLE_OBJECT_TEST_POSTGRES_URL: postgresql://postgres:postgres@127.0.0.1:5432/durable_objects_test?sslmode=disable
+                  LAC_TEST_POSTGRES_URL: postgresql://postgres:postgres@127.0.0.1:5432/little_actors_test?sslmode=disable
               run: cargo test --locked --no-fail-fast
             - uses: pnpm/action-setup@v4
               with:
@@ -67,7 +67,7 @@ jobs:
             - run: cargo build --locked
             - name: Test the local tutorial without cloud services
               env:
-                  DURABLE_OBJECT_TEST_BINARY: ${{ github.workspace }}/target/debug/little-durable-objects
+                  LAC_TEST_BINARY: ${{ github.workspace }}/target/debug/lac
               run: node --test scripts/local-runtime.test.mjs
 
     npm:

@@ -11,24 +11,33 @@ Recommended setup:
 
 WebSocket connections live in control-plane memory: clients must reconnect after a restart. Multiple instances require gateway routing.
 
-This example uses published version `0.1.24`. Its container includes Rust and the Go provider; neither compiler is required. The local CLI remains unreleased.
+The published runtime container includes the native runtime and Go provider; neither compiler is required.
+
+From the tutorial's `chat-example` directory, install and pin the latest SDK, then read its version to select matching runtime images:
+
+```sh
+npm install --save-exact little-actors@latest
+export LAC_VERSION="$(npx --no-install lac --version)"
+```
+
+Run the following steps from this directory. Keep `LAC_VERSION` set in each terminal used to run the control plane or build the actor image.
 
 ## 1. Configure storage and credentials
 
 Create `control-plane.env`:
 
 ```dotenv
-DURABLE_OBJECT_PROCESS_ROLE=control_plane
-DURABLE_OBJECT_CONTROL_PLANE_BIND=0.0.0.0:7100
-DURABLE_OBJECT_CONTROL_PLANE_URL=https://objects.example.com
-DURABLE_OBJECT_POSTGRES_URL=postgresql://USER:PASSWORD@DB_HOST/durable_objects?sslmode=require
-DURABLE_OBJECT_STANDARD_BUCKETS={"north-america-east":"my-actor-state-bucket"}
+LAC_PROCESS_ROLE=control_plane
+LAC_CONTROL_PLANE_BIND=0.0.0.0:7100
+LAC_CONTROL_PLANE_URL=https://objects.example.com
+LAC_POSTGRES_URL=postgresql://USER:PASSWORD@DB_HOST/little_actors?sslmode=require
+LAC_STANDARD_BUCKETS={"north-america-east":"my-actor-state-bucket"}
 GOOGLE_APPLICATION_CREDENTIALS=/credentials/gcs.json
-DURABLE_OBJECT_SANDBOX_PROVIDER=modal
+LAC_SANDBOX_PROVIDER=modal
 MODAL_TOKEN_ID=YOUR_MODAL_TOKEN_ID
 MODAL_TOKEN_SECRET=YOUR_MODAL_TOKEN_SECRET
-DURABLE_OBJECT_JWT_SIGNING_KEY=YOUR_BASE64_PKCS8_KEY
-DURABLE_OBJECT_API_KEY=YOUR_ADMIN_API_KEY
+LAC_JWT_SIGNING_KEY=YOUR_BASE64_PKCS8_KEY
+LAC_API_KEY=YOUR_ADMIN_API_KEY
 ```
 
 Replace the placeholders and keep this file out of source control.
@@ -55,11 +64,11 @@ Run each command separately and copy its output into the corresponding field. Re
 Use the prebuilt runtime container:
 
 ```sh
-docker run --rm --name durable-objects \
+docker run --rm --name actors \
     -p 7100:7100 \
     --env-file control-plane.env \
     --mount type=bind,source=/absolute/path/to/service-account.json,target=/credentials/gcs.json,readonly \
-    us-central1-docker.pkg.dev/fluid-analogy-473415-c2/public/little-durable-objects:0.1.24
+    "us-central1-docker.pkg.dev/fluid-analogy-473415-c2/public/little-actors:$LAC_VERSION"
 ```
 
 For an attached Google service account, omit the credential variable and mount.
@@ -69,27 +78,22 @@ Port `7100` serves the HTTP API and WebSockets. Use an HTTPS proxy that forwards
 From another terminal, check the public endpoint:
 
 ```sh
-export DURABLE_OBJECT_CONTROL_PLANE_URL='https://objects.example.com'
-curl --fail --silent --show-error "$DURABLE_OBJECT_CONTROL_PLANE_URL/.well-known/jwks.json"
+export LAC_CONTROL_PLANE_URL='https://objects.example.com'
+curl --fail --silent --show-error "$LAC_CONTROL_PLANE_URL/.well-known/jwks.json"
 ```
 
 Expect JSON with a `keys` array. Your first actor call will also exercise host provisioning and storage.
 
 ## 3. Package your actor code
 
-In your counter project, pin the SDK to the runtime version:
-
-```sh
-npm install --save-exact little-durable-objects@0.1.24
-```
-
-Create a `Dockerfile` in your counter project:
+Keep `src/actors.ts` and `src/chat.ts` from the tutorial. Create a `Dockerfile` in your chat project:
 
 ```dockerfile
-FROM us-central1-docker.pkg.dev/fluid-analogy-473415-c2/public/little-durable-objects:0.1.24 AS runtime
+ARG LAC_VERSION
+FROM us-central1-docker.pkg.dev/fluid-analogy-473415-c2/public/little-actors:${LAC_VERSION} AS runtime
 
 FROM node:22-bookworm
-COPY --from=runtime /usr/local/bin/little-durable-objects /usr/local/bin/little-durable-objects
+COPY --from=runtime /usr/local/bin/lac /usr/local/bin/lac
 WORKDIR /app
 COPY package.json package-lock.json ./
 RUN npm ci --omit=dev
@@ -102,7 +106,8 @@ Build and push an amd64 image to a registry you control:
 
 ```sh
 docker buildx build --platform linux/amd64 \
-    --tag YOUR_REGISTRY/counter-example:counter-v1 --push .
+    --build-arg LAC_VERSION="$LAC_VERSION" \
+    --tag YOUR_REGISTRY/chat-example:chat-v1 --push .
 ```
 
 Import the image with Modal's Python API. This cloud-only step can run in CI:
@@ -120,10 +125,10 @@ Create `build_image.py`:
 import modal
 
 image = modal.Image.from_registry(
-    "YOUR_REGISTRY/counter-example:counter-v1",
+    "YOUR_REGISTRY/chat-example:chat-v1",
     add_python="3.12",
 )
-app = modal.App.lookup("counter-example-images", create_if_missing=True)
+app = modal.App.lookup("chat-example-images", create_if_missing=True)
 with modal.enable_output():
     image.build(app)
 print(image.object_id)
@@ -142,20 +147,20 @@ Keep the printed `im-...` ID. Private registries require a [Modal registry secre
 Register the image and actor file under a namespace, which groups your project's actors:
 
 ```sh
-export DURABLE_OBJECT_API_KEY='<the-admin-api-key-from-step-1>'
-export DURABLE_OBJECT_NAMESPACE_ID='counter-example'
+export LAC_API_KEY='<the-admin-api-key-from-step-1>'
+export LAC_NAMESPACE_ID='chat-example'
 export ACTOR_IMAGE_ID='<the-im-prefixed-image-id-from-step-3>'
 
 curl --fail --silent --show-error \
-    -X PUT "$DURABLE_OBJECT_CONTROL_PLANE_URL/v1/namespaces/$DURABLE_OBJECT_NAMESPACE_ID/deployment" \
-    -H "Authorization: Bearer $DURABLE_OBJECT_API_KEY" \
+    -X PUT "$LAC_CONTROL_PLANE_URL/v1/namespaces/$LAC_NAMESPACE_ID/deployment" \
+    -H "Authorization: Bearer $LAC_API_KEY" \
     -H 'Content-Type: application/json' \
     --data @- <<EOF
 {
-    "codeRevision": "counter-v1",
+    "codeRevision": "chat-v1",
     "imageRef": "$ACTOR_IMAGE_ID",
     "workingDirectory": "/app",
-    "actorEntrypoint": "src/durable-objects.ts"
+    "actorEntrypoint": "src/actors.ts"
 }
 EOF
 ```
@@ -170,12 +175,12 @@ Issue a one-hour token for this namespace:
 SESSION_DEADLINE_MS="$(node -p 'Date.now() + 60 * 60 * 1000')"
 
 curl --fail --silent --show-error \
-    -X POST "$DURABLE_OBJECT_CONTROL_PLANE_URL/v1/namespaces/$DURABLE_OBJECT_NAMESPACE_ID/session-scoped-token" \
-    -H "Authorization: Bearer $DURABLE_OBJECT_API_KEY" \
+    -X POST "$LAC_CONTROL_PLANE_URL/v1/namespaces/$LAC_NAMESPACE_ID/session-scoped-token" \
+    -H "Authorization: Bearer $LAC_API_KEY" \
     -H 'Content-Type: application/json' \
     --data @- <<EOF
 {
-    "executionId": "counter-demo-1",
+    "executionId": "chat-demo-1",
     "deadlineUnixMs": $SESSION_DEADLINE_MS,
     "storageRegion": "north-america-east"
 }
@@ -185,19 +190,18 @@ EOF
 Copy the response's `token` into your environment:
 
 ```sh
-export DURABLE_OBJECT_TOKEN='<the-token-from-the-response>'
-unset DURABLE_OBJECT_API_KEY
-node --import tsx src/client.ts
+export LAC_TOKEN='<the-token-from-the-response>'
+unset LAC_API_KEY
+node --import tsx src/chat.ts Alice
 ```
 
-Keep the namespace and control-plane URL variables set. A new counter prints:
+Keep the namespace and control-plane URL variables set. In another terminal, set those variables and `LAC_TOKEN`, then join as Bob:
 
-```text
-1
-2
+```sh
+node --import tsx src/chat.ts Bob
 ```
 
-Each call increments the same counter. Rerunning prints `3`, then `4`. Cloud actors start independently of local state.
+Both clients receive the room's saved state, then each message you type. A new cloud room starts with an empty history; local history is not uploaded. Reconnect either client to see the saved cloud conversation.
 
 In production, a trusted backend issues session tokens. Terse supplies them to workflows. `storageRegion` places new actors; existing actors keep their region.
 
@@ -206,25 +210,25 @@ In production, a trusted backend issues session tokens. Terse supplies them to w
 To save snapshots in GCS while running actors locally:
 
 ```sh
-export DURABLE_OBJECT_STANDARD_BUCKETS='{"north-america-east":"my-actor-state-bucket"}'
+export LAC_STANDARD_BUCKETS='{"north-america-east":"my-actor-state-bucket"}'
 export GOOGLE_APPLICATION_CREDENTIALS='/absolute/path/to/service-account.json'
 
-npx little-durable-objects dev --storage gcs --data-dir .gcs-demo
+npx lac dev --storage gcs --data-dir .gcs-demo
 ```
 
 In a second terminal in the same project:
 
 ```sh
-npx little-durable-objects run --data-dir .gcs-demo src/client.ts
+npx lac run --data-dir .gcs-demo src/chat.ts Alice
 ```
 
-With a new state directory, the counter prints `1`, then `2`; rerunning prints `3`, then `4`.
+Run the same command with `Bob` in a third terminal. A new state directory starts an empty room. Send a few messages, then reconnect a client to see the saved history.
 
 Changing backends or buckets requires a separate state directory; existing actors are not migrated. References remain in SQLite, so losing that file still loses access to your actors. Use backed-up PostgreSQL for production.
 
 ## WebSocket configuration
 
-WebSockets use the control-plane origin by default. For a separate gateway, set `DURABLE_OBJECT_SOCKET_GATEWAY_URL` for clients and `socketGatewayUrl` in the deployment.
+WebSockets use the control-plane origin by default. For a separate gateway, set `LAC_SOCKET_GATEWAY_URL` for clients and `socketGatewayUrl` in the deployment.
 
 The callback request and response formats are documented in the [HTTP reference](../reference/http.md#websocket-callbacks).
 
@@ -232,31 +236,31 @@ The callback request and response formats are documented in the [HTTP reference]
 
 These environment variables configure the hosted server, including [`start`](../reference/cli.md#start-a-hosted-server). Required values must be nonempty. SDK client configuration is documented [separately](../reference/api.md#client-configuration).
 
-### `DURABLE_OBJECT_POSTGRES_URL`
+### `LAC_POSTGRES_URL`
 
 **Required.**
 
 PostgreSQL connection URL.
 
-### `DURABLE_OBJECT_STANDARD_BUCKETS`
+### `LAC_STANDARD_BUCKETS`
 
 **Required.**
 
 Nonempty JSON region-to-bucket map. Region names contain 1–64 lowercase ASCII letters, digits, `.`, `_`, or `-`.
 
-### `DURABLE_OBJECT_API_KEY`
+### `LAC_API_KEY`
 
 **Required.**
 
 Admin bearer credential; no surrounding whitespace. Also authenticates outgoing WebSocket callbacks.
 
-### `DURABLE_OBJECT_JWT_SIGNING_KEY`
+### `LAC_JWT_SIGNING_KEY`
 
 **Required.**
 
 Base64-encoded Ed25519 private key in PKCS#8 format.
 
-### `DURABLE_OBJECT_SANDBOX_PROVIDER`
+### `LAC_SANDBOX_PROVIDER`
 
 **Required:** `modal`.
 
@@ -274,73 +278,73 @@ Modal token ID, without surrounding whitespace.
 
 Modal token secret, without surrounding whitespace.
 
-### `DURABLE_OBJECT_CONTROL_PLANE_URL`
+### `LAC_CONTROL_PLANE_URL`
 
 **Required.**
 
 Reachable HTTP(S) server origin.
 
-### `DURABLE_OBJECT_CONTROL_PLANE_BIND`
+### `LAC_CONTROL_PLANE_BIND`
 
 **Default:** `127.0.0.1:7100`.
 
 Listening IP address and port.
 
-### `DURABLE_OBJECT_JWT_KEY_ID`
+### `LAC_JWT_KEY_ID`
 
 **Default:** `primary`.
 
 Signing key identifier.
 
-### `DURABLE_OBJECT_JWT_ISSUER`
+### `LAC_JWT_ISSUER`
 
-**Default:** `durable-object-control-plane`.
+**Default:** `little-actors-control-plane`.
 
 Token issuer.
 
-### `DURABLE_OBJECT_AUTHORITY_JWT_AUDIENCE`
+### `LAC_AUTHORITY_JWT_AUDIENCE`
 
-**Default:** `durable-object-authority`.
+**Default:** `little-actors-authority`.
 
 Audience for server authentication.
 
-### `DURABLE_OBJECT_INVOKE_JWT_AUDIENCE`
+### `LAC_INVOKE_JWT_AUDIENCE`
 
-**Default:** `durable-object-invoke`.
+**Default:** `little-actors-invoke`.
 
 Audience for actor calls.
 
-### `DURABLE_OBJECT_JWT_MAX_TTL_SECONDS`
+### `LAC_JWT_MAX_TTL_SECONDS`
 
 **Default:** `86400`.
 
 Positive maximum token lifetime; session tokens are additionally capped at 24 hours.
 
-### `DURABLE_OBJECT_ACTOR_IDLE_TIMEOUT_MS`
+### `LAC_ACTOR_IDLE_TIMEOUT_MS`
 
 **Default:** `60000`.
 
 Idle time before an actor may hibernate. Valid range: 1–86400000.
 
-### `DURABLE_OBJECT_HOST_IDLE_TIMEOUT_MS`
+### `LAC_HOST_IDLE_TIMEOUT_MS`
 
 **Default:** `300000`.
 
 Idle time before an unused cloud host may stop. Valid range: 1–86400000.
 
-### `DURABLE_OBJECT_SANDBOX_COMMAND`
+### `LAC_SANDBOX_COMMAND`
 
 **Default:** Bundled provider executable.
 
 Override the cloud provider executable when supplying a custom runtime distribution.
 
-### `DURABLE_OBJECT_SOCKET_AUTH_URL`
+### `LAC_SOCKET_AUTH_URL`
 
 **Default:** Disabled.
 
 HTTP(S) callback for authorizing external WebSocket connections.
 
-### `DURABLE_OBJECT_SOCKET_EVENT_URL`
+### `LAC_SOCKET_EVENT_URL`
 
 **Default:** Disabled.
 

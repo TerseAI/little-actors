@@ -337,10 +337,10 @@ impl ActorJwtVerifier {
 
 fn decode_public_keys(public_keys_json: &str) -> Result<HashMap<String, DecodingKey>> {
     let keys: JwkSet = serde_json::from_str(public_keys_json)
-        .context("parse durable-object JWT public keys as a JWK set")?;
+        .context("parse actor JWT public keys as a JWK set")?;
     ensure!(
         !keys.keys.is_empty(),
-        "durable-object JWT public keys must contain at least one key"
+        "actor JWT public keys must contain at least one key"
     );
     keys.keys
         .into_iter()
@@ -416,20 +416,20 @@ mod tests {
         let keys = public_key_set(&key_pair)?;
         let invocation = ActorJwtVerifier::for_scope(
             &keys,
-            "durable-object-control-plane",
-            "durable-object-invoke",
+            "little-actors-control-plane",
+            "little-actors-invoke",
             ActorTokenPurpose::Invocation,
             Duration::from_secs(60),
         )?;
         let control_plane = ActorJwtVerifier::for_scope(
             keys,
-            "durable-object-control-plane",
-            "durable-object-authority",
+            "little-actors-control-plane",
+            "little-actors-authority",
             ActorTokenPurpose::ControlPlane,
             Duration::from_secs(60),
         )?;
         let mut claims = valid_claims(unix_seconds()?);
-        claims["aud"] = json!("durable-object-invoke");
+        claims["aud"] = json!("little-actors-invoke");
         claims["scope"] = json!("actor:invoke");
         claims["processRole"] = json!("workflow");
         claims["sub"] = json!("execution-1");
@@ -454,8 +454,8 @@ mod tests {
             &key_pair,
             json!({ "alg": "EdDSA", "kid": "test-key", "typ": "JWT" }),
             json!({
-                "iss": "durable-object-control-plane",
-                "aud": "durable-object-authority",
+                "iss": "little-actors-control-plane",
+                "aud": "little-actors-authority",
                 "sub": "host.v1.namespace-1.00000000-0000-4000-8000-000000000001",
                 "namespaceId": "namespace-1",
                 "processId": "host.v1.namespace-1.00000000-0000-4000-8000-000000000001",
@@ -491,7 +491,7 @@ mod tests {
             &key_pair,
             json!({ "alg": "EdDSA", "kid": "test-key" }),
             json!({
-                "iss": "durable-object-control-plane",
+                "iss": "little-actors-control-plane",
                 "aud": "somewhere-else",
                 "sub": "host.v1.namespace-1.00000000-0000-4000-8000-000000000001",
                 "namespaceId": "namespace-1",
@@ -509,8 +509,8 @@ mod tests {
             &key_pair,
             json!({ "alg": "EdDSA", "kid": "test-key" }),
             json!({
-                "iss": "durable-object-control-plane",
-                "aud": "durable-object-authority",
+                "iss": "little-actors-control-plane",
+                "aud": "little-actors-authority",
                 "sub": "host.v1.namespace-1.00000000-0000-4000-8000-000000000001",
                 "namespaceId": "namespace-1",
                 "processId": "host.v1.namespace-1.00000000-0000-4000-8000-000000000001",
@@ -534,8 +534,8 @@ mod tests {
             &key_pair,
             json!({ "alg": "EdDSA", "kid": "test-key" }),
             json!({
-                "iss": "durable-object-control-plane",
-                "aud": "durable-object-authority",
+                "iss": "little-actors-control-plane",
+                "aud": "little-actors-authority",
                 "sub": "host.v1.namespace-1.00000000-0000-4000-8000-000000000001",
                 "namespaceId": "namespace-1",
                 "processId": "host.v1.namespace-1.00000000-0000-4000-8000-000000000001",
@@ -557,8 +557,8 @@ mod tests {
         Ok((
             ActorJwtVerifier::new(
                 keys,
-                "durable-object-control-plane",
-                "durable-object-authority",
+                "little-actors-control-plane",
+                "little-actors-authority",
                 Duration::from_secs(60),
             )?,
             key_pair,
@@ -592,8 +592,8 @@ mod tests {
 
     fn valid_claims(now: i64) -> serde_json::Value {
         json!({
-            "iss": "durable-object-control-plane",
-            "aud": "durable-object-authority",
+            "iss": "little-actors-control-plane",
+            "aud": "little-actors-authority",
             "sub": "host.v1.namespace-1.00000000-0000-4000-8000-000000000001",
             "namespaceId": "namespace-1",
             "processId": "host.v1.namespace-1.00000000-0000-4000-8000-000000000001",

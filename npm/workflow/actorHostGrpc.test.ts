@@ -12,13 +12,13 @@ import { GrpcActorHostTransport } from "./actorHostGrpc.js"
 test("direct transport speaks the actor host protobuf contract", async () => {
     const server = new Server()
     const definition = loadPackageDefinition(
-        loadSync(resolve("../proto/durable_object.proto"), {
+        loadSync(resolve("../proto/little_actors.proto"), {
             defaults: true,
             longs: Number,
             oneofs: true
         })
     ) as unknown as GrpcPackages
-    server.addService(definition.durable_object.v1.ActorHostService.service, {
+    server.addService(definition.little_actors.v1.ActorHostService.service, {
         invoke(call: ServerUnaryCall<HostRequest, HostReply>, callback: sendUnaryData<HostReply>) {
             assert.equal(call.metadata.get("authorization")[0], "Bearer direct-token")
             assert.deepEqual(call.request, {
@@ -122,13 +122,13 @@ test("only transport authentication rejections are safe to retry", async () => {
 function actorHostServer(reply: HostReply, errorCode?: number): Server {
     const server = new Server()
     const definition = loadPackageDefinition(
-        loadSync(resolve("../proto/durable_object.proto"), {
+        loadSync(resolve("../proto/little_actors.proto"), {
             defaults: true,
             longs: Number,
             oneofs: true
         })
     ) as unknown as GrpcPackages
-    server.addService(definition.durable_object.v1.ActorHostService.service, {
+    server.addService(definition.little_actors.v1.ActorHostService.service, {
         invoke(_call: ServerUnaryCall<HostRequest, HostReply>, callback: sendUnaryData<HostReply>) {
             if (errorCode !== undefined) return callback({ code: errorCode, message: "rejected" })
             callback(null, reply)
@@ -147,7 +147,7 @@ function listen(server: Server): Promise<number> {
 }
 
 interface GrpcPackages {
-    readonly durable_object: {
+    readonly little_actors: {
         readonly v1: {
             readonly ActorHostService: ServiceClientConstructor
         }

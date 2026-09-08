@@ -32,15 +32,15 @@ test("actor calls read environment settings lazily without a setup function", ()
             "--eval",
             `
             import assert from "node:assert/strict";
-            for (const key of ["DURABLE_OBJECT_TOKEN", "DURABLE_OBJECT_NAMESPACE_ID", "DURABLE_OBJECT_CONTROL_PLANE_URL", "DURABLE_OBJECT_SOCKET_GATEWAY_URL"]) delete process.env[key];
+            for (const key of ["LAC_TOKEN", "LAC_NAMESPACE_ID", "LAC_CONTROL_PLANE_URL", "LAC_SOCKET_GATEWAY_URL"]) delete process.env[key];
             const { Actor, ActorInvocationError } = await import(${JSON.stringify(entrypoint)});
             Object.assign(process.env, {
-                DURABLE_OBJECT_TOKEN: "workflow-token",
-                DURABLE_OBJECT_NAMESPACE_ID: "project-1",
-                DURABLE_OBJECT_CONTROL_PLANE_URL: "https://control.example.com"
+                LAC_TOKEN: "workflow-token",
+                LAC_NAMESPACE_ID: "project-1",
+                LAC_CONTROL_PLANE_URL: "https://control.example.com"
             });
             const socketGatewayUrl = ${JSON.stringify(socketGatewayUrl) ?? "undefined"};
-            if (socketGatewayUrl) process.env.DURABLE_OBJECT_SOCKET_GATEWAY_URL = socketGatewayUrl;
+            if (socketGatewayUrl) process.env.LAC_SOCKET_GATEWAY_URL = socketGatewayUrl;
             const requests = [];
             globalThis.fetch = async (url, options) => {
                 assert.equal(options.headers.authorization, "Bearer workflow-token");

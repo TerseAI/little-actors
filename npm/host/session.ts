@@ -18,8 +18,8 @@ const MAX_IDLE_TIMEOUT_MS = 86_400_000
 const MAX_MESSAGE_BYTES = 32 * 1024 * 1024
 
 const actorSessionSettingsSchema = z.object({
-    DURABLE_OBJECT_EXECUTOR_SOCKET: z.string().trim().min(1),
-    DURABLE_OBJECT_ENTRYPOINT: z.string().trim().min(1).optional()
+    LAC_EXECUTOR_SOCKET: z.string().trim().min(1),
+    LAC_ENTRYPOINT: z.string().trim().min(1).optional()
 })
 
 class ActorSession {
@@ -85,10 +85,10 @@ class ActorSessionSettings {
         const result = actorSessionSettingsSchema.safeParse(environment)
         if (!result.success) throw new ActorConfigurationError(`actor-host session settings are invalid: ${result.error.message}`)
         return new ActorSessionSettings(
-            result.data.DURABLE_OBJECT_EXECUTOR_SOCKET,
-            result.data.DURABLE_OBJECT_ENTRYPOINT,
-            parseStartupTimeout(environment.DURABLE_OBJECT_HOST_STARTUP_MS),
-            parseActorIdleTimeout(environment.DURABLE_OBJECT_ACTOR_IDLE_TIMEOUT_MS)
+            result.data.LAC_EXECUTOR_SOCKET,
+            result.data.LAC_ENTRYPOINT,
+            parseStartupTimeout(environment.LAC_HOST_STARTUP_MS),
+            parseActorIdleTimeout(environment.LAC_ACTOR_IDLE_TIMEOUT_MS)
         )
     }
 }
@@ -97,7 +97,7 @@ async function runActorHost(): Promise<never> {
     const session = new ActorSession()
     await session.start()
 
-    const readyFile = process.env.DURABLE_OBJECT_HOST_READY_FILE
+    const readyFile = process.env.LAC_HOST_READY_FILE
     if (readyFile) await writeFile(readyFile, `${Date.now()}\n`, { mode: 0o600 })
 
     await session.waitUntilDisconnected()
@@ -117,7 +117,7 @@ class ActorSessionConnection {
         if (actorTypes.length === 0) throw new ActorSessionError("the actor entrypoint does not export any actor classes")
         const socket = await connectSocket(socketPath)
         const connection = new ActorSessionConnection(socket, commandHandler)
-        connection.send({ type: "attach", protocol: 14, actor_types: actorTypes })
+        connection.send({ type: "attach", protocol: 15, actor_types: actorTypes })
         await connection.waitUntilAttached(timeoutMs)
         return connection
     }
@@ -309,7 +309,7 @@ function sessionError(error: unknown): Error {
 function parseStartupTimeout(value: string | undefined): number {
     if (value === undefined) return DEFAULT_ACTOR_STARTUP_TIMEOUT_MS
     const parsed = Number(value)
-    if (!Number.isInteger(parsed) || parsed <= 0) throw new ActorConfigurationError("DURABLE_OBJECT_HOST_STARTUP_MS must be a positive integer")
+    if (!Number.isInteger(parsed) || parsed <= 0) throw new ActorConfigurationError("LAC_HOST_STARTUP_MS must be a positive integer")
     return parsed
 }
 
@@ -317,7 +317,7 @@ function parseActorIdleTimeout(value: string | undefined): number {
     if (value === undefined) return DEFAULT_ACTOR_IDLE_TIMEOUT_MS
     const parsed = Number(value)
     if (!Number.isInteger(parsed) || parsed <= 0 || parsed > MAX_IDLE_TIMEOUT_MS) {
-        throw new ActorConfigurationError(`DURABLE_OBJECT_ACTOR_IDLE_TIMEOUT_MS must be an integer between 1 and ${MAX_IDLE_TIMEOUT_MS}`)
+        throw new ActorConfigurationError(`LAC_ACTOR_IDLE_TIMEOUT_MS must be an integer between 1 and ${MAX_IDLE_TIMEOUT_MS}`)
     }
     return parsed
 }

@@ -30,13 +30,13 @@ impl HostLeaseRegistry for PostgresHostLeaseStore {
             .database
             .query_opt(
                 &format!(
-                    "INSERT INTO durable_object_host_leases (host_id, session_id, route, expires_at_ms) \
+                    "INSERT INTO actor_host_leases (host_id, session_id, route, expires_at_ms) \
                      VALUES ($1, $2, $3, {REGISTRY_NOW_MS} + $4) \
                      ON CONFLICT (host_id) DO UPDATE \
                      SET session_id = EXCLUDED.session_id, route = EXCLUDED.route, \
                          expires_at_ms = EXCLUDED.expires_at_ms \
-                     WHERE durable_object_host_leases.session_id = EXCLUDED.session_id \
-                        OR durable_object_host_leases.expires_at_ms <= {REGISTRY_NOW_MS} \
+                     WHERE actor_host_leases.session_id = EXCLUDED.session_id \
+                        OR actor_host_leases.expires_at_ms <= {REGISTRY_NOW_MS} \
                      RETURNING expires_at_ms"
                 ),
                 &[
@@ -61,7 +61,7 @@ impl HostLeaseRegistry for PostgresHostLeaseStore {
     async fn unregister(&self, id: &HostId, session_id: &str) -> Result<()> {
         self.database
             .execute(
-                "DELETE FROM durable_object_host_leases WHERE host_id = $1 AND session_id = $2",
+                "DELETE FROM actor_host_leases WHERE host_id = $1 AND session_id = $2",
                 &[&id.as_str(), &session_id],
             )
             .await
@@ -80,7 +80,7 @@ impl HostLeaseStore for PostgresHostLeaseStore {
                     "SELECT {REGISTRY_NOW_MS} AS store_now_ms, lease.session_id, \
                             lease.route, lease.expires_at_ms \
                      FROM (SELECT 1) AS clock_row \
-                     LEFT JOIN durable_object_host_leases AS lease ON lease.host_id = $1"
+                     LEFT JOIN actor_host_leases AS lease ON lease.host_id = $1"
                 ),
                 &[&id.as_str()],
             )

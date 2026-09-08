@@ -53,7 +53,7 @@ test("summarizeGcpEntries reports control-plane and socket-effect latency", () =
     const entries = [
         requestEntry("/socket-effects", "0.010s"),
         requestEntry("/socket-effects", "0.020s"),
-        requestEntry("/durable_object.v1.ActorControlPlaneService/Execute", "0.100s"),
+        requestEntry("/little_actors.v1.ActorControlPlaneService/Execute", "0.100s"),
         { jsonPayload: { event: "actor_socket_message_committed" } }
     ]
 

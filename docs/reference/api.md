@@ -1,6 +1,6 @@
 # TypeScript API reference
 
-This page documents the public exports of `little-durable-objects`. Requires Node.js 20+ and an ES module project. For a working application, see the [chat tutorial](../../README.md#build-a-chat-room-in-your-terminal).
+This page documents the public exports of `little-actors`. Requires Node.js 20+ and an ES module project. For a working application, see the [chat tutorial](../../README.md#build-a-chat-room-in-your-terminal).
 
 - [Actor](#actor)
 - [Actor references](#actor-references)
@@ -15,13 +15,13 @@ Deployment management and direct WebSocket connections are documented in the [HT
 ## Actor
 
 ```ts
-import { Actor } from "little-durable-objects"
+import { Actor } from "little-actors"
 ```
 
-Base class for actors with saved state. Export a named subclass from your actor entrypoint, normally `src/durable-objects.ts`:
+Base class for actors with saved state. Export a named subclass from your actor entrypoint, normally `src/actors.ts`:
 
 ```ts
-import { Actor } from "little-durable-objects"
+import { Actor } from "little-actors"
 
 export class ChatRoom extends Actor {
     history: string[] = []
@@ -59,7 +59,7 @@ Creates a typed reference to an actor of the subclass. Creating a reference is s
 **Raises:** An `Error` if the actor definition or ID is invalid.
 
 ```ts
-import { ChatRoom } from "./durable-objects.js"
+import { ChatRoom } from "./actors.js"
 
 const room = ChatRoom.get("lobby")
 await room.post("Hello")
@@ -103,7 +103,7 @@ Sends to currently open connections. By default, this includes the sender when c
 Inside an actor method or hook:
 
 ```ts
-this.broadcast("Hello", { except: socket })
+this.broadcast("Hello", { exclude: socket })
 this.broadcast("Document updated", { tags: ["editors", "document-1"] })
 ```
 
@@ -237,7 +237,7 @@ Opens a WebSocket connection to the actor. The SDK handles bearer authentication
 **Raises:** An `Error` if setup or opening fails. After opening, failures arrive through [connection events](#connection-events); a hook can still reject the connection.
 
 ```ts
-import { ChatRoom } from "./durable-objects.js"
+import { ChatRoom } from "./actors.js"
 
 const socket = await ChatRoom.get("lobby").connect({})
 socket.addEventListener("message", ({ data }) => console.log(String(data)))
@@ -262,7 +262,7 @@ Sends transient output to the actor's currently connected clients. It does not e
 **Raises:** An `Error` for invalid input or configuration, or an [`ActorInvocationError`](#actorinvocationerror) for a server-reported failure.
 
 ```ts
-import { ChatRoom } from "./durable-objects.js"
+import { ChatRoom } from "./actors.js"
 
 await ChatRoom.get("lobby").broadcast("Deployment completed")
 ```
@@ -272,7 +272,7 @@ To save and broadcast together, invoke an actor method that updates a field and 
 ## ActorSocket
 
 ```ts
-import type { ActorSocket } from "little-durable-objects"
+import type { ActorSocket } from "little-actors"
 ```
 
 Actor-side connection passed to lifecycle hooks and listed in `this.connections`. `ActorSocket<Metadata>` describes the metadata shape; its default metadata type is JSON-compatible values. Import it as a type; it is not a constructor.
@@ -408,7 +408,7 @@ Sending and broadcasting do not acknowledge persistence or recipient delivery. A
 ## ActorConnection
 
 ```ts
-import type { ActorConnection } from "little-durable-objects"
+import type { ActorConnection } from "little-actors"
 ```
 
 Client-side connection returned by [`reference.connect()`](#referenceconnect). The SDK handles authentication and initialization; application code handles message encoding, validation, display, and replay beyond the initial saved state. Import it as a type; it is not a constructor.
@@ -500,7 +500,7 @@ The initial state is a JSON text message with shape `{"type":"state","state":{..
 ## ActorInvocationError
 
 ```ts
-import { ActorInvocationError } from "little-durable-objects"
+import { ActorInvocationError } from "little-actors"
 ```
 
 An `Error` subclass for failed remote operations. Its `name` is `"ActorInvocationError"`.
@@ -516,9 +516,9 @@ new ActorInvocationError(code: string, requestId: string, message: string)
 - `message` (`string`, required) — Failure description, available through the inherited `message` property.
 
 ```ts
-import { ActorInvocationError } from "little-durable-objects"
+import { ActorInvocationError } from "little-actors"
 
-import { ChatRoom } from "./durable-objects.js"
+import { ChatRoom } from "./actors.js"
 
 try {
     await ChatRoom.get("lobby").post("Hello")
@@ -565,12 +565,12 @@ Validation, actor definition, configuration, serialization, and socket failures 
 
 ## Types
 
-These types are exported from `little-durable-objects` alongside `ActorSocket` and `ActorConnection`.
+These types are exported from `little-actors` alongside `ActorSocket` and `ActorConnection`.
 
 ### ActorClass
 
 ```ts
-import type { ActorClass } from "little-durable-objects"
+import type { ActorClass } from "little-actors"
 ```
 
 ```text
@@ -584,18 +584,23 @@ An actor class whose prototype has type `Instance`. The type describes the class
 ### ActorBroadcastOptions
 
 ```ts
-import type { ActorBroadcastOptions } from "little-durable-objects"
+import type { ActorBroadcastOptions } from "little-actors"
 ```
 
 Recipient filters for [`Actor.broadcast()`](#actorbroadcast). Both properties are readonly and optional; filters and exclusions can be combined.
 
-#### ActorBroadcastOptions.except
+#### ActorBroadcastOptions.exclude
 
 ```text
-readonly except?: ActorSocket | readonly ActorSocket[]
+readonly exclude?: ActorSocket<unknown> | readonly ActorSocket<unknown>[]
 ```
 
 Connections to exclude. Defaults to none; at most 128 exclusions are allowed.
+
+```ts
+this.broadcast("Hello", { exclude: socket })
+this.broadcast("Hello", { exclude: [alice, bob] })
+```
 
 #### ActorBroadcastOptions.tags
 
@@ -611,7 +616,7 @@ Deliver only to connections having **all** listed tags. Omitted or empty means n
 type ActorSocketMessage = string | Uint8Array
 ```
 
-Text or binary data accepted by actor-side send and broadcast methods and passed to `onMessage`. Import with `import type { ActorSocketMessage } from "little-durable-objects"`.
+Text or binary data accepted by actor-side send and broadcast methods and passed to `onMessage`. Import with `import type { ActorSocketMessage } from "little-actors"`.
 
 ### ActorSocketState (type)
 
@@ -619,34 +624,34 @@ Text or binary data accepted by actor-side send and broadcast methods and passed
 type ActorSocketState = "connecting" | "open" | "closed"
 ```
 
-Actor-side connection state. Import with `import type { ActorSocketState } from "little-durable-objects"`. Client connections instead expose numeric [`readyState`](#actorconnectionreadystate).
+Actor-side connection state. Import with `import type { ActorSocketState } from "little-actors"`. Client connections instead expose numeric [`readyState`](#actorconnectionreadystate).
 
 ## Client configuration
 
 Set environment variables before the first remote operation. Configuration is loaded lazily and cached; changing the environment afterward does not reconfigure the existing client. The package root exposes no per-client configuration constructor.
 
 ```sh
-export DURABLE_OBJECT_TOKEN='<session-token>'
-export DURABLE_OBJECT_NAMESPACE_ID='chat-project'
-export DURABLE_OBJECT_CONTROL_PLANE_URL='https://objects.example.com'
+export LAC_TOKEN='<session-token>'
+export LAC_NAMESPACE_ID='chat-project'
+export LAC_CONTROL_PLANE_URL='https://objects.example.com'
 ```
 
 Local [`run`](cli.md#run-a-client) supplies these values automatically. Hosted clients receive tokens from a trusted backend using the [session-token API](http.md#session-tokens). Admin keys are backend credentials, not SDK session tokens.
 
-### DURABLE_OBJECT_TOKEN
+### LAC_TOKEN
 
 **Required.** Session token authorizing application operations throughout its namespace. The SDK does not automatically renew it. Separate processes are needed for different SDK configurations.
 
-### DURABLE_OBJECT_NAMESPACE_ID
+### LAC_NAMESPACE_ID
 
 **Required.** Namespace containing the deployed actors. Must satisfy the [identity rules](#identity).
 
-### DURABLE_OBJECT_CONTROL_PLANE_URL
+### LAC_CONTROL_PLANE_URL
 
 **Required.** HTTP(S) server origin. A port and trailing slash are allowed; paths, queries, fragments, usernames, and passwords are not.
 
-### DURABLE_OBJECT_SOCKET_GATEWAY_URL
+### LAC_SOCKET_GATEWAY_URL
 
-**Default:** `DURABLE_OBJECT_CONTROL_PLANE_URL`.
+**Default:** `LAC_CONTROL_PLANE_URL`.
 
 Separate HTTP(S) WebSocket gateway origin, with the same origin restrictions. Use `https://sockets.example.com`; the SDK chooses the corresponding WebSocket scheme.

@@ -161,7 +161,7 @@ async fn connect_external(
         authorization.expires_at,
     );
     upgrade_socket(
-        upgrade.protocols(["terse-do"]),
+        upgrade.protocols(["little-actors"]),
         state,
         SocketAccess {
             actor: authorization.actor,
@@ -503,7 +503,7 @@ impl SocketRegistry {
         match effect {
             ActorSocketEffect::Broadcast {
                 message,
-                except_connection_ids,
+                exclude_connection_ids,
                 tags,
             } => {
                 let recipients = self
@@ -516,7 +516,7 @@ impl SocketRegistry {
                             .values()
                             .filter(|entry| {
                                 entry.open
-                                    && !except_connection_ids.contains(&entry.connection.id)
+                                    && !exclude_connection_ids.contains(&entry.connection.id)
                                     && tags.iter().all(|tag| entry.connection.tags.contains(tag))
                             })
                             .map(|entry| entry.outbound.clone())
@@ -647,7 +647,7 @@ fn external_credential(headers: &HeaderMap) -> Option<String> {
             value
                 .split(',')
                 .map(str::trim)
-                .find_map(|protocol| protocol.strip_prefix("terse-ticket."))
+                .find_map(|protocol| protocol.strip_prefix("lac-ticket."))
         })
         .filter(|value| !value.is_empty())
         .map(str::to_owned)
@@ -806,17 +806,17 @@ mod tests {
         let mut headers = HeaderMap::new();
         headers.insert(
             header::AUTHORIZATION,
-            HeaderValue::from_static("Bearer terse_socket_secret"),
+            HeaderValue::from_static("Bearer lac_socket_secret"),
         );
         assert_eq!(
             external_credential(&headers).as_deref(),
-            Some("terse_socket_secret")
+            Some("lac_socket_secret")
         );
 
         headers.remove(header::AUTHORIZATION);
         headers.insert(
             header::SEC_WEBSOCKET_PROTOCOL,
-            HeaderValue::from_static("terse-do, terse-ticket.ticket-value"),
+            HeaderValue::from_static("little-actors, lac-ticket.ticket-value"),
         );
         assert_eq!(
             external_credential(&headers).as_deref(),
@@ -850,6 +850,61 @@ mod tests {
 
         for effect in invalid {
             assert!(crate::actor::validate_socket_effects(&[effect]).is_err());
+        }
+    }
+
+    #[tokio::test]
+    async fn broadcasts_respect_tag_filters_and_exclusions() {
+        let registry = SocketRegistry::default();
+        let actor = ActorKey {
+            namespace_id: "project-1".into(),
+            actor_type: "ChatRoom".into(),
+            actor_id: "room-1".into(),
+        };
+        let mut receivers = Vec::new();
+        for id in ["alice", "bob", "connecting"] {
+            let (outbound, incoming) = mpsc::unbounded_channel();
+            let connection = serde_json::from_value(json!({
+                "id": id,
+                "metadata": { "userId": id },
+                "tags": if id == "bob" { vec!["editor"] } else { vec!["editor", "document-1"] }
+            }))
+            .unwrap();
+            assert!(registry.insert(&actor, connection, outbound, None).await);
+            if id != "connecting" {
+                registry.activate(&actor, id).await;
+            }
+            receivers.push(incoming);
+        }
+
+        for (excluded, tags, recipients) in [
+            (vec!["alice"], vec![], vec!["bob"]),
+            (vec!["alice", "bob"], vec![], vec![]),
+            (vec![], vec![], vec!["alice", "bob"]),
+            (vec![], vec!["editor", "document-1"], vec!["alice"]),
+            (vec!["alice"], vec!["editor", "document-1"], vec![]),
+        ] {
+            let effect = serde_json::from_value(json!({
+                "type": "broadcast",
+                "message": { "type": "text", "data": "hello" },
+                "exclude_connection_ids": excluded,
+                "tags": tags
+            }))
+            .unwrap();
+            registry.apply(&actor, vec![effect]).await;
+            for (id, receiver) in ["alice", "bob", "connecting"]
+                .into_iter()
+                .zip(&mut receivers)
+            {
+                if !recipients.contains(&id) {
+                    assert!(receiver.try_recv().is_err());
+                } else {
+                    assert!(matches!(
+                        receiver.try_recv(),
+                        Ok(OutboundMessage::Message(ActorSocketMessage::Text { data })) if data == "hello"
+                    ));
+                }
+            }
         }
     }
 
@@ -900,7 +955,7 @@ mod tests {
                         message: ActorSocketMessage::Text {
                             data: "everyone".into(),
                         },
-                        except_connection_ids: Vec::new(),
+                        exclude_connection_ids: Vec::new(),
                         tags: vec!["member".into()],
                     },
                 ],

@@ -39,7 +39,7 @@ pub struct DevOptions {
     pub port: u16,
     #[arg(long)]
     pub data_dir: Option<PathBuf>,
-    #[arg(long, default_value = "src/durable-objects.ts")]
+    #[arg(long, default_value = "src/actors.ts")]
     pub entrypoint: String,
     #[arg(long, value_enum, default_value = "local")]
     pub storage: DevStorage,
@@ -67,7 +67,7 @@ pub async fn serve_local(
     let directory = options
         .data_dir
         .clone()
-        .unwrap_or_else(|| project.join(".little-durable-objects"));
+        .unwrap_or_else(|| project.join(".little-actors"));
     let _lock = prepare_directory(&directory)?;
     let listener = TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, options.port))
         .await
@@ -96,7 +96,7 @@ pub async fn serve_local(
     let ready = publish_connection(&directory, &origin, &api_key, &storage.region);
     if ready.is_ok() {
         println!(
-            "Local actors ready at {origin}\nState: {}\nRun a client: npx little-durable-objects run src/client.ts\nRestart this command after changing actor code.",
+            "Local actors ready at {origin}\nState: {}\nRun a client: npx lac run src/client.ts\nRestart this command after changing actor code.",
             directory.display()
         );
         if matches!(options.storage, DevStorage::Local) {
@@ -203,8 +203,8 @@ async fn local_storage(options: &DevOptions, directory: &Path, origin: &str) -> 
         }
         DevStorage::Gcs => {
             let buckets: HashMap<String, String> = serde_json::from_str(
-                &std::env::var("DURABLE_OBJECT_STANDARD_BUCKETS")
-                    .context("--storage gcs requires DURABLE_OBJECT_STANDARD_BUCKETS")?,
+                &std::env::var("LAC_STANDARD_BUCKETS")
+                    .context("--storage gcs requires LAC_STANDARD_BUCKETS")?,
             )?;
             let identity = serde_json::json!({ "storage": "gcs", "buckets": buckets });
             let storage = Arc::new(GcsStorageUrlSigner::from_adc(buckets).await?);
@@ -243,8 +243,8 @@ async fn local_routes(
     let issuer = local_issuer()?;
     let auth = ActorJwtVerifier::for_scope(
         issuer.verifier_keys_json()?,
-        "durable-object-control-plane",
-        "durable-object-authority",
+        "little-actors-control-plane",
+        "little-actors-authority",
         ActorTokenPurpose::ControlPlane,
         Duration::from_secs(86_400),
     )?;
@@ -262,8 +262,8 @@ async fn local_routes(
         .await?;
     let runtime = HostSandboxRuntimeConfig {
         control_plane_url: origin.to_owned(),
-        jwt_issuer: "durable-object-control-plane".into(),
-        invocation_jwt_audience: "durable-object-invoke".into(),
+        jwt_issuer: "little-actors-control-plane".into(),
+        invocation_jwt_audience: "little-actors-invoke".into(),
         actor_idle_timeout_ms: 60_000,
         host_idle_timeout_ms: 300_000,
     };
@@ -293,9 +293,9 @@ fn local_issuer() -> Result<ActorJwtIssuer> {
     ActorJwtIssuer::from_base64_pkcs8(
         &STANDARD.encode(key.as_ref()),
         "local",
-        "durable-object-control-plane",
-        "durable-object-authority",
-        "durable-object-invoke",
+        "little-actors-control-plane",
+        "little-actors-authority",
+        "little-actors-invoke",
         Duration::from_secs(86_400),
     )
 }

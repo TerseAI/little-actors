@@ -1,35 +1,28 @@
-# little-durable-objects
+# little-actors
 
-Coordinating state across machines adds latency. Traditional protocols such as as [two-phase commit (2PC)](https://arxiv.org/abs/cs/0408036) and [Paxos](https://lamport.azurewebsites.net/pubs/paxos-simple.pdf) introduce a lot of overhead. Actors simplify application updates by giving each piece of state one owner.
+Coordinating state across machines adds latency. Traditional solutions such as [two-phase commit (2PC)](https://arxiv.org/abs/cs/0408036) and [Paxos](https://lamport.azurewebsites.net/pubs/paxos-simple.pdf) introduce a lot of overhead. Actors simplify application updates by giving each piece of state one owner.
 
 ## Build a chat room in your terminal
 
-Run two chat clients in separate terminals. Both receive every message, and the room remembers the conversation when you reconnect or restart the server.
+This tutorial will introduce you to creating Actors with little-actors by creating a chat room in your terminal.
 
-Requires **Node.js 20+ and npm**. The CLI downloads the runtime, with SQLite included.
-
-The local CLI is not published yet. To run this checkout, follow [Local development](docs/guides/local-development.md) and replace the install command below with `npm link /path/to/little-durable-objects/npm`.
+Requires **Node.js 20+ and npm**. The CLI downloads the runtime, with SQLite included. No Rust installation or runtime path is needed.
 
 ### 1. Create a project
 
 ```sh
-mkdir chat-example
-cd chat-example
-npm init -y
-npm pkg set type=module
-npm install little-durable-objects
-mkdir src
+mkdir -p chat-example/src && cd chat-example
+npm init -y && npm pkg set type=module
+npm install little-actors
 ```
-
-This installs the SDK, CLI, and TypeScript support.
 
 ### 2. Create the room
 
-Create `src/durable-objects.ts`:
+Create `src/actors.ts`:
 
 ```ts
-import { Actor } from "little-durable-objects"
-import type { ActorSocket } from "little-durable-objects"
+import { Actor } from "little-actors"
+import type { ActorSocket } from "little-actors"
 
 export class ChatRoom extends Actor {
     history: string[] = []
@@ -51,7 +44,7 @@ Create `src/chat.ts`:
 ```ts
 import { createInterface as readLines } from "node:readline"
 
-import { ChatRoom } from "./durable-objects.js"
+import { ChatRoom } from "./actors.js"
 
 const name = process.argv[2] ?? "Anonymous"
 const socket = await ChatRoom.get("lobby").connect({})
@@ -73,10 +66,10 @@ Both clients use `ChatRoom.get("lobby")`, so they share one actor. A different r
 In terminal 1, from the project directory:
 
 ```sh
-npx little-durable-objects dev
+npx lac dev
 ```
 
-Leave this running. It starts the local server and registers your actor file. SQLite metadata and snapshots go in `.little-durable-objects/`.
+Leave this running. It starts the local server and registers your actor file. SQLite metadata and snapshots go in `.little-actors/`.
 
 Wait for this line before connecting:
 
@@ -89,13 +82,13 @@ Local actors ready at http://127.0.0.1:7100
 In terminal 2, from the same project directory, join as Alice:
 
 ```sh
-npx little-durable-objects run src/chat.ts Alice
+npx lac run src/chat.ts Alice
 ```
 
 In terminal 3, join as Bob:
 
 ```sh
-npx little-durable-objects run src/chat.ts Bob
+npx lac run src/chat.ts Bob
 ```
 
 `run` supplies local credentials automatically. Wait for both clients to print the initial state:
@@ -118,7 +111,7 @@ Bob: Hey, Alice!
 Press Ctrl-C in Bob's terminal, then run his command again:
 
 ```sh
-npx little-durable-objects run src/chat.ts Bob
+npx lac run src/chat.ts Bob
 ```
 
 Before Bob types anything, his client shows the saved conversation:
@@ -130,10 +123,10 @@ Before Bob types anything, his client shows the saved conversation:
 To try a full restart, stop both clients and the server with Ctrl-C. Start the server again in terminal 1:
 
 ```sh
-npx little-durable-objects dev
+npx lac dev
 ```
 
-Wait for the ready line, then rerun Alice's and Bob's commands. Both receive the same history and can keep chatting. The messages live in `.little-durable-objects/`, so keep that directory between runs.
+Wait for the ready line, then rerun Alice's and Bob's commands. Both receive the same history and can keep chatting. The messages live in `.little-actors/`, so keep that directory between runs.
 
 ## Host it yourself
 
@@ -145,7 +138,7 @@ Follow the [self-hosting guide](docs/guides/self-hosting.md) for configuration a
 - [TypeScript API reference](docs/reference/api.md): actor classes, methods, connections, types, and errors.
 - [HTTP and WebSocket reference](docs/reference/http.md): deployments, session tokens, direct connections, and callbacks.
 
-![Control plane, actor hosts, and persistent storage](docs/llittle-do-diagram.png)
+![Control plane, actor hosts, and persistent storage](docs/little-actors-diagram.svg)
 
 ## License
 

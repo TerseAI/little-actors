@@ -10,11 +10,11 @@ import { ActorConfigurationError, ActorDefinitionError } from "../shared/errors.
 import { loadActorEntrypoint, resolveActorEntrypoint } from "./actorModule.js"
 
 test("resolves the conventional TypeScript actor entrypoint", async () => {
-    const root = await mkdtemp(path.join(os.tmpdir(), "durable-object-entrypoint-"))
+    const root = await mkdtemp(path.join(os.tmpdir(), "little-actors-entrypoint-"))
     const previousDirectory = process.cwd()
     try {
         await mkdir(path.join(root, "src"))
-        const entrypoint = path.join(root, "src/durable-objects.ts")
+        const entrypoint = path.join(root, "src/actors.ts")
         await writeFile(entrypoint, "export {}\n")
         process.chdir(root)
         assert.equal(await realpath(fileURLToPath(await resolveActorEntrypoint(undefined))), await realpath(entrypoint))
@@ -25,17 +25,17 @@ test("resolves the conventional TypeScript actor entrypoint", async () => {
 })
 
 test("rejects a configured actor entrypoint that does not exist", async () => {
-    await assert.rejects(resolveActorEntrypoint("./missing-durable-objects.ts"), ActorConfigurationError)
+    await assert.rejects(resolveActorEntrypoint("./missing-actors.ts"), ActorConfigurationError)
 })
 
 test("prefers a compiled conventional entrypoint when available", async () => {
-    const root = await mkdtemp(path.join(os.tmpdir(), "durable-object-compiled-"))
+    const root = await mkdtemp(path.join(os.tmpdir(), "little-actors-compiled-"))
     const previousDirectory = process.cwd()
     try {
         await mkdir(path.join(root, "dist"))
-        await writeFile(path.join(root, "dist/durable-objects.js"), "export {}\n")
+        await writeFile(path.join(root, "dist/actors.js"), "export {}\n")
         process.chdir(root)
-        assert.equal(await realpath(fileURLToPath(await resolveActorEntrypoint(undefined))), await realpath(path.join(root, "dist/durable-objects.js")))
+        assert.equal(await realpath(fileURLToPath(await resolveActorEntrypoint(undefined))), await realpath(path.join(root, "dist/actors.js")))
     } finally {
         process.chdir(previousDirectory)
         await rm(root, { recursive: true, force: true })
@@ -43,7 +43,7 @@ test("prefers a compiled conventional entrypoint when available", async () => {
 })
 
 test("rejects default and non-actor entrypoint exports", async () => {
-    const root = await mkdtemp(path.join(os.tmpdir(), "durable-object-invalid-entrypoint-"))
+    const root = await mkdtemp(path.join(os.tmpdir(), "little-actors-invalid-entrypoint-"))
     try {
         const defaultEntrypoint = path.join(root, "default.mjs")
         const nonActorEntrypoint = path.join(root, "non-actor.mjs")

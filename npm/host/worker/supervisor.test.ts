@@ -18,7 +18,7 @@ const actorIdentity = {
 
 test("keeps an actor resident until Rust explicitly evicts it", async () => {
     const consumerRoot = await createTypeScriptConsumer()
-    const entrypoint = pathToFileURL(path.join(consumerRoot, "src/durable-objects.ts")).href
+    const entrypoint = pathToFileURL(path.join(consumerRoot, "src/actors.ts")).href
     try {
         await exerciseResidency(entrypoint)
         await exerciseIdleRecycling(entrypoint)
@@ -30,7 +30,7 @@ test("keeps an actor resident until Rust explicitly evicts it", async () => {
 
 test("starts one speculative Worker and gives it to the first actor", async () => {
     const consumerRoot = await createTypeScriptConsumer("PreloadedCounter")
-    const entrypoint = pathToFileURL(path.join(consumerRoot, "src/durable-objects.ts")).href
+    const entrypoint = pathToFileURL(path.join(consumerRoot, "src/actors.ts")).href
     const created: number[] = []
     try {
         await loadActorEntrypoint(entrypoint)
@@ -97,7 +97,7 @@ test("expires an unused speculative Worker without replenishing it", async () =>
 
 test("eviction during Worker startup settles the invocation and allows recovery", { timeout: 5_000 }, async () => {
     const root = await createTypeScriptConsumer("CancelledCounter")
-    const entrypoint = pathToFileURL(path.join(root, "src/durable-objects.ts")).href
+    const entrypoint = pathToFileURL(path.join(root, "src/actors.ts")).href
     const command = invokeCommand("counter-1", "CancelledCounter")
     try {
         await loadActorEntrypoint(entrypoint)
@@ -117,7 +117,7 @@ test("eviction during Worker startup settles the invocation and allows recovery"
 
 test("discards a failed preload before accepting the first actor", async () => {
     const root = await createTypeScriptConsumer("RetryPreloadCounter")
-    const entrypoint = pathToFileURL(path.join(root, "src/durable-objects.ts")).href
+    const entrypoint = pathToFileURL(path.join(root, "src/actors.ts")).href
     let created = 0
     let terminated = 0
     try {
@@ -174,7 +174,7 @@ test("closing the supervisor terminates an unused Worker and rejects new work", 
 
 test("an actor module that fails inside a Worker returns a failure without hanging", { timeout: 5_000 }, async () => {
     const root = await createTypeScriptConsumer("FailedImportCounter", 'import { isMainThread } from "node:worker_threads"\nif (!isMainThread) throw new Error("worker import failed")')
-    const entrypoint = pathToFileURL(path.join(root, "src/durable-objects.ts")).href
+    const entrypoint = pathToFileURL(path.join(root, "src/actors.ts")).href
     try {
         await loadActorEntrypoint(entrypoint)
         const runtime = new ActorWorkerSupervisor({ actorEntrypointUrl: entrypoint })
@@ -308,13 +308,13 @@ async function exerciseIdleRecycling(entrypoint: string): Promise<void> {
 }
 
 async function createTypeScriptConsumer(actorType = "SessionCounter", preamble = ""): Promise<string> {
-    const root = await mkdtemp(path.join(os.tmpdir(), "durable-object-worker-"))
+    const root = await mkdtemp(path.join(os.tmpdir(), "little-actors-worker-"))
     const source = path.join(root, "src")
     await mkdir(source)
     const compiledSdkRoot = fileURLToPath(new URL("../../", import.meta.url))
     await writeFile(path.join(root, "package.json"), JSON.stringify({ type: "module" }))
     await writeFile(
-        path.join(source, "durable-objects.ts"),
+        path.join(source, "actors.ts"),
         `import { Actor } from ${JSON.stringify(pathToFileURL(path.join(compiledSdkRoot, "index.js")).href)}
 ${preamble}
 

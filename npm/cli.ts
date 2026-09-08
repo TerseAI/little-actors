@@ -38,13 +38,13 @@ function devArguments(options: DevOptions): string[] {
 }
 
 async function runRuntime(args: string[]): Promise<number> {
-    const executable = process.env.DURABLE_OBJECT_BINARY
-        ? path.resolve(process.env.DURABLE_OBJECT_BINARY)
+    const executable = process.env.LAC_BINARY
+        ? path.resolve(process.env.LAC_BINARY)
         : await new RuntimeInstaller({
               version: await version(),
               platform: process.platform,
               arch: process.arch,
-              cacheDirectory: process.env.DURABLE_OBJECT_CACHE_DIR ?? path.join(homedir(), ".cache/little-durable-objects")
+              cacheDirectory: process.env.LAC_CACHE_DIR ?? path.join(homedir(), ".cache/little-actors")
           }).install()
     return runProcess(
         executable,
@@ -52,8 +52,8 @@ async function runRuntime(args: string[]): Promise<number> {
         {
             ...process.env,
             PATH: `${path.dirname(executable)}${path.delimiter}${process.env.PATH ?? ""}`,
-            DURABLE_OBJECT_PROCESS_ROLE: process.env.DURABLE_OBJECT_PROCESS_ROLE ?? "control_plane",
-            DURABLE_OBJECT_PARENT_LIFETIME_STDIN: "1"
+            LAC_PROCESS_ROLE: process.env.LAC_PROCESS_ROLE ?? "control_plane",
+            LAC_PARENT_LIFETIME_STDIN: "1"
         },
         true
     )
@@ -63,12 +63,12 @@ async function runClient(script: string, args: string[], directory: string): Pro
     const { connection, token } = await localSession(directory)
     const environment: NodeJS.ProcessEnv = {
         ...process.env,
-        DURABLE_OBJECT_TOKEN: token,
-        DURABLE_OBJECT_NAMESPACE_ID: connection.namespaceId,
-        DURABLE_OBJECT_CONTROL_PLANE_URL: connection.controlPlaneUrl
+        LAC_TOKEN: token,
+        LAC_NAMESPACE_ID: connection.namespaceId,
+        LAC_CONTROL_PLANE_URL: connection.controlPlaneUrl
     }
-    delete environment.DURABLE_OBJECT_API_KEY
-    delete environment.DURABLE_OBJECT_SOCKET_GATEWAY_URL
+    delete environment.LAC_API_KEY
+    delete environment.LAC_SOCKET_GATEWAY_URL
     return runProcess(process.execPath, ["--import", import.meta.resolve("tsx"), script, ...args], environment)
 }
 
@@ -76,7 +76,7 @@ async function localSession(directory: string) {
     const connection = await readFile(path.resolve(directory, "runtime.json"), "utf8")
         .then(JSON.parse)
         .catch(() => {
-            throw new Error("No local runtime found. Start `npx little-durable-objects dev` in this project first; use the same --data-dir for both commands.")
+            throw new Error("No local runtime found. Start `npx lac dev` in this project first; use the same --data-dir for both commands.")
         })
     const response = await fetch(`${connection.controlPlaneUrl}/v1/namespaces/${connection.namespaceId}/session-scoped-token`, {
         method: "POST",
@@ -84,7 +84,7 @@ async function localSession(directory: string) {
         body: JSON.stringify({ executionId: `local-${randomUUID()}`, deadlineUnixMs: Date.now() + 3_600_000, storageRegion: connection.storageRegion }),
         signal: AbortSignal.timeout(10_000)
     }).catch(() => {
-        throw new Error("Cannot reach the local runtime. Start `npx little-durable-objects dev` again.")
+        throw new Error("Cannot reach the local runtime. Start `npx lac dev` again.")
     })
     if (!response.ok) throw new Error(`Local runtime could not issue a client token (HTTP ${response.status}). Restart it and try again.`)
     const { token } = (await response.json()) as { token: string }
@@ -103,7 +103,7 @@ function runProcess(command: string, args: string[], env: NodeJS.ProcessEnv, par
         const parentClosed = () => child.stdin?.end()
         process.on("SIGINT", interrupt)
         process.on("SIGTERM", terminate)
-        if (parentLifetime && process.env.DURABLE_OBJECT_PARENT_LIFETIME_STDIN) {
+        if (parentLifetime && process.env.LAC_PARENT_LIFETIME_STDIN) {
             process.stdin.resume()
             process.stdin.on("end", parentClosed)
         }

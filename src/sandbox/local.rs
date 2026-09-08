@@ -56,7 +56,7 @@ impl LocalSandboxProvider {
     }
 
     async fn launch(&self, request: &EnsureHostRequest) -> Result<LocalHost> {
-        let directory = tempfile::Builder::new().prefix("ldo-").tempdir_in("/tmp")?;
+        let directory = tempfile::Builder::new().prefix("lac-").tempdir_in("/tmp")?;
         let environment = host_environment(request, &directory);
         let child = Command::new(&self.executable)
             .current_dir(&self.project)
@@ -204,57 +204,45 @@ fn handle(lease: crate::host_leases::HostLease, region: &str) -> ActorHostHandle
 
 fn host_environment(request: &EnsureHostRequest, directory: &TempDir) -> HashMap<String, String> {
     let mut environment = std::env::vars()
-        .filter(|(key, _)| !key.starts_with("DURABLE_OBJECT_"))
+        .filter(|(key, _)| !key.starts_with("LAC_"))
         .collect::<HashMap<_, _>>();
     for (key, value) in [
-        ("DURABLE_OBJECT_PROCESS_ROLE", "host".to_owned()),
-        ("DURABLE_OBJECT_PARENT_LIFETIME_STDIN", "1".into()),
-        ("DURABLE_OBJECT_HOST_BIND", "127.0.0.1:0".into()),
-        ("DURABLE_OBJECT_NAMESPACE_ID", request.namespace_id.clone()),
+        ("LAC_PROCESS_ROLE", "host".to_owned()),
+        ("LAC_PARENT_LIFETIME_STDIN", "1".into()),
+        ("LAC_HOST_BIND", "127.0.0.1:0".into()),
+        ("LAC_NAMESPACE_ID", request.namespace_id.clone()),
+        ("LAC_HOST_ID", request.host_id.as_str().to_owned()),
+        ("LAC_SESSION_ID", request.session_id.clone()),
+        ("LAC_HOST_TOKEN", request.host_token.clone()),
+        ("LAC_JWT_PUBLIC_KEYS", request.jwt_public_keys.clone()),
+        ("LAC_CONTROL_PLANE_URL", request.control_plane_url.clone()),
+        ("LAC_SOCKET_GATEWAY_URL", request.socket_gateway_url.clone()),
+        ("LAC_JWT_ISSUER", request.jwt_issuer.clone()),
         (
-            "DURABLE_OBJECT_HOST_ID",
-            request.host_id.as_str().to_owned(),
-        ),
-        ("DURABLE_OBJECT_SESSION_ID", request.session_id.clone()),
-        ("DURABLE_OBJECT_HOST_TOKEN", request.host_token.clone()),
-        (
-            "DURABLE_OBJECT_JWT_PUBLIC_KEYS",
-            request.jwt_public_keys.clone(),
-        ),
-        (
-            "DURABLE_OBJECT_CONTROL_PLANE_URL",
-            request.control_plane_url.clone(),
-        ),
-        (
-            "DURABLE_OBJECT_SOCKET_GATEWAY_URL",
-            request.socket_gateway_url.clone(),
-        ),
-        ("DURABLE_OBJECT_JWT_ISSUER", request.jwt_issuer.clone()),
-        (
-            "DURABLE_OBJECT_INVOKE_JWT_AUDIENCE",
+            "LAC_INVOKE_JWT_AUDIENCE",
             request.invocation_jwt_audience.clone(),
         ),
         (
-            "DURABLE_OBJECT_EXECUTOR_SOCKET",
+            "LAC_EXECUTOR_SOCKET",
             directory.path().join("executor.sock").display().to_string(),
         ),
         (
-            "DURABLE_OBJECT_HOST_READY_FILE",
+            "LAC_HOST_READY_FILE",
             directory.path().join("ready").display().to_string(),
         ),
         (
-            "DURABLE_OBJECT_ACTOR_IDLE_TIMEOUT_MS",
+            "LAC_ACTOR_IDLE_TIMEOUT_MS",
             request.actor_idle_timeout_ms.to_string(),
         ),
         (
-            "DURABLE_OBJECT_HOST_IDLE_TIMEOUT_MS",
+            "LAC_HOST_IDLE_TIMEOUT_MS",
             request.host_idle_timeout_ms.to_string(),
         ),
     ] {
         environment.insert(key.into(), value);
     }
     if let Some(entrypoint) = &request.actor_entrypoint {
-        environment.insert("DURABLE_OBJECT_ENTRYPOINT".into(), entrypoint.clone());
+        environment.insert("LAC_ENTRYPOINT".into(), entrypoint.clone());
     }
     environment
 }

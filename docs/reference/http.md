@@ -19,7 +19,7 @@ Use your configured server origin as the base URL. JSON requests use `Content-Ty
 Authorization: Bearer <admin-api-key>
 ```
 
-The admin key is the server's `DURABLE_OBJECT_API_KEY`. It can register and remove deployments and issue namespace-wide session tokens. Use it only on your trusted backend. Application connections use session tokens or external socket credentials instead.
+The admin key is the server's `LAC_API_KEY`. It can register and remove deployments and issue namespace-wide session tokens. Use it only on your trusted backend. Application connections use session tokens or external socket credentials instead.
 
 | Operation                           | Method and path                                                           | Credential                               |
 | ----------------------------------- | ------------------------------------------------------------------------- | ---------------------------------------- |
@@ -48,7 +48,7 @@ Registers actor code for a namespace, creating the namespace if needed. There is
     "codeRevision": "chat-v1",
     "imageRef": "im-your-actor-image",
     "workingDirectory": "/workspace",
-    "actorEntrypoint": "src/durable-objects.ts",
+    "actorEntrypoint": "src/actors.ts",
     "secretRefs": [],
     "socketGatewayUrl": null,
     "warmRegion": "north-america-east"
@@ -60,7 +60,7 @@ Registers actor code for a namespace, creating the namespace if needed. There is
 - `codeRevision` (`string`, required) — Revision label, 1–128 ASCII letters, digits, `.`, `_`, or `-`. Use a new label for changed code.
 - `imageRef` (`string`, required) — Provider image reference containing the actor project, 1–255 bytes. Registration does not upload or build the image.
 - `workingDirectory` (`string`, required) — Absolute project path inside the image, at most 1024 bytes.
-- `actorEntrypoint` (`string | null`, default `null`) — Source or compiled actor file, 1–1024 bytes when supplied. Relative paths resolve from the working directory. When omitted, the server uses `dist/durable-objects.js` if present, otherwise `src/durable-objects.ts`.
+- `actorEntrypoint` (`string | null`, default `null`) — Source or compiled actor file, 1–1024 bytes when supplied. Relative paths resolve from the working directory. When omitted, the server uses `dist/actors.js` if present, otherwise `src/actors.ts`.
 - `secretRefs` (`string[]`, default `[]`) — Up to 16 provider secret names. Each contains 1–255 ASCII letters, digits, `.`, `_`, or `-`.
 - `socketGatewayUrl` (`string | null`, default `null`) — Separate HTTP(S) origin for socket delivery. No path beyond `/`, credentials, query, or fragment. Configure clients' gateway origin to match.
 - `warmRegion` (`string | null`, default `null`) — Configured storage region in which to request background image warmup. It is not retained in the deployment record.
@@ -89,7 +89,7 @@ Reads the active deployment.
     "codeRevision": "chat-v1",
     "imageRef": "im-your-actor-image",
     "workingDirectory": "/workspace",
-    "actorEntrypoint": "src/durable-objects.ts",
+    "actorEntrypoint": "src/actors.ts",
     "secretRefs": [],
     "socketGatewayUrl": null
 }
@@ -124,10 +124,10 @@ Requires a registered deployment and the admin API key.
 For example, from a trusted Node.js backend:
 
 ```ts
-const response = await fetch(`${process.env.DURABLE_OBJECT_CONTROL_PLANE_URL}/v1/namespaces/chat-project/session-scoped-token`, {
+const response = await fetch(`${process.env.LAC_CONTROL_PLANE_URL}/v1/namespaces/chat-project/session-scoped-token`, {
     method: "POST",
     headers: {
-        authorization: `Bearer ${process.env.DURABLE_OBJECT_API_KEY}`,
+        authorization: `Bearer ${process.env.LAC_API_KEY}`,
         "content-type": "application/json"
     },
     body: JSON.stringify({
@@ -209,20 +209,20 @@ GET /v1/socket/{triggerId}/{actorId}
 
 Upgrades to a WebSocket connection (`101 Switching Protocols`). `triggerId` identifies the application trigger passed to your authorization callback; `actorId` identifies the requested actor.
 
-Requires the server's `DURABLE_OBJECT_SOCKET_AUTH_URL` callback to be configured. Connect to:
+Requires the server's `LAC_SOCKET_AUTH_URL` callback to be configured. Connect to:
 
 ```text
 wss://objects.example.com/v1/socket/{triggerId}/{actorId}
 ```
 
-Supply either `Authorization: Bearer <credential>` or the WebSocket subprotocols `terse-do` and `terse-ticket.<credential>`. A bearer header takes precedence. Browser example:
+Supply either `Authorization: Bearer <credential>` or the WebSocket subprotocols `little-actors` and `lac-ticket.<credential>`. A bearer header takes precedence. Browser example:
 
 ```js
-const socket = new WebSocket("wss://objects.example.com/v1/socket/chat/lobby", ["terse-do", `terse-ticket.${credential}`])
+const socket = new WebSocket("wss://objects.example.com/v1/socket/chat/lobby", ["little-actors", `lac-ticket.${credential}`])
 socket.addEventListener("message", ({ data }) => console.log(data))
 ```
 
-`credential` is an application-issued credential accepted by your authorization callback and must be valid inside a WebSocket subprotocol token. The runtime does not provide an external-ticket issuance endpoint. The accepted subprotocol is `terse-do`.
+`credential` is an application-issued credential accepted by your authorization callback and must be valid inside a WebSocket subprotocol token. The runtime does not provide an external-ticket issuance endpoint. The accepted subprotocol is `little-actors`.
 
 The callback selects the namespace, actor class, region, metadata, and credential expiration. It must preserve the requested actor ID. There is no client initialization frame on this route: the callback supplies metadata. Sending an initialization document here would be an application message.
 
@@ -245,11 +245,11 @@ These are common runtime outcomes; WebSocket protocol and size failures may prod
 
 ## WebSocket callbacks
 
-Both optional callbacks are configured on the [self-hosted server](../guides/self-hosting.md#server-configuration). The server makes JSON `POST` requests with `Authorization: Bearer <DURABLE_OBJECT_API_KEY>`. Authenticate this header at the callback endpoint. Plain local `dev` does not enable these callbacks.
+Both optional callbacks are configured on the [self-hosted server](../guides/self-hosting.md#server-configuration). The server makes JSON `POST` requests with `Authorization: Bearer <LAC_API_KEY>`. Authenticate this header at the callback endpoint. Plain local `dev` does not enable these callbacks.
 
 ### External authorization
 
-Set `DURABLE_OBJECT_SOCKET_AUTH_URL` to your authorization endpoint. For an external upgrade, the JSON request contains these required strings:
+Set `LAC_SOCKET_AUTH_URL` to your authorization endpoint. For an external upgrade, the JSON request contains these required strings:
 
 - `triggerId` — Trigger from the connection URL.
 - `actorId` — Actor ID from the connection URL.
@@ -289,7 +289,7 @@ Return `401`, `403`, or `404` to reject the credential; the upgrade returns `401
 
 ### Incoming message events
 
-Set `DURABLE_OBJECT_SOCKET_EVENT_URL` to receive messages after successful actor handling:
+Set `LAC_SOCKET_EVENT_URL` to receive messages after successful actor handling:
 
 ```json
 {

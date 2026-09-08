@@ -236,7 +236,7 @@ impl AdminRegistry for PostgresAdminRegistry {
         validate_namespace(namespace_id)?;
         self.database
             .execute(
-                "DELETE FROM durable_object_project_specs WHERE namespace_id = $1",
+                "DELETE FROM actor_project_specs WHERE namespace_id = $1",
                 &[&namespace_id],
             )
             .await?;
@@ -252,11 +252,11 @@ impl AdminRegistry for PostgresAdminRegistry {
             .database
             .execute(
                 "WITH ensured_namespace AS ( \
-                   INSERT INTO durable_object_namespaces (namespace_id) VALUES ($1) \
+                   INSERT INTO actor_namespaces (namespace_id) VALUES ($1) \
                    ON CONFLICT (namespace_id) DO UPDATE SET namespace_id = EXCLUDED.namespace_id \
                    RETURNING namespace_id \
                  ) \
-                 INSERT INTO durable_object_project_specs \
+                 INSERT INTO actor_project_specs \
                    (namespace_id, code_revision, image_ref, working_directory, actor_entrypoint, secret_refs, socket_gateway_url) \
                  SELECT namespace_id, $2, $3, $4, $5, $6, $7 FROM ensured_namespace \
                  ON CONFLICT (namespace_id) DO UPDATE SET \
@@ -264,11 +264,11 @@ impl AdminRegistry for PostgresAdminRegistry {
                    working_directory = EXCLUDED.working_directory, actor_entrypoint = EXCLUDED.actor_entrypoint, \
                    secret_refs = EXCLUDED.secret_refs, socket_gateway_url = EXCLUDED.socket_gateway_url, \
                    updated_at = clock_timestamp() \
-                 WHERE (durable_object_project_specs.code_revision, \
-                        durable_object_project_specs.image_ref, \
-                        durable_object_project_specs.working_directory, \
-                        durable_object_project_specs.actor_entrypoint, \
-                        durable_object_project_specs.secret_refs, durable_object_project_specs.socket_gateway_url) \
+                 WHERE (actor_project_specs.code_revision, \
+                        actor_project_specs.image_ref, \
+                        actor_project_specs.working_directory, \
+                        actor_project_specs.actor_entrypoint, \
+                        actor_project_specs.secret_refs, actor_project_specs.socket_gateway_url) \
                        IS DISTINCT FROM \
                        (EXCLUDED.code_revision, EXCLUDED.image_ref, \
                         EXCLUDED.working_directory, EXCLUDED.actor_entrypoint, EXCLUDED.secret_refs, EXCLUDED.socket_gateway_url)",
@@ -293,7 +293,7 @@ impl AdminRegistry for PostgresAdminRegistry {
             .database
             .query_opt(
                 "SELECT code_revision, image_ref, working_directory, actor_entrypoint, secret_refs, socket_gateway_url \
-                 FROM durable_object_project_specs WHERE namespace_id = $1",
+                 FROM actor_project_specs WHERE namespace_id = $1",
                 &[&namespace_id],
             )
             .await
@@ -410,7 +410,7 @@ mod tests {
 
     #[tokio::test]
     async fn postgres_registration_ensures_the_namespace_and_deployment_atomically() -> Result<()> {
-        let Some(url) = std::env::var("DURABLE_OBJECT_TEST_POSTGRES_URL").ok() else {
+        let Some(url) = std::env::var("LAC_TEST_POSTGRES_URL").ok() else {
             return Ok(());
         };
         let database = PostgresDatabase::connect(&url).await?;
@@ -431,7 +431,7 @@ mod tests {
         );
         let namespace_exists = database
             .query_one(
-                "SELECT EXISTS(SELECT 1 FROM durable_object_namespaces WHERE namespace_id = $1)",
+                "SELECT EXISTS(SELECT 1 FROM actor_namespaces WHERE namespace_id = $1)",
                 &[&deployment.namespace_id],
             )
             .await?
@@ -449,7 +449,7 @@ mod tests {
             code_revision: "revision-1".into(),
             image_ref: image.into(),
             working_directory: "/workspace".into(),
-            actor_entrypoint: Some("src/durable-objects.ts".into()),
+            actor_entrypoint: Some("src/actors.ts".into()),
             secret_refs: vec![],
             socket_gateway_url: None,
         }

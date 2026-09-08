@@ -10,7 +10,7 @@ import (
 )
 
 func TestNamedSecretInSandbox(t *testing.T) {
-	name := os.Getenv("DURABLE_OBJECT_TEST_MODAL_SECRET")
+	name := os.Getenv("LAC_TEST_MODAL_SECRET")
 	if name == "" {
 		t.Skip("requires a throwaway named Modal secret containing DO_QA_SECRET=injected-qa")
 	}
@@ -22,7 +22,7 @@ func TestNamedSecretInSandbox(t *testing.T) {
 	}
 	defer closeClient()
 	sdk := api.(*sdkAPI)
-	app, err := sdk.client.Apps.FromName(ctx, "durable-object-secret-qa", &modal.AppFromNameParams{CreateIfMissing: true})
+	app, err := sdk.client.Apps.FromName(ctx, "little-actors-secret-qa", &modal.AppFromNameParams{CreateIfMissing: true})
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -13,9 +13,9 @@ use crate::{
 
 use super::{ActorJwtVerifier, ControlPlaneService};
 
-const DEFAULT_JWT_ISSUER: &str = "durable-object-control-plane";
-const DEFAULT_AUTHORITY_AUDIENCE: &str = "durable-object-authority";
-const DEFAULT_INVOCATION_AUDIENCE: &str = "durable-object-invoke";
+const DEFAULT_JWT_ISSUER: &str = "little-actors-control-plane";
+const DEFAULT_AUTHORITY_AUDIENCE: &str = "little-actors-authority";
+const DEFAULT_INVOCATION_AUDIENCE: &str = "little-actors-invoke";
 const DEFAULT_JWT_TTL_SECONDS: u64 = 86_400;
 const DEFAULT_ACTOR_IDLE_TIMEOUT_MS: u64 = 60_000;
 const DEFAULT_HOST_IDLE_TIMEOUT_MS: u64 = 300_000;
@@ -68,10 +68,10 @@ pub async fn serve_control_plane(
 ) -> Result<()> {
     let bind = config.bind;
     let routes = control_plane_routes(config).await?;
-    info!(bind = %bind, "durable-object control plane is ready");
+    info!(bind = %bind, "actor control plane is ready");
     let listener = tokio::net::TcpListener::bind(bind)
         .await
-        .context("bind durable-object control plane")?;
+        .context("bind actor control plane")?;
     serve_routes(listener, routes, shutdown).await
 }
 
@@ -83,7 +83,7 @@ async fn serve_routes(
     axum::serve(listener, routes.into_axum_router())
         .with_graceful_shutdown(shutdown)
         .await
-        .context("serve durable-object control plane")
+        .context("serve actor control plane")
 }
 
 async fn control_plane_routes(config: ControlPlaneProcessConfig) -> Result<tonic::service::Routes> {
@@ -162,40 +162,39 @@ fn sandbox_provisioner(
 
 impl ControlPlaneProcessConfig {
     fn from_lookup(mut get: impl FnMut(&str) -> Option<String>) -> Result<Self> {
-        let bind = get("DURABLE_OBJECT_CONTROL_PLANE_BIND")
+        let bind = get("LAC_CONTROL_PLANE_BIND")
             .unwrap_or_else(|| "127.0.0.1:7100".into())
             .parse()
-            .context("DURABLE_OBJECT_CONTROL_PLANE_BIND must be a socket address")?;
-        let jwt_signing_key = required(&mut get, "DURABLE_OBJECT_JWT_SIGNING_KEY")?;
-        let jwt_key_id = get("DURABLE_OBJECT_JWT_KEY_ID").unwrap_or_else(|| "primary".into());
-        let jwt_issuer =
-            get("DURABLE_OBJECT_JWT_ISSUER").unwrap_or_else(|| DEFAULT_JWT_ISSUER.into());
-        let authority_audience = get("DURABLE_OBJECT_AUTHORITY_JWT_AUDIENCE")
-            .unwrap_or_else(|| DEFAULT_AUTHORITY_AUDIENCE.into());
-        let invocation_audience = get("DURABLE_OBJECT_INVOKE_JWT_AUDIENCE")
-            .unwrap_or_else(|| DEFAULT_INVOCATION_AUDIENCE.into());
+            .context("LAC_CONTROL_PLANE_BIND must be a socket address")?;
+        let jwt_signing_key = required(&mut get, "LAC_JWT_SIGNING_KEY")?;
+        let jwt_key_id = get("LAC_JWT_KEY_ID").unwrap_or_else(|| "primary".into());
+        let jwt_issuer = get("LAC_JWT_ISSUER").unwrap_or_else(|| DEFAULT_JWT_ISSUER.into());
+        let authority_audience =
+            get("LAC_AUTHORITY_JWT_AUDIENCE").unwrap_or_else(|| DEFAULT_AUTHORITY_AUDIENCE.into());
+        let invocation_audience =
+            get("LAC_INVOKE_JWT_AUDIENCE").unwrap_or_else(|| DEFAULT_INVOCATION_AUDIENCE.into());
         let jwt_max_lifetime = Duration::from_secs(
-            get("DURABLE_OBJECT_JWT_MAX_TTL_SECONDS")
+            get("LAC_JWT_MAX_TTL_SECONDS")
                 .map(|value| value.parse())
                 .transpose()
-                .context("DURABLE_OBJECT_JWT_MAX_TTL_SECONDS must be an integer")?
+                .context("LAC_JWT_MAX_TTL_SECONDS must be an integer")?
                 .unwrap_or(DEFAULT_JWT_TTL_SECONDS),
         );
         ensure!(
             !jwt_max_lifetime.is_zero(),
-            "DURABLE_OBJECT_JWT_MAX_TTL_SECONDS must be positive"
+            "LAC_JWT_MAX_TTL_SECONDS must be positive"
         );
-        let api_key = required(&mut get, "DURABLE_OBJECT_API_KEY")?;
+        let api_key = required(&mut get, "LAC_API_KEY")?;
         ensure!(
             api_key.trim() == api_key,
-            "DURABLE_OBJECT_API_KEY has surrounding whitespace"
+            "LAC_API_KEY has surrounding whitespace"
         );
         let standard_buckets: HashMap<String, String> =
-            serde_json::from_str(&required(&mut get, "DURABLE_OBJECT_STANDARD_BUCKETS")?)
-                .context("DURABLE_OBJECT_STANDARD_BUCKETS must be a JSON region-to-bucket map")?;
+            serde_json::from_str(&required(&mut get, "LAC_STANDARD_BUCKETS")?)
+                .context("LAC_STANDARD_BUCKETS must be a JSON region-to-bucket map")?;
         validate_buckets(&standard_buckets)?;
         let storage = ControlPlaneStorageConfig {
-            postgres_url: required(&mut get, "DURABLE_OBJECT_POSTGRES_URL")?,
+            postgres_url: required(&mut get, "LAC_POSTGRES_URL")?,
             standard_buckets,
         };
         let sandbox_provider =
@@ -222,10 +221,10 @@ impl ControlPlaneProcessConfig {
 fn socket_authenticator_config(
     get: &mut impl FnMut(&str) -> Option<String>,
 ) -> Result<Option<SocketAuthenticatorConfig>> {
-    get("DURABLE_OBJECT_SOCKET_AUTH_URL")
+    get("LAC_SOCKET_AUTH_URL")
         .map(|url| {
             Ok(SocketAuthenticatorConfig {
-                url: validated_http_url(&url, "DURABLE_OBJECT_SOCKET_AUTH_URL")?,
+                url: validated_http_url(&url, "LAC_SOCKET_AUTH_URL")?,
             })
         })
         .transpose()
@@ -234,10 +233,10 @@ fn socket_authenticator_config(
 fn socket_event_sink_config(
     get: &mut impl FnMut(&str) -> Option<String>,
 ) -> Result<Option<SocketEventSinkConfig>> {
-    get("DURABLE_OBJECT_SOCKET_EVENT_URL")
+    get("LAC_SOCKET_EVENT_URL")
         .map(|url| {
             Ok(SocketEventSinkConfig {
-                url: validated_http_url(&url, "DURABLE_OBJECT_SOCKET_EVENT_URL")?,
+                url: validated_http_url(&url, "LAC_SOCKET_EVENT_URL")?,
             })
         })
         .transpose()
@@ -248,7 +247,7 @@ fn sandbox_provider_config(
     jwt_issuer: &str,
     invocation_audience: &str,
 ) -> Result<SandboxProviderConfig> {
-    let provider_name = required(get, "DURABLE_OBJECT_SANDBOX_PROVIDER")?;
+    let provider_name = required(get, "LAC_SANDBOX_PROVIDER")?;
     ensure!(
         provider_name == "modal",
         "unsupported sandbox provider {provider_name:?}"
@@ -264,13 +263,12 @@ fn sandbox_provider_config(
         ),
     ]);
     let control_plane_url = validated_http_url(
-        &required(get, "DURABLE_OBJECT_CONTROL_PLANE_URL")?,
-        "DURABLE_OBJECT_CONTROL_PLANE_URL",
+        &required(get, "LAC_CONTROL_PLANE_URL")?,
+        "LAC_CONTROL_PLANE_URL",
     )?;
     Ok(SandboxProviderConfig {
         provider_name,
-        command: get("DURABLE_OBJECT_SANDBOX_COMMAND")
-            .unwrap_or_else(|| "little-durable-objects-modal-go".into()),
+        command: get("LAC_SANDBOX_COMMAND").unwrap_or_else(|| "lac-modal-go".into()),
         environment,
         runtime: HostSandboxRuntimeConfig {
             control_plane_url,
@@ -278,12 +276,12 @@ fn sandbox_provider_config(
             invocation_jwt_audience: invocation_audience.into(),
             actor_idle_timeout_ms: idle_timeout(
                 get,
-                "DURABLE_OBJECT_ACTOR_IDLE_TIMEOUT_MS",
+                "LAC_ACTOR_IDLE_TIMEOUT_MS",
                 DEFAULT_ACTOR_IDLE_TIMEOUT_MS,
             )?,
             host_idle_timeout_ms: idle_timeout(
                 get,
-                "DURABLE_OBJECT_HOST_IDLE_TIMEOUT_MS",
+                "LAC_HOST_IDLE_TIMEOUT_MS",
                 DEFAULT_HOST_IDLE_TIMEOUT_MS,
             )?,
         },
@@ -363,23 +361,14 @@ mod tests {
     #[test]
     fn parses_the_minimal_storage_configuration() -> Result<()> {
         let values = HashMap::from([
-            ("DURABLE_OBJECT_JWT_SIGNING_KEY", "c2lnbmluZw=="),
-            ("DURABLE_OBJECT_API_KEY", "api-key"),
-            ("DURABLE_OBJECT_SANDBOX_PROVIDER", "modal"),
-            (
-                "DURABLE_OBJECT_CONTROL_PLANE_URL",
-                "https://objects.example.com",
-            ),
+            ("LAC_JWT_SIGNING_KEY", "c2lnbmluZw=="),
+            ("LAC_API_KEY", "api-key"),
+            ("LAC_SANDBOX_PROVIDER", "modal"),
+            ("LAC_CONTROL_PLANE_URL", "https://objects.example.com"),
             ("MODAL_TOKEN_ID", "modal-token-id"),
             ("MODAL_TOKEN_SECRET", "modal-token-secret"),
-            (
-                "DURABLE_OBJECT_POSTGRES_URL",
-                "postgresql://localhost/actors",
-            ),
-            (
-                "DURABLE_OBJECT_STANDARD_BUCKETS",
-                "{\"us-east\":\"actor-state-test\"}",
-            ),
+            ("LAC_POSTGRES_URL", "postgresql://localhost/actors"),
+            ("LAC_STANDARD_BUCKETS", "{\"us-east\":\"actor-state-test\"}"),
         ]);
         let config = ControlPlaneProcessConfig::from_lookup(|name| {
             values.get(name).map(|value| (*value).into())
@@ -394,15 +383,13 @@ mod tests {
 
     #[test]
     fn configures_socket_events_without_a_separate_key() -> Result<()> {
-        let mut complete = HashMap::from([(
-            "DURABLE_OBJECT_SOCKET_EVENT_URL",
-            "https://api.example.com/events",
-        )]);
+        let mut complete =
+            HashMap::from([("LAC_SOCKET_EVENT_URL", "https://api.example.com/events")]);
         let sink =
             socket_event_sink_config(&mut |name| complete.get(name).map(|value| (*value).into()))?
                 .context("socket event sink was not configured")?;
         assert_eq!(sink.url, "https://api.example.com/events");
-        complete.remove("DURABLE_OBJECT_SOCKET_EVENT_URL");
+        complete.remove("LAC_SOCKET_EVENT_URL");
         assert!(
             socket_event_sink_config(&mut |name| complete.get(name).map(|value| (*value).into()))?
                 .is_none()
@@ -412,16 +399,14 @@ mod tests {
 
     #[test]
     fn configures_socket_authorization_without_a_separate_key() -> Result<()> {
-        let mut complete = HashMap::from([(
-            "DURABLE_OBJECT_SOCKET_AUTH_URL",
-            "https://api.example.com/authorize",
-        )]);
+        let mut complete =
+            HashMap::from([("LAC_SOCKET_AUTH_URL", "https://api.example.com/authorize")]);
         let auth = socket_authenticator_config(&mut |name| {
             complete.get(name).map(|value| (*value).into())
         })?
         .context("socket authenticator was not configured")?;
         assert_eq!(auth.url, "https://api.example.com/authorize");
-        complete.remove("DURABLE_OBJECT_SOCKET_AUTH_URL");
+        complete.remove("LAC_SOCKET_AUTH_URL");
         assert!(
             socket_authenticator_config(&mut |name| complete
                 .get(name)

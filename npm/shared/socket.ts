@@ -17,7 +17,7 @@ interface ActorSocket<Metadata = JsonValue> {
 }
 
 interface ActorBroadcastOptions {
-    readonly except?: ActorSocket | readonly ActorSocket[]
+    readonly exclude?: ActorSocket<unknown> | readonly ActorSocket<unknown>[]
     readonly tags?: readonly string[]
 }
 
@@ -70,7 +70,7 @@ class ActorSocketScope {
         this.effects.push({
             type: "broadcast",
             message: socketMessage(message),
-            except_connection_ids: excludedSocketIds(options.except),
+            exclude_connection_ids: excludedSocketIds(options.exclude),
             tags: options.tags?.map(validateTag) ?? []
         })
     }
@@ -236,9 +236,9 @@ function validateClose(code: number, reason: string): void {
     if (Buffer.byteLength(reason) > 123) throw new ActorProtocolError("socket close reasons must not exceed 123 UTF-8 bytes")
 }
 
-function excludedSocketIds(except: ActorBroadcastOptions["except"]): readonly string[] {
-    if (except === undefined) return []
-    return Array.isArray(except) ? except.map(socket => socket.id) : [(except as ActorSocket).id]
+function excludedSocketIds(exclude: ActorBroadcastOptions["exclude"]): readonly string[] {
+    if (exclude === undefined) return []
+    return Array.isArray(exclude) ? exclude.map(socket => socket.id) : [(exclude as ActorSocket<unknown>).id]
 }
 
 export { actorConnections, broadcastActor, decodeSocketMessage, runWithActorSockets, socketMessage }

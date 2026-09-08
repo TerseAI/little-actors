@@ -12,11 +12,11 @@ import (
 )
 
 const (
-	appName      = "durable-object-hosts"
-	routeFile    = "/tmp/durable-object-route"
-	metadataFile = "/tmp/durable-object-host.json"
-	readyFile    = "/tmp/durable-object-ready"
-	stderrFile   = "/tmp/durable-object-host.stderr"
+	appName      = "little-actors-hosts"
+	routeFile    = "/tmp/little-actors-route"
+	metadataFile = "/tmp/little-actors-host.json"
+	readyFile    = "/tmp/little-actors-ready"
+	stderrFile   = "/tmp/little-actors-host.stderr"
 )
 
 type modalAPI interface {
@@ -171,7 +171,7 @@ func (p *provider) activate(ctx context.Context, sb sandbox, request ensureReque
 		return hostHandle{}, err
 	}
 	if route == "" {
-		return hostHandle{}, fmt.Errorf("Modal did not create the durable-object HTTP/2 tunnel")
+		return hostHandle{}, fmt.Errorf("Modal did not create the actor HTTP/2 tunnel")
 	}
 	if err := sb.WriteFile(ctx, routeFile, route); err != nil {
 		return hostHandle{}, err
@@ -234,7 +234,7 @@ func hostParams(request ensureRequest) (*modal.SandboxCreateParams, error) {
 	return &modal.SandboxCreateParams{
 		Name:    resourceName(request.NamespaceID, request.CodeRevision, request.CanonicalRegion),
 		Timeout: 24 * time.Hour, IdleTimeout: time.Duration(request.HostIdleTimeoutMS) * time.Millisecond,
-		Command: []string{"sh", "-c", bootstrap, "durable-object-host-bootstrap", "/usr/local/bin/little-durable-objects", stderrFile, readyFile},
+		Command: []string{"sh", "-c", bootstrap, "little-actors-host-bootstrap", "/usr/local/bin/lac", stderrFile, readyFile},
 		Workdir: request.WorkingDirectory, Env: hostEnvironment(request), H2Ports: []int{7101},
 		ReadinessProbe: probe, Regions: []string{region}, Cloud: modalCloud(request.CanonicalRegion),
 	}, nil
@@ -248,7 +248,7 @@ func readinessFailure(sb sandbox, cause error) error {
 	if detail == "" {
 		detail = cause.Error()
 	}
-	return fmt.Errorf("durable-object host did not become ready: %s", detail)
+	return fmt.Errorf("actor host did not become ready: %s", detail)
 }
 
 func terminateForCleanup(sb sandbox) {

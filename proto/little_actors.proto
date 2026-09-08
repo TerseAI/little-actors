@@ -1,6 +1,6 @@
 syntax = "proto3";
 
-package durable_object.v1;
+package little_actors.v1;
 
 service ActorHostService {
   rpc Invoke(HostInvokeActorRequest) returns (InvokeActorReply);

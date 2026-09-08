@@ -5,7 +5,7 @@ npm/.test-dist/
 npm/generated/
 target/
 dist-runtime/
-.little-durable-objects/
+.little-actors/
 .artifacts/
 .env
 .env.*
