@@ -68,7 +68,10 @@ WebSockets use the control-plane URL unless `DURABLE_OBJECT_SOCKET_GATEWAY_URL` 
 
 ## Reference
 
-See the complete [CLI reference](https://github.com/TerseAI/little-durable-objects/blob/main/docs/reference/cli.md) and [API reference](https://github.com/TerseAI/little-durable-objects/blob/main/docs/reference/api.md).
+- [CLI reference](https://github.com/TerseAI/little-durable-objects/blob/main/docs/reference/cli.md): commands, options, and environment variables.
+- [TypeScript API reference](https://github.com/TerseAI/little-durable-objects/blob/main/docs/reference/api.md): actors, methods, connections, types, and errors.
+- [HTTP and WebSocket reference](https://github.com/TerseAI/little-durable-objects/blob/main/docs/reference/http.md): deployments, tokens, connections, and callbacks.
+- [Local development](https://github.com/TerseAI/little-durable-objects/blob/main/docs/guides/local-development.md): build and link a source checkout.
 
 ## License
 

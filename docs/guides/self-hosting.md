@@ -64,7 +64,7 @@ docker run --rm --name durable-objects \
 
 For an attached Google service account, omit the credential variable and mount.
 
-Port `7100` serves REST, gRPC, and WebSockets. Use an HTTPS proxy that forwards HTTP/2 and WebSockets. The public URL must be reachable by Modal hosts and clients.
+Port `7100` serves the HTTP API and WebSockets. Use an HTTPS proxy that forwards HTTP/2 and WebSockets. The public URL must be reachable by Modal hosts and clients.
 
 From another terminal, check the public endpoint:
 
@@ -73,7 +73,7 @@ export DURABLE_OBJECT_CONTROL_PLANE_URL='https://objects.example.com'
 curl --fail --silent --show-error "$DURABLE_OBJECT_CONTROL_PLANE_URL/.well-known/jwks.json"
 ```
 
-Expect JSON with a `keys` array. Your first actor call will also exercise gRPC, host provisioning, and storage.
+Expect JSON with a `keys` array. Your first actor call will also exercise host provisioning and storage.
 
 ## 3. Package your actor code
 
@@ -226,4 +226,134 @@ Changing backends or buckets requires a separate state directory; existing actor
 
 WebSockets use the control-plane origin by default. For a separate gateway, set `DURABLE_OBJECT_SOCKET_GATEWAY_URL` for clients and `socketGatewayUrl` in the deployment.
 
-Modal is the built-in cloud provider. Other providers require an implementation of the provider interface.
+The callback request and response formats are documented in the [HTTP reference](../reference/http.md#websocket-callbacks).
+
+## Server configuration
+
+These environment variables configure the hosted server, including [`start`](../reference/cli.md#start-a-hosted-server). Required values must be nonempty. SDK client configuration is documented [separately](../reference/api.md#client-configuration).
+
+### `DURABLE_OBJECT_POSTGRES_URL`
+
+**Required.**
+
+PostgreSQL connection URL.
+
+### `DURABLE_OBJECT_STANDARD_BUCKETS`
+
+**Required.**
+
+Nonempty JSON region-to-bucket map. Region names contain 1–64 lowercase ASCII letters, digits, `.`, `_`, or `-`.
+
+### `DURABLE_OBJECT_API_KEY`
+
+**Required.**
+
+Admin bearer credential; no surrounding whitespace. Also authenticates outgoing WebSocket callbacks.
+
+### `DURABLE_OBJECT_JWT_SIGNING_KEY`
+
+**Required.**
+
+Base64-encoded Ed25519 private key in PKCS#8 format.
+
+### `DURABLE_OBJECT_SANDBOX_PROVIDER`
+
+**Required:** `modal`.
+
+Cloud execution provider.
+
+### `MODAL_TOKEN_ID`
+
+**Required.**
+
+Modal token ID, without surrounding whitespace.
+
+### `MODAL_TOKEN_SECRET`
+
+**Required.**
+
+Modal token secret, without surrounding whitespace.
+
+### `DURABLE_OBJECT_CONTROL_PLANE_URL`
+
+**Required.**
+
+Reachable HTTP(S) server origin.
+
+### `DURABLE_OBJECT_CONTROL_PLANE_BIND`
+
+**Default:** `127.0.0.1:7100`.
+
+Listening IP address and port.
+
+### `DURABLE_OBJECT_JWT_KEY_ID`
+
+**Default:** `primary`.
+
+Signing key identifier.
+
+### `DURABLE_OBJECT_JWT_ISSUER`
+
+**Default:** `durable-object-control-plane`.
+
+Token issuer.
+
+### `DURABLE_OBJECT_AUTHORITY_JWT_AUDIENCE`
+
+**Default:** `durable-object-authority`.
+
+Audience for server authentication.
+
+### `DURABLE_OBJECT_INVOKE_JWT_AUDIENCE`
+
+**Default:** `durable-object-invoke`.
+
+Audience for actor calls.
+
+### `DURABLE_OBJECT_JWT_MAX_TTL_SECONDS`
+
+**Default:** `86400`.
+
+Positive maximum token lifetime; session tokens are additionally capped at 24 hours.
+
+### `DURABLE_OBJECT_ACTOR_IDLE_TIMEOUT_MS`
+
+**Default:** `60000`.
+
+Idle time before an actor may hibernate. Valid range: 1–86400000.
+
+### `DURABLE_OBJECT_HOST_IDLE_TIMEOUT_MS`
+
+**Default:** `300000`.
+
+Idle time before an unused cloud host may stop. Valid range: 1–86400000.
+
+### `DURABLE_OBJECT_SANDBOX_COMMAND`
+
+**Default:** Bundled provider executable.
+
+Override the cloud provider executable when supplying a custom runtime distribution.
+
+### `DURABLE_OBJECT_SOCKET_AUTH_URL`
+
+**Default:** Disabled.
+
+HTTP(S) callback for authorizing external WebSocket connections.
+
+### `DURABLE_OBJECT_SOCKET_EVENT_URL`
+
+**Default:** Disabled.
+
+HTTP(S) callback receiving successfully handled incoming WebSocket messages.
+
+### `GOOGLE_APPLICATION_CREDENTIALS`
+
+**Default:** Google Application Default Credentials discovery.
+
+Path to a service-account credentials file for GCS. An attached Google identity can also supply credentials. See [storage and credentials](#1-configure-storage-and-credentials) for access requirements.
+
+### `RUST_LOG`
+
+**Default:** `info`.
+
+Runtime log filter, for example `warn` or `debug`.

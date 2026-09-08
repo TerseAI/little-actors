@@ -1,168 +1,111 @@
-# CLI reference
+# Command Line Interface
 
-The `little-durable-objects` CLI starts actors, runs TypeScript clients, and issues local credentials. For a complete example, see the [terminal chat tutorial](../../README.md#build-a-chat-room-in-your-terminal). For application code, see the [API reference](api.md).
+The `little-durable-objects` command starts actors, runs TypeScript clients, and issues local credentials. It is installed with the Node.js package. For a complete example, see the [chat tutorial](../../README.md#build-a-chat-room-in-your-terminal).
 
-This reference describes the CLI in this checkout. These commands are not included in the published npm package at version `0.1.24`; use a local checkout until a release includes them.
+This page describes the CLI in this checkout. These commands are not included in npm version `0.1.24`; follow [local development](../guides/local-development.md) to build and link the checkout.
 
-## Contents
-
-- [Use a local checkout](#use-a-local-checkout)
-- [Installation and runtime downloads](#installation-and-runtime-downloads)
-- [Command summary](#command-summary)
-- [`dev`](#dev)
-- [`run`](#run)
-- [`token`](#token)
-- [`start`](#start)
+- [Find your actors](#find-your-actors)
+- [Run the development server](#run-the-development-server)
+- [Run a client](#run-a-client)
+- [Issue a local token](#issue-a-local-token)
+- [Start a hosted server](#start-a-hosted-server)
 - [Environment variables](#environment-variables)
+- [Runtime installation](#runtime-installation)
+- [Help and version](#help-and-version)
 - [Output and exit codes](#output-and-exit-codes)
 - [Troubleshooting](#troubleshooting)
 
-## Use a local checkout
+## Find your actors
 
-Requires Node.js 20+, pnpm, and Rust 1.89+. From the repository root, install dependencies and build the SDK and local runtime:
+The development server looks for `src/durable-objects.ts` in the current directory. The file must exist before startup and export named actor classes. See [actor definitions](api.md#actor) for class and export requirements.
 
-```sh
-pnpm install
-pnpm --dir npm build
-cargo build --locked
-```
-
-In a separate demo directory:
+Select a different project or actor file with `--project` and `--entrypoint`:
 
 ```sh
-mkdir chat-example
-cd chat-example
-npm init -y
-npm pkg set type=module
-npm link /absolute/path/to/little-durable-objects/npm
-mkdir src
+npx little-durable-objects dev --project ./chat-example --entrypoint src/actors.ts
 ```
 
-Link the repository's `npm/` directory, which contains the package and CLI. The repository root is a private workspace, not the installable SDK. `npm link` creates a local package link; it does not publish anything.
+The entrypoint resolves relative to the project. In this example, the server loads `chat-example/src/actors.ts`. The project must have the SDK installed or linked.
 
-Create the actor and client files from the [chat tutorial](../../README.md#build-a-chat-room-in-your-terminal), then start the server from the demo directory:
+## Run the development server
 
 ```sh
-DURABLE_OBJECT_BINARY=/absolute/path/to/little-durable-objects/target/debug/little-durable-objects \
-  npx --no-install little-durable-objects dev
+npx little-durable-objects dev
 ```
 
-The binary override is needed for `dev`: linking the JavaScript package alone does not select a locally built runtime. `--no-install` keeps `npx` from installing a package if the link is missing.
-
-After the ready message, open two more terminals in the demo directory. Run one command per terminal:
-
-```sh
-npx --no-install little-durable-objects run src/chat.ts Alice
-```
-
-```sh
-npx --no-install little-durable-objects run src/chat.ts Bob
-```
-
-`run` and `token` use the running server, so they do not need `DURABLE_OBJECT_BINARY`. Rebuild with `pnpm --dir npm build` after SDK or CLI changes, and with `cargo build --locked` after runtime changes. Restart `dev` after actor changes. The link continues to use the rebuilt package.
-
-## Installation and runtime downloads
-
-For a release that includes the CLI:
-
-```sh
-npm install little-durable-objects
-npx little-durable-objects --help
-```
-
-The package includes the SDK, CLI, and TypeScript execution support. `dev` and `start` download a native runtime matching the installed package version when it is not already cached. Downloads are verified against the release's SHA-256 checksum. `run`, `token`, and help do not download a runtime.
-
-Prebuilt platforms are macOS and Linux on ARM64 and x64. Linux requires glibc 2.35+ and OpenSSL 3, such as Ubuntu 22.04+. Use WSL 2 on Windows. Building from source requires the build tools listed above; a prebuilt release does not require Rust.
-
-The default cache is `~/.cache/little-durable-objects/<version>/<platform>-<arch>/`. Override its root with `DURABLE_OBJECT_CACHE_DIR`, or bypass downloading with `DURABLE_OBJECT_BINARY`.
-
-## Command summary
-
-```text
-little-durable-objects [options] [command]
-```
-
-| Command                            | Purpose                                                   |
-| ---------------------------------- | --------------------------------------------------------- |
-| `dev [options]`                    | Start a local server and register the project's actors.   |
-| `run [options] <script> [args...]` | Run a client using a running local server's credentials.  |
-| `token [options]`                  | Print a local session token.                              |
-| `start`                            | Start the server using self-hosting environment settings. |
-
-| Global option     | Behavior                                    |
-| ----------------- | ------------------------------------------- |
-| `-h`, `--help`    | Print help. Also available on each command. |
-| `-V`, `--version` | Print the npm package version.              |
-
-Invoking the npm CLI without a command prints help. Use `dev --help`, `run --help`, `token --help`, or `start --help` for command help. There is no separate `help` command in the npm CLI.
-
-The native executable supports `dev`, `--help`, and `--version`; `run`, `token`, and `start` are npm CLI commands. Use the npm CLI for the commands in this reference.
-
-## `dev`
-
-```text
-little-durable-objects dev [options]
-```
-
-Starts a server on IPv4 loopback, loads the actor entrypoint, and registers it in the `local` namespace. Keep the command running while using clients. Wait for:
+Starts a server on IPv4 loopback, loads the actor entrypoint, and registers it in the `local` namespace. Keep it running while using clients. Wait for the ready message before connecting:
 
 ```text
 Local actors ready at http://127.0.0.1:7100
 ```
 
-| Option                   | Default                             | Behavior                                                                                                                |
-| ------------------------ | ----------------------------------- | ----------------------------------------------------------------------------------------------------------------------- |
-| `--project <directory>`  | `.`                                 | Project containing the actor code and installed SDK.                                                                    |
-| `--port <number>`        | `7100`                              | Integer from `0` through `65535`. `0` selects an available port.                                                        |
-| `--entrypoint <file>`    | `src/durable-objects.ts`            | Actor file relative to the project. It must exist before startup.                                                       |
-| `--data-dir <directory>` | `<project>/.little-durable-objects` | Persistent local state and connection settings. An explicit relative path is relative to the shell's working directory. |
-| `--storage <backend>`    | `local`                             | `local` saves snapshots on disk; `gcs` saves snapshots in configured GCS buckets.                                       |
-| `-h`, `--help`           | —                                   | Print command help.                                                                                                     |
+Local mode needs no cloud credentials, database URL, bucket, or signing key. SQLite metadata and snapshots are saved in `.little-durable-objects/` by default.
 
-```sh
-npx little-durable-objects dev --project ./chat-example --port 7200
-npx little-durable-objects dev --entrypoint src/actors.ts --data-dir ./chat-state
-npx little-durable-objects dev --port 0
+### dev options
+
+```text
+little-durable-objects dev [options]
 ```
 
-The printed origin includes the selected port. `run` and `token` read it automatically, including when `--port 0` is used.
+- `--project <directory>` — Project containing the actor code and installed SDK. Defaults to `.`.
+- `--entrypoint <file>` — Actor file relative to the project. Defaults to `src/durable-objects.ts`.
+- `--port <number>` — Loopback port, an integer from `0` through `65535`. Defaults to `7100`; `0` selects an available port.
+- `--data-dir <directory>` — Persistent state and connection settings. Defaults to `<project>/.little-durable-objects`. An explicit relative path resolves from the shell's working directory.
+- `--storage <backend>` — Snapshot storage, either `local` (default) or `gcs`. Local metadata stays in the data directory for both backends.
+- `-h`, `--help` — Print command help.
 
-### State and restarts
+### Choose a port
 
-With `--storage local`, the state directory holds both local metadata and saved actor state. Keep the whole directory to preserve actors across restarts. Only one `dev` process can use a data directory at a time; separate projects can run with different data directories and ports.
+```sh
+npx little-durable-objects dev --port 7200
+```
 
-Connection settings in the directory are refreshed at startup. Local credentials change when the server restarts, so rerun clients and regenerate any manually copied tokens. Stop with Ctrl-C. Code changes require restarting `dev`; there is no file watcher.
+Use `--port 0` to select an available port. The ready message prints the selected origin; `run` and `token` read it automatically from the data directory.
 
-Local storage is intended for development. Deleting the directory or losing its machine loses the saved actors. A fresh data directory starts a fresh local environment.
+### Keep state across restarts
 
-### GCS snapshots
+```sh
+npx little-durable-objects dev --data-dir ./chat-state
+```
+
+Keep the entire data directory to preserve actors across restarts. Only one `dev` process can use it at a time. Separate projects can run with different data directories and ports.
+
+Stop with Ctrl-C. Actor code changes require restarting `dev`; there is no file watcher. Connection settings and local credentials are refreshed at startup, so rerun clients and regenerate manually copied tokens after restarting.
+
+Local storage is intended for development. Deleting the directory or losing its machine loses the saved actors. A fresh directory starts a fresh local environment.
+
+### Save snapshots in GCS
 
 ```sh
 export DURABLE_OBJECT_STANDARD_BUCKETS='{"north-america-east":"my-actor-state-bucket"}'
-export GOOGLE_APPLICATION_CREDENTIALS=/absolute/path/to/service-account.json
+export GOOGLE_APPLICATION_CREDENTIALS='/absolute/path/to/service-account.json'
 npx little-durable-objects dev --storage gcs --data-dir .gcs-demo
 ```
 
-GCS mode uses Google Application Default Credentials and requires a nonempty region-to-bucket map. Bucket values are names without `gs://` or slashes. Local metadata still lives in the data directory; preserve it even when snapshots are in GCS.
+GCS mode uses Google Application Default Credentials and a nonempty region-to-bucket map. Bucket values are names without `gs://` or slashes. Local metadata still lives in the data directory and must be preserved.
 
-Use a separate data directory when changing the storage backend or bucket map. Startup rejects a changed storage configuration for an existing directory. See [local execution with GCS](../guides/self-hosting.md#local-execution-with-gcs) for credentials and storage setup.
+Changing the storage backend or bucket map requires a separate data directory; startup rejects a changed configuration for an existing directory. See [local execution with GCS](../guides/self-hosting.md#local-execution-with-gcs) for storage and credential setup.
 
-## `run`
+## Run a client
+
+```sh
+npx little-durable-objects run src/chat.ts Alice
+```
+
+Runs a TypeScript or JavaScript client in Node.js using credentials from the running development server. The script path is relative to the current working directory. The CLI does not change directories or type-check the script.
+
+### run arguments and options
 
 ```text
 little-durable-objects run [options] <script> [args...]
 ```
 
-Runs a TypeScript or JavaScript client in Node.js with credentials from a running `dev` server. The script path is relative to the current working directory. The CLI does not change directories or type-check the script.
+- `<script>` — Required client file to execute.
+- `[args...]` — Arguments passed to the client after its filename. Defaults to no arguments.
+- `--data-dir <directory>` — Directory belonging to the running local server. Defaults to `.little-durable-objects`, relative to the current directory.
+- `-h`, `--help` — Print command help when placed before the script.
 
-| Argument or option       | Default                   | Behavior                                                                            |
-| ------------------------ | ------------------------- | ----------------------------------------------------------------------------------- |
-| `<script>`               | Required                  | Client file to execute.                                                             |
-| `[args...]`              | None                      | Arguments passed to the client after its filename.                                  |
-| `--data-dir <directory>` | `.little-durable-objects` | Directory belonging to the running local server, relative to the current directory. |
-| `-h`, `--help`           | —                         | Print help when placed before the script.                                           |
-
-Put CLI options **before** the script. Everything after the script belongs to the client, including flags named `--help` or `--data-dir`:
+Put CLI options **before** the script. Everything after its filename belongs to the client, including `--help` and `--data-dir`:
 
 ```sh
 npx little-durable-objects run --data-dir ./chat-state src/chat.ts Alice
@@ -171,119 +114,160 @@ npx little-durable-objects run src/client.ts --room lobby --verbose
 
 In the first example, `process.argv[2]` is `Alice`. In the second, the client's arguments start with `--room`.
 
-`run` sets `DURABLE_OBJECT_TOKEN`, `DURABLE_OBJECT_NAMESPACE_ID`, and `DURABLE_OBJECT_CONTROL_PLANE_URL` for the child process. It removes inherited `DURABLE_OBJECT_API_KEY` and `DURABLE_OBJECT_SOCKET_GATEWAY_URL` from that process. Other environment variables are inherited. A token is requested for each invocation; it is not refreshed while the script runs.
+### Connect to the right server
 
-Pass the same data directory used by `dev`. When running from a different directory, use an absolute `--data-dir` path. Hosted clients should use the [SDK environment variables](api.md#client-configuration) instead of this local command.
+Use the same data directory as `dev`. When launching from another directory, pass an absolute `--data-dir` path. `run` requests a new token for each invocation and does not refresh it while the script runs.
 
-## `token`
+The child process receives `DURABLE_OBJECT_TOKEN`, `DURABLE_OBJECT_NAMESPACE_ID`, and `DURABLE_OBJECT_CONTROL_PLANE_URL`. Inherited `DURABLE_OBJECT_API_KEY` and `DURABLE_OBJECT_SOCKET_GATEWAY_URL` are removed from that process; other environment variables are inherited. Standard input, output, and error are inherited, so interactive clients work normally.
+
+For hosted clients, configure the [SDK environment](api.md#client-configuration) and launch the script directly instead of using the local `run` command.
+
+## Issue a local token
+
+```sh
+npx little-durable-objects token
+```
+
+Requests a session token from the running local server. Standard output contains only the token followed by a newline. Errors go to standard error.
+
+### token options
 
 ```text
 little-durable-objects token [options]
 ```
 
-Requests a local session token and prints only the token plus a newline to standard output. The local server must be running.
+- `--data-dir <directory>` — Directory belonging to the running local server. Defaults to `.little-durable-objects`, relative to the current directory.
+- `-h`, `--help` — Print command help.
 
-| Option                   | Default                   | Behavior                                         |
-| ------------------------ | ------------------------- | ------------------------------------------------ |
-| `--data-dir <directory>` | `.little-durable-objects` | Directory belonging to the running local server. |
-| `-h`, `--help`           | —                         | Print command help.                              |
+The requested deadline is one hour in the future. Token issuance adds up to 30 seconds of grace, subject to the server's lifetime cap. Regenerate the token after a server restart.
 
-```sh
-TOKEN="$(npx little-durable-objects token --data-dir ./chat-state)"
-```
+The token permits application access throughout the `local` namespace. It is neither an admin credential nor restricted to one room. See [session tokens](http.md#session-tokens) for scope and expiration rules.
 
-The CLI requests a deadline one hour in the future. Token issuance adds up to 30 seconds of grace, subject to the server's lifetime cap. Use the token promptly and regenerate it after a local server restart. It permits application access throughout the `local` namespace; it is not an admin credential or a room-specific credential.
-
-For a manual connection:
+### Connect with a WebSocket tool
 
 ```sh
+TOKEN="$(npx little-durable-objects token)"
 npx --yes wscat \
-  -c ws://127.0.0.1:7100/v1/namespaces/local/actors/ChatRoom/lobby/websocket \
-  -H "Authorization: Bearer $TOKEN" \
-  -x '{"type":"initialize","metadata":{}}' \
-  -w -1
+    -c ws://127.0.0.1:7100/v1/namespaces/local/actors/ChatRoom/lobby/websocket \
+    -H "Authorization: Bearer $TOKEN" \
+    -x '{"type":"initialize","metadata":{}}' \
+    -w -1
 ```
 
-Use the server's actual port. The [WebSocket reference](api.md#direct-websocket-connections) describes initialization and message formats.
+Use the server's actual port, and pass `--data-dir` to `token` if the server uses a custom directory. The [WebSocket reference](http.md#direct-websocket-connections) describes initialization and message formats.
 
-## `start`
-
-```text
-little-durable-objects start
-```
-
-Starts the packaged server with self-hosting settings from the environment. It takes no positional arguments or command-specific options beyond `-h`/`--help`.
-
-`start` does not initialize a local project, register a deployment, or supply development credentials. Configure the database, storage, authentication, and cloud provider first, then register actor code through the [deployment API](api.md#deployments). See the [self-hosting guide](../guides/self-hosting.md) for the full setup.
+## Start a hosted server
 
 ```sh
 npx little-durable-objects start
 ```
 
-The npm CLI defaults `DURABLE_OBJECT_PROCESS_ROLE` to `control_plane` for server commands. Leave it unset for this use.
+Starts the packaged server using self-hosting settings from the environment. It takes no positional arguments or command-specific options beyond `-h` / `--help`.
+
+Configure the database, storage, authentication, and cloud provider using the [self-hosting guide](../guides/self-hosting.md). Every server setting and default is listed under [server configuration](../guides/self-hosting.md#server-configuration). The npm CLI defaults `DURABLE_OBJECT_PROCESS_ROLE` to `control_plane`; leave it unset for this use.
+
+`start` does not initialize a local project, register actor code, or supply development credentials. Register code separately using the [deployment API](http.md#deployments).
 
 ## Environment variables
 
-### CLI and local development
+Local actor processes inherit ordinary application environment variables from the development server process. Hosted server settings are listed in [server configuration](../guides/self-hosting.md#server-configuration); SDK client settings are in [client configuration](api.md#client-configuration).
 
-| Variable                          | Default                           | Use                                                                                                            |
-| --------------------------------- | --------------------------------- | -------------------------------------------------------------------------------------------------------------- |
-| `DURABLE_OBJECT_BINARY`           | Downloaded runtime                | Path to an existing native executable for `dev` or `start`; relative paths resolve from the current directory. |
-| `DURABLE_OBJECT_CACHE_DIR`        | `~/.cache/little-durable-objects` | Runtime download cache root. Ignored when a binary override is set.                                            |
-| `DURABLE_OBJECT_STANDARD_BUCKETS` | Required for GCS                  | JSON object mapping region names to bucket names.                                                              |
-| `GOOGLE_APPLICATION_CREDENTIALS`  | Google ADC discovery              | Service-account credentials file when using GCS. An attached Google identity can also supply ADC.              |
-| `RUST_LOG`                        | `info`                            | Runtime log filter, for example `warn` or `debug`.                                                             |
+### DURABLE_OBJECT_BINARY
 
-Plain `dev --storage local` needs no cloud credentials, bucket, database URL, or signing key. Local actor processes inherit ordinary application environment variables from the server process.
+**Default:** Downloaded runtime.
 
-### Self-hosted server
+Path to an existing native executable used by `dev` and `start`. Relative paths resolve from the current working directory. This bypasses runtime downloads; see [local development](../guides/local-development.md) for building from source.
 
-These configure `start`. Required values must be nonempty.
+### DURABLE_OBJECT_CACHE_DIR
 
-| Variable                                | Default or requirement         | Meaning                                                                                                          |
-| --------------------------------------- | ------------------------------ | ---------------------------------------------------------------------------------------------------------------- |
-| `DURABLE_OBJECT_POSTGRES_URL`           | Required                       | PostgreSQL connection URL.                                                                                       |
-| `DURABLE_OBJECT_STANDARD_BUCKETS`       | Required                       | Nonempty JSON region-to-bucket map. Region names contain 1–64 lowercase ASCII letters, digits, `.`, `_`, or `-`. |
-| `DURABLE_OBJECT_API_KEY`                | Required                       | Admin bearer credential; no surrounding whitespace. Also authenticates outgoing WebSocket callbacks.             |
-| `DURABLE_OBJECT_JWT_SIGNING_KEY`        | Required                       | Base64-encoded Ed25519 private key in PKCS#8 format.                                                             |
-| `DURABLE_OBJECT_SANDBOX_PROVIDER`       | Required: `modal`              | Cloud execution provider.                                                                                        |
-| `MODAL_TOKEN_ID`                        | Required                       | Modal token ID, without surrounding whitespace.                                                                  |
-| `MODAL_TOKEN_SECRET`                    | Required                       | Modal token secret, without surrounding whitespace.                                                              |
-| `DURABLE_OBJECT_CONTROL_PLANE_URL`      | Required                       | Reachable HTTP(S) server origin.                                                                                 |
-| `DURABLE_OBJECT_CONTROL_PLANE_BIND`     | `127.0.0.1:7100`               | Listening IP address and port.                                                                                   |
-| `DURABLE_OBJECT_JWT_KEY_ID`             | `primary`                      | Signing key identifier.                                                                                          |
-| `DURABLE_OBJECT_JWT_ISSUER`             | `durable-object-control-plane` | Token issuer.                                                                                                    |
-| `DURABLE_OBJECT_AUTHORITY_JWT_AUDIENCE` | `durable-object-authority`     | Audience for server authentication.                                                                              |
-| `DURABLE_OBJECT_INVOKE_JWT_AUDIENCE`    | `durable-object-invoke`        | Audience for actor calls.                                                                                        |
-| `DURABLE_OBJECT_JWT_MAX_TTL_SECONDS`    | `86400`                        | Positive maximum token lifetime; session tokens are additionally capped at 24 hours.                             |
-| `DURABLE_OBJECT_ACTOR_IDLE_TIMEOUT_MS`  | `60000`                        | Idle time before an actor may hibernate. Valid range: 1–86400000.                                                |
-| `DURABLE_OBJECT_HOST_IDLE_TIMEOUT_MS`   | `300000`                       | Idle time before an unused cloud host may stop. Valid range: 1–86400000.                                         |
-| `DURABLE_OBJECT_SANDBOX_COMMAND`        | Bundled provider executable    | Override the cloud provider executable when supplying a custom runtime distribution.                             |
-| `DURABLE_OBJECT_SOCKET_AUTH_URL`        | Disabled                       | HTTP(S) callback for authorizing external WebSocket connections.                                                 |
-| `DURABLE_OBJECT_SOCKET_EVENT_URL`       | Disabled                       | HTTP(S) callback receiving successfully handled incoming WebSocket messages.                                     |
+**Default:** `~/.cache/little-durable-objects`.
 
-The callback contracts are in the [API reference](api.md#websocket-callbacks). Client configuration is separate: see [SDK environment variables](api.md#client-configuration).
+Root directory for downloaded runtimes. Ignored when `DURABLE_OBJECT_BINARY` is set.
+
+### DURABLE_OBJECT_STANDARD_BUCKETS
+
+**Required for `--storage gcs`.** JSON object mapping storage regions to bucket names. It is not needed for `--storage local`. See [GCS snapshots](#save-snapshots-in-gcs).
+
+### GOOGLE_APPLICATION_CREDENTIALS
+
+**Default:** Google Application Default Credentials discovery.
+
+Service-account credentials file for GCS. An attached Google identity can also supply credentials.
+
+### RUST_LOG
+
+**Default:** `info`.
+
+Runtime log filter, for example `warn` or `debug`.
+
+## Runtime installation
+
+For a release that includes the CLI:
+
+```sh
+npm install little-durable-objects
+npx little-durable-objects --help
+```
+
+The package includes the SDK, CLI, and TypeScript execution support. `dev` and `start` download a native runtime matching the installed package version if it is not cached. Downloads are verified against the release's SHA-256 checksum; `run`, `token`, and help do not download a runtime.
+
+Prebuilt platforms are macOS and Linux on ARM64 and x64. Linux requires glibc 2.35+ and OpenSSL 3, such as Ubuntu 22.04+. Windows users can run the Linux distribution in WSL 2.
+
+A prebuilt runtime does not require Rust. For source builds, see [local development](../guides/local-development.md#build-the-sdk-and-runtime).
+
+The default cache path is `~/.cache/little-durable-objects/<version>/<platform>-<arch>/`. Override its root with `DURABLE_OBJECT_CACHE_DIR`, or select an existing executable with `DURABLE_OBJECT_BINARY`.
+
+## Help and version
+
+```sh
+npx little-durable-objects --help
+npx little-durable-objects dev --help
+npx little-durable-objects --version
+```
+
+- `-h`, `--help` — Print help. Available on the root command and each subcommand.
+- `-V`, `--version` — Print the npm package version. Available on the root command.
+
+Invoking the npm CLI without a command prints help. There is no separate `help` command. For `run`, place `--help` before the script filename to see CLI help.
+
+The commands on this page use the npm CLI. The native executable supports `dev`, `--help`, and `--version`; `run`, `token`, and `start` are npm CLI commands.
 
 ## Output and exit codes
 
-`dev` writes the ready origin, state directory, and runtime logs. `run` inherits standard input, output, and error, so interactive clients work normally. `token` writes its credential to stdout and errors to stderr. Help and version commands exit successfully.
+`dev` writes the ready origin, state directory, and runtime logs. `run` inherits standard input, output, and error. `token` writes its credential to stdout and errors to stderr; help and version commands exit successfully.
 
-The CLI reports setup and argument errors with a nonzero exit code, normally `1`. `run`, `dev`, and `start` forward the child process's numeric exit code. If the child exits by SIGINT, the CLI reports `130`; another terminating signal maps to `1`. Ctrl-C requests shutdown; it does not erase actor state.
+Setup and argument errors return a nonzero exit code, normally `1`. `run`, `dev`, and `start` forward the child process's numeric exit code. A child terminated by SIGINT maps to `130`; another terminating signal maps to `1`.
+
+Ctrl-C requests shutdown. It does not erase actor state.
 
 ## Troubleshooting
 
-| Symptom                                     | Action                                                                                               |
-| ------------------------------------------- | ---------------------------------------------------------------------------------------------------- |
-| CLI is missing after linking                | Link the repository's `npm/` directory and run `pnpm --dir npm build` in the repository.             |
-| Linked CLI tries to download a release      | Set `DURABLE_OBJECT_BINARY` on the `dev` or `start` command.                                         |
-| Runtime download returns an HTTP error      | Confirm that the installed package version has matching native release assets, or use a local build. |
-| Runtime checksum mismatch                   | Retry the download; do not use the rejected archive.                                                 |
-| `No local runtime found`                    | Start `dev` and pass its data directory to `run` or `token`.                                         |
-| `Cannot reach the local runtime`            | Restart `dev`, wait for the ready message, then rerun the client.                                    |
-| Actor file is missing                       | Create the entrypoint before starting `dev`, or set `--entrypoint`.                                  |
-| Port is unavailable                         | Set a different `--port`, or use `--port 0`.                                                         |
-| Another runtime is using the data directory | Stop that runtime or choose a separate directory.                                                    |
-| Storage configuration changed               | Use a separate `--data-dir` for the new backend or bucket map.                                       |
-| Actor code changes do not appear            | Restart `dev`; rebuild the SDK as well if SDK code changed.                                          |
-| Token stops working after a restart         | Run `token` again or restart the client through `run`.                                               |
-| A client flag is interpreted by the CLI     | Place client flags after the script filename.                                                        |
+### No local runtime found
+
+Start `dev` and use its data directory for `run` or `token`. With a custom directory or a different working directory, pass `--data-dir` explicitly.
+
+### Cannot reach the local runtime
+
+Restart `dev`, wait for the ready message, and rerun the client. Tokens copied before the restart must be regenerated.
+
+### Actor file is missing or changes do not appear
+
+Create the entrypoint before starting `dev`, or select it with `--entrypoint`. Restart `dev` after actor code changes. Rebuild the SDK if you changed its source in a linked checkout.
+
+### Port or data directory is in use
+
+Choose another `--port`, or use `--port 0`. Stop the runtime using the data directory or choose a separate directory.
+
+### Storage configuration changed
+
+Use a separate `--data-dir` for a different backend or bucket map. Existing actors are not migrated by changing these settings.
+
+### Runtime download fails
+
+Confirm that the installed package version has matching native release assets, or use a [local build](../guides/local-development.md). For a checksum mismatch, retry the download; the rejected archive is not usable.
+
+### Client flags are interpreted by the CLI
+
+Place client flags after the script filename. CLI flags belong before it.
+
+For linking or source-build issues, see [local development troubleshooting](../guides/local-development.md#troubleshooting).

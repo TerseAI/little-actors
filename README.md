@@ -2,26 +2,13 @@
 
 Coordinating state across machines adds latency. Traditional protocols such as as [two-phase commit (2PC)](https://arxiv.org/abs/cs/0408036) and [Paxos](https://lamport.azurewebsites.net/pubs/paxos-simple.pdf) introduce a lot of overhead. Actors simplify application updates by giving each piece of state one owner.
 
-## What are actors?
-
-1. An actor is
-2. Different names identify different actors.
-3. Calls to the same actor execute one at a time
-4. Successful calls save state. The runtime restores the state when the actor runs again.
-
-This is helpful for:
-
-- Managing AI agent state
-- Collaborative document editing, like Google Docs
-- Multiplayer game or chat rooms
-
 ## Build a chat room in your terminal
 
 Run two chat clients in separate terminals. Both receive every message, and the room remembers the conversation when you reconnect or restart the server.
 
 Requires **Node.js 20+ and npm**. The CLI downloads the runtime, with SQLite included.
 
-The local CLI is not published yet. To run this checkout, follow [Use a local checkout](docs/reference/cli.md#use-a-local-checkout) and replace the install command below with `npm link /path/to/little-durable-objects/npm`.
+The local CLI is not published yet. To run this checkout, follow [Local development](docs/guides/local-development.md) and replace the install command below with `npm link /path/to/little-durable-objects/npm`.
 
 ### 1. Create a project
 
@@ -114,7 +101,7 @@ npx little-durable-objects run src/chat.ts Bob
 `run` supplies local credentials automatically. Wait for both clients to print the initial state:
 
 ```json
-{"type":"state","state":{"history":[]}}
+{ "type": "state", "state": { "history": [] } }
 ```
 
 Leave both running: each listens for messages and lets you send your own. The client prints incoming data directly, so saved history appears as JSON and live messages appear as text.
@@ -126,7 +113,7 @@ Alice: Hello, Bob!
 Bob: Hey, Alice!
 ```
 
-### 6. Bring the history back
+### 6. See history after you close your terminal
 
 Press Ctrl-C in Bob's terminal, then run his command again:
 
@@ -137,7 +124,7 @@ npx little-durable-objects run src/chat.ts Bob
 Before Bob types anything, his client shows the saved conversation:
 
 ```json
-{"type":"state","state":{"history":["Alice: Hello, Bob!","Bob: Hey, Alice!"]}}
+{ "type": "state", "state": { "history": ["Alice: Hello, Bob!", "Bob: Hey, Alice!"] } }
 ```
 
 To try a full restart, stop both clients and the server with Ctrl-C. Start the server again in terminal 1:
@@ -148,20 +135,15 @@ npx little-durable-objects dev
 
 Wait for the ready line, then rerun Alice's and Bob's commands. Both receive the same history and can keep chatting. The messages live in `.little-durable-objects/`, so keep that directory between runs.
 
-**Local storage is for learning and development.** Losing the machine or deleting the state directory loses your actors.
-
-Use `dev --help` for options, including `--port`, `--entrypoint`, and `--data-dir`. Pass the same `--data-dir` to `dev` and `run`. Restart `dev` after actor code changes. To store snapshots in a bucket, see [local execution with GCS](docs/guides/self-hosting.md#local-execution-with-gcs).
-
-Supported: macOS and Linux, on ARM64 and x64. Linux needs glibc 2.35+ and OpenSSL 3, such as Ubuntu 22.04+. On Windows, use WSL 2.
-
 ## Host it yourself
 
 Follow the [self-hosting guide](docs/guides/self-hosting.md) for configuration and deployment.
 
 ## Reference
 
-- [CLI reference](docs/reference/cli.md): commands, options, local builds, configuration, and troubleshooting.
-- [API reference](docs/reference/api.md): actors, saved state, WebSockets, errors, deployments, and authentication.
+- [CLI reference](docs/reference/cli.md): running actors and clients, command options, and environment variables.
+- [TypeScript API reference](docs/reference/api.md): actor classes, methods, connections, types, and errors.
+- [HTTP and WebSocket reference](docs/reference/http.md): deployments, session tokens, direct connections, and callbacks.
 
 ![Control plane, actor hosts, and persistent storage](docs/llittle-do-diagram.png)
 
