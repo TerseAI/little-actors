@@ -12,7 +12,7 @@ use crate::{
     actor::{
         ActorExecutionResult, ActorExecutor, ActorInvocation, ActorInvocationFailure,
         ActorMethodEviction, ActorMethodInvocation, ActorMethodOutcome, ActorSocketEffect,
-        ActorSocketInvocation, ActorSocketOutcome, validate_socket_effects,
+        ActorSocketInvocation, ActorSocketOutcome, ActorSocketSource, validate_socket_effects,
     },
     control_plane::ControlPlaneClient,
     state_log::StateSnapshot,
@@ -96,6 +96,7 @@ pub(super) struct ActorRuntime {
     executor: Arc<dyn ActorExecutor>,
     commits: Arc<dyn StateCommitAuthority>,
     state: Arc<dyn StateTransport>,
+    sockets: Arc<dyn ActorSocketSource>,
     cached_state: Option<CachedActorState>,
 }
 
@@ -105,12 +106,14 @@ impl ActorRuntime {
         executor: Arc<dyn ActorExecutor>,
         commits: Arc<dyn StateCommitAuthority>,
         state: Arc<dyn StateTransport>,
+        sockets: Arc<dyn ActorSocketSource>,
     ) -> Self {
         Self {
             endpoint,
             executor,
             commits,
             state,
+            sockets,
             cached_state: None,
         }
     }
@@ -266,9 +269,7 @@ impl ActorRuntime {
             });
         }
 
-        let executed = self
-            .execute_method(invocation, cached.state(), Vec::new())
-            .await;
+        let executed = self.execute_method(invocation, cached.state()).await;
         timings.actor_execution_completed_at_ms = Some(timings.elapsed_ms());
         let (result, next_state, effects) = match executed {
             Ok(outcome) => outcome,
@@ -348,8 +349,17 @@ impl ActorRuntime {
         &self,
         invocation: &ActorInvocation,
         state: Option<Arc<Value>>,
-        connections: Vec<crate::actor::ActorSocketConnection>,
     ) -> std::result::Result<(Value, Value, Vec<ActorSocketEffect>), ActorExecutionResult> {
+        let connections = self
+            .sockets
+            .connections(&invocation.actor)
+            .await
+            .map_err(|error| {
+                failed(
+                    "socket_gateway_unavailable",
+                    format!("load actor connections: {error:#}"),
+                )
+            })?;
         let outcome = self
             .executor
             .invoke_shared(

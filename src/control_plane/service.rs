@@ -582,26 +582,43 @@ impl ControlPlaneService {
         actor: ActorKey,
         effects: Vec<ActorSocketEffect>,
     ) -> Result<ControlPlaneCommandReply> {
+        crate::actor::validate_socket_effects(&effects)?;
+        self.authorize_socket_host(principal, &actor).await?;
+        self.sockets.apply(&actor, effects).await;
+        Ok(ControlPlaneCommandReply::Unit)
+    }
+
+    pub(super) async fn socket_connections(
+        &self,
+        principal: &ActorPrincipal,
+        actor: &ActorKey,
+    ) -> Result<Vec<crate::actor::ActorSocketConnection>> {
+        self.authorize_socket_host(principal, actor).await?;
+        Ok(self.sockets.connections(actor).await)
+    }
+
+    async fn authorize_socket_host(
+        &self,
+        principal: &ActorPrincipal,
+        actor: &ActorKey,
+    ) -> Result<()> {
         actor.validate()?;
         ensure!(
             principal.process_role == ActorProcessRole::Host,
-            "socket publisher is not a host"
+            "socket access requires a host"
         );
         ensure!(
-            principal.scope.contains(&actor),
+            principal.scope.contains(actor),
             "actor crossed the host namespace"
         );
-        crate::actor::validate_socket_effects(&effects)?;
         self.require_active_host(principal).await?;
-        let placement = self.current_placement(&actor).await?;
+        let placement = self.current_placement(actor).await?;
         validate_state_owner(
             principal,
             &principal.host_id,
             placement.owner_epoch,
             &placement,
-        )?;
-        self.sockets.apply(&actor, effects).await;
-        Ok(ControlPlaneCommandReply::Unit)
+        )
     }
 
     async fn register_lease(

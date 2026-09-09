@@ -298,6 +298,7 @@ async fn prepare_actor_host(
         executor_connection.executor(),
         control_plane.clone(),
         Arc::new(HttpStateTransport::new()),
+        control_plane.clone(),
     ));
     let lease = Arc::new(HostLeaseMaintainer::new(
         endpoint,

@@ -12,7 +12,9 @@ use tonic::{
 };
 
 use crate::{
-    actor::{ActorKey, ActorSocketEffect, ActorSocketPublisher},
+    actor::{
+        ActorKey, ActorSocketConnection, ActorSocketEffect, ActorSocketPublisher, ActorSocketSource,
+    },
     grpc::proto::actor_control_plane_service_client::ActorControlPlaneServiceClient,
     host::HostId,
     host_leases::{HostLease, HostLeaseRegistry, HostLeaseRequest},
@@ -114,26 +116,24 @@ impl ControlPlaneClient {
 }
 
 #[async_trait]
+impl ActorSocketSource for ControlPlaneClient {
+    async fn connections(&self, actor: &ActorKey) -> Result<Vec<ActorSocketConnection>> {
+        let response = self
+            .socket_request(reqwest::Method::GET, actor, "connections")?
+            .send()
+            .await
+            .context("load actor connections")?
+            .error_for_status()
+            .context("socket gateway rejected connection lookup")?;
+        response.json().await.context("decode actor connections")
+    }
+}
+
+#[async_trait]
 impl ActorSocketPublisher for ControlPlaneClient {
     async fn publish(&self, actor: &ActorKey, effects: Vec<ActorSocketEffect>) -> Result<()> {
-        actor.validate()?;
-        let authorization = self
-            .authorization
-            .read()
-            .map_err(|_| anyhow::anyhow!("actor authorization lock poisoned"))?
-            .to_str()?
-            .to_owned();
-        let url = format!(
-            "{}/v1/namespaces/{}/actors/{}/{}/socket-effects",
-            self.socket_gateway.trim_end_matches('/'),
-            actor.namespace_id,
-            actor.actor_type,
-            actor.actor_id
-        );
         let response = self
-            .http
-            .post(url)
-            .header("authorization", authorization)
+            .socket_request(reqwest::Method::POST, actor, "socket-effects")?
             .json(&serde_json::json!({ "effects": effects }))
             .send()
             .await
@@ -183,6 +183,32 @@ impl HostLeaseRegistry for ControlPlaneClient {
 }
 
 impl ControlPlaneClient {
+    fn socket_request(
+        &self,
+        method: reqwest::Method,
+        actor: &ActorKey,
+        resource: &str,
+    ) -> Result<reqwest::RequestBuilder> {
+        actor.validate()?;
+        let authorization = self
+            .authorization
+            .read()
+            .map_err(|_| anyhow::anyhow!("actor authorization lock poisoned"))?
+            .to_str()?
+            .to_owned();
+        let url = format!(
+            "{}/v1/namespaces/{}/actors/{}/{}/{resource}",
+            self.socket_gateway.trim_end_matches('/'),
+            actor.namespace_id,
+            actor.actor_type,
+            actor.actor_id
+        );
+        Ok(self
+            .http
+            .request(method, url)
+            .header("authorization", authorization))
+    }
+
     async fn execute(&self, command: ControlPlaneCommand) -> Result<ControlPlaneCommandReply> {
         let mut request = Request::new(encode_command(command)?);
         request.set_timeout(CONTROL_PLANE_REQUEST_TIMEOUT);

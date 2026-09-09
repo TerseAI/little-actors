@@ -64,6 +64,8 @@ jobs:
                   cache: pnpm
             - run: pnpm install --frozen-lockfile
             - run: pnpm --dir npm build
+            - name: Test actor method access to gateway connections
+              run: cargo test --locked ordinary_methods_list_and_address_gateway_connections -- --ignored
             - run: cargo build --locked
             - name: Test the local tutorial without cloud services
               env:
