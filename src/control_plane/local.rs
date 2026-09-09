@@ -282,7 +282,8 @@ async fn local_routes(
         issuer.clone(),
         provisioner,
     );
-    let admin = AdminService::new(api_key.to_owned(), database, issuer)?;
+    let admin =
+        AdminService::new(api_key.to_owned(), database, issuer)?.with_default_namespace("local")?;
     let public = public_api::router(service.clone(), admin).merge(storage.routes.clone());
     Ok(tonic::service::Routes::from(public).add_service(service.into_internal_service()))
 }

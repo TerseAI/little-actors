@@ -53,9 +53,9 @@ Declare socket types once on the base class: `class ChatRoom extends Actor<Chatr
 For runtime validation, install `zod@^4` and declare static schemas. Derive types with `z.infer` so schemas and TypeScript share one definition:
 
 ```ts
-import { z } from "zod"
 import { Actor } from "little-actors"
 import type { ActorMessageOf, ActorSocketOf } from "little-actors"
+import { z } from "zod"
 
 const metadata = z.object({ userId: z.string() })
 const incoming = z.object({ type: z.literal("post"), text: z.string().min(1) })
@@ -701,20 +701,15 @@ Actor-side connection state. Import with `import type { ActorSocketState } from 
 Set environment variables before the first remote operation. Configuration is loaded lazily and cached; changing the environment afterward does not reconfigure the existing client. The package root exposes no per-client configuration constructor.
 
 ```sh
-export DURABLE_OBJECT_TOKEN='<session-token>'
-export DURABLE_OBJECT_NAMESPACE_ID='chat-project'
+export DURABLE_OBJECT_API_KEY='<your-api-key>'
 export DURABLE_OBJECT_CONTROL_PLANE_URL='https://objects.example.com'
 ```
 
-Local [`run`](cli.md#run-a-client) supplies these values automatically. Hosted clients receive tokens from a trusted backend using the [session-token API](http.md#session-tokens). Admin keys are backend credentials, not SDK session tokens.
+Local [`run`](cli.md#run-a-client) supplies these values automatically. Keep the API key in trusted backend processes. Mobile and browser clients use the [external WebSocket API](http.md#external-connections).
 
-### DURABLE_OBJECT_TOKEN
+### DURABLE_OBJECT_API_KEY
 
-**Required.** Session token authorizing application operations throughout its namespace. The SDK does not automatically renew it. Separate processes are needed for different SDK configurations.
-
-### DURABLE_OBJECT_NAMESPACE_ID
-
-**Required.** Namespace containing the deployed actors. Must satisfy the [identity rules](#identity).
+**Required for backend access.** The server's API key authorizes deployment management and application operations. The SDK obtains and renews short-lived actor invocation tickets automatically.
 
 ### DURABLE_OBJECT_CONTROL_PLANE_URL
 
@@ -725,3 +720,11 @@ Local [`run`](cli.md#run-a-client) supplies these values automatically. Hosted c
 **Default:** `DURABLE_OBJECT_CONTROL_PLANE_URL`.
 
 Separate HTTP(S) WebSocket gateway origin, with the same origin restrictions. Use `https://sockets.example.com`; the SDK chooses the corresponding WebSocket scheme.
+
+### Advanced credentials and scope
+
+`DURABLE_OBJECT_TOKEN` can replace the API key for delegated execution. Configure exactly one of the two credentials. The SDK does not renew delegated session tokens.
+
+`DURABLE_OBJECT_NAMESPACE_ID` is optional. Without it, the server selects the default application for API-key callers or derives the namespace from a session token. An explicit value must satisfy the [identity rules](#identity) and match the session token's scope when using one.
+
+See [advanced access configuration](../guides/advanced-access.md) for examples and migration of existing namespaces.

@@ -10,7 +10,7 @@ Run two chat clients in separate terminals. Both receive every message, and the 
 
 Requires **Node.js 20+ and npm**. The CLI downloads the runtime, with SQLite included.
 
-The local CLI is available in version `0.1.26` and later. To run a source checkout, follow [Local development](docs/guides/local-development.md).
+Use version `0.1.27` or later for this guide. To run a source checkout, follow [Local development](docs/guides/local-development.md).
 
 ### 1. Create a project
 
@@ -145,13 +145,14 @@ Wait for the ready line, then rerun Alice's and Bob's commands. Both receive the
 
 ## Host it yourself
 
-Follow the [self-hosting guide](docs/guides/self-hosting.md) for configuration and deployment.
+Follow the [self-hosting guide](docs/guides/self-hosting.md) to connect your backend with an API key and deploy your actors.
 
 ## Reference
 
 - [CLI reference](docs/reference/cli.md): running actors and clients, command options, and environment variables.
 - [TypeScript API reference](docs/reference/api.md): actor classes, methods, connections, types, and errors.
-- [HTTP and WebSocket reference](docs/reference/http.md): deployments, session tokens, direct connections, and callbacks.
+- [HTTP and WebSocket reference](docs/reference/http.md): deployments, backend access, WebSockets, and callbacks.
+- [Advanced access configuration](docs/guides/advanced-access.md).
 
 ![Control plane, actor hosts, and persistent storage](docs/architecture.svg)
 

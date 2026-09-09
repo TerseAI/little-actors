@@ -28,6 +28,7 @@ use crate::{
 
 use super::service::ControlPlaneService;
 use super::socket_auth::{SocketAuthorizationError, SocketAuthorizationRequest};
+use super::{admin::AdminService, public_api::ActorPath};
 
 const MAX_CONNECTIONS_PER_ACTOR: usize = 128;
 const MAX_SOCKET_EFFECTS_REQUEST_BYTES: usize = 32 * 1024 * 1024;
@@ -37,6 +38,7 @@ const SOCKET_INITIALIZATION_TIMEOUT: std::time::Duration = std::time::Duration::
 struct SocketServerState {
     service: ControlPlaneService,
     registry: SocketRegistry,
+    admin: AdminService,
 }
 
 #[derive(Clone, Default)]
@@ -64,8 +66,20 @@ enum OutboundMessage {
     Close { code: u16, reason: String },
 }
 
-pub(crate) fn router(service: ControlPlaneService, registry: SocketRegistry) -> Router {
+pub(crate) fn router(
+    service: ControlPlaneService,
+    registry: SocketRegistry,
+    admin: AdminService,
+) -> Router {
     Router::new()
+        .route(
+            "/v1/actors/{actor_type}/{actor_id}/websocket",
+            get(connect_workflow),
+        )
+        .route(
+            "/v1/actors/{actor_type}/{actor_id}/socket-effects",
+            post(apply_effects),
+        )
         .route(
             "/v1/namespaces/{namespace_id}/actors/{actor_type}/{actor_id}/websocket",
             get(connect_workflow),
@@ -76,29 +90,20 @@ pub(crate) fn router(service: ControlPlaneService, registry: SocketRegistry) -> 
             post(apply_effects),
         )
         .layer(DefaultBodyLimit::max(MAX_SOCKET_EFFECTS_REQUEST_BYTES))
-        .with_state(SocketServerState { service, registry })
+        .with_state(SocketServerState {
+            service,
+            registry,
+            admin,
+        })
 }
 
 async fn apply_effects(
     State(state): State<SocketServerState>,
-    Path((namespace_id, actor_type, actor_id)): Path<(String, String, String)>,
+    Path(path): Path<ActorPath>,
     headers: HeaderMap,
     Json(request): Json<ApplyEffectsRequest>,
 ) -> Result<StatusCode, SocketApiError> {
-    let actor = ActorKey {
-        namespace_id,
-        actor_type,
-        actor_id,
-    };
-    actor.validate().map_err(SocketApiError::bad_request)?;
-    let authorization = headers
-        .get(header::AUTHORIZATION)
-        .and_then(|value| value.to_str().ok())
-        .ok_or_else(|| SocketApiError::unauthorized("authorization is required"))?;
-    let principal = state
-        .service
-        .authenticate_workflow(authorization)
-        .map_err(|_| SocketApiError::unauthorized("invalid socket publisher"))?;
+    let (actor, principal) = authenticate_socket(&state, &headers, path)?;
     if principal.process_role == crate::host::ActorProcessRole::Host {
         state
             .service
@@ -107,7 +112,7 @@ async fn apply_effects(
             .map_err(|_| SocketApiError::forbidden("host cannot publish for this actor"))?;
         return Ok(StatusCode::NO_CONTENT);
     }
-    authorize_workflow(&state, &headers, &actor)?;
+    authorize_workflow(&principal, &actor)?;
     validate_socket_effects(&request.effects).map_err(SocketApiError::bad_request)?;
     state.registry.apply(&actor, request.effects).await;
     Ok(StatusCode::NO_CONTENT)
@@ -115,17 +120,12 @@ async fn apply_effects(
 
 async fn connect_workflow(
     State(state): State<SocketServerState>,
-    Path((namespace_id, actor_type, actor_id)): Path<(String, String, String)>,
+    Path(path): Path<ActorPath>,
     headers: HeaderMap,
     upgrade: WebSocketUpgrade,
 ) -> Result<Response, SocketApiError> {
-    let actor = ActorKey {
-        namespace_id,
-        actor_type,
-        actor_id,
-    };
-    actor.validate().map_err(SocketApiError::bad_request)?;
-    let principal = authorize_workflow(&state, &headers, &actor)?;
+    let (actor, principal) = authenticate_socket(&state, &headers, path)?;
+    authorize_workflow(&principal, &actor)?;
     upgrade_socket(
         upgrade,
         state,
@@ -155,8 +155,8 @@ async fn connect_external(
         })
         .await
         .map_err(SocketApiError::from_authorization)?;
-    let principal = ActorPrincipal::for_external_socket(
-        &authorization.actor,
+    let principal = ActorPrincipal::for_application(
+        &authorization.actor.namespace_id,
         authorization.storage_region,
         authorization.expires_at,
     );
@@ -606,20 +606,26 @@ impl SocketRegistry {
     }
 }
 
-fn authorize_workflow(
+fn authenticate_socket(
     state: &SocketServerState,
     headers: &HeaderMap,
-    actor: &ActorKey,
-) -> Result<ActorPrincipal, SocketApiError> {
+    path: ActorPath,
+) -> Result<(ActorKey, ActorPrincipal), SocketApiError> {
     let authorization = headers
         .get(header::AUTHORIZATION)
-        .ok_or_else(|| SocketApiError::unauthorized("actor token is required"))?
+        .ok_or_else(|| SocketApiError::unauthorized("application credential is required"))?
         .to_str()
-        .map_err(|_| SocketApiError::unauthorized("actor token is invalid"))?;
+        .map_err(|_| SocketApiError::unauthorized("application credential is invalid"))?;
     let principal = state
         .service
-        .authenticate_workflow(authorization)
-        .map_err(|_| SocketApiError::unauthorized("actor token was rejected"))?;
+        .authenticate_application(&state.admin, authorization, path.namespace_id.as_deref())
+        .map_err(|_| SocketApiError::unauthorized("application credential was rejected"))?;
+    let actor = path.into_actor(&principal.scope.namespace_id);
+    actor.validate().map_err(SocketApiError::bad_request)?;
+    Ok((actor, principal))
+}
+
+fn authorize_workflow(principal: &ActorPrincipal, actor: &ActorKey) -> Result<(), SocketApiError> {
     if principal.process_role != crate::host::ActorProcessRole::Workflow
         || !principal.scope.contains(actor)
     {
@@ -627,7 +633,7 @@ fn authorize_workflow(
             "workflow token is not valid for this actor",
         ));
     }
-    Ok(principal)
+    Ok(())
 }
 
 fn external_credential(headers: &HeaderMap) -> Option<String> {

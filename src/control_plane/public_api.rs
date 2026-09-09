@@ -24,9 +24,24 @@ struct PublicApiState {
 }
 
 pub(super) fn router(invocations: ControlPlaneService, admin: AdminService) -> Router {
-    let sockets = super::websocket::router(invocations.clone(), invocations.sockets.clone());
+    let sockets = super::websocket::router(
+        invocations.clone(),
+        invocations.sockets.clone(),
+        admin.clone(),
+    );
     Router::new()
         .route("/.well-known/jwks.json", get(jwks))
+        .route(
+            "/v1/deployment",
+            put(register_deployment)
+                .get(get_deployment)
+                .delete(delete_deployment),
+        )
+        .route("/v1/session-scoped-token", post(issue_workflow_token))
+        .route(
+            "/v1/actors/{actor_type}/{actor_id}/target",
+            post(resolve_actor_target),
+        )
         .route(
             "/v1/namespaces/{namespace_id}/deployment",
             put(register_deployment)
@@ -48,14 +63,18 @@ pub(super) fn router(invocations: ControlPlaneService, admin: AdminService) -> R
 
 async fn get_deployment(
     State(state): State<PublicApiState>,
-    Path(namespace_id): Path<String>,
+    Path(path): Path<NamespacePath>,
     headers: HeaderMap,
 ) -> Result<Json<Option<HostLaunchSpec>>, ApiError> {
     authorized_admin(&state.admin, &headers)?;
     Ok(Json(
         state
             .admin
-            .current_deployment(&namespace_id)
+            .current_deployment(
+                path.namespace_id
+                    .as_deref()
+                    .unwrap_or(&state.admin.default_namespace),
+            )
             .await
             .map_err(ApiError::internal)?,
     ))
@@ -63,13 +82,18 @@ async fn get_deployment(
 
 async fn delete_deployment(
     State(state): State<PublicApiState>,
-    Path(namespace_id): Path<String>,
+    Path(path): Path<NamespacePath>,
     headers: HeaderMap,
 ) -> Result<Json<DeploymentReply>, ApiError> {
     authorized_admin(&state.admin, &headers)?;
     let changed = state
         .invocations
-        .delete_deployment(&state.admin, &namespace_id)
+        .delete_deployment(
+            &state.admin,
+            path.namespace_id
+                .as_deref()
+                .unwrap_or(&state.admin.default_namespace),
+        )
         .await
         .map_err(ApiError::internal)?;
     Ok(Json(DeploymentReply { changed }))
@@ -77,13 +101,15 @@ async fn delete_deployment(
 
 async fn register_deployment(
     State(state): State<PublicApiState>,
-    Path(namespace_id): Path<String>,
+    Path(path): Path<NamespacePath>,
     headers: HeaderMap,
     Json(request): Json<RegisterDeploymentRequest>,
 ) -> Result<Json<DeploymentReply>, ApiError> {
     authorized_admin(&state.admin, &headers)?;
     let spec = HostLaunchSpec {
-        namespace_id,
+        namespace_id: path
+            .namespace_id
+            .unwrap_or_else(|| state.admin.default_namespace.clone()),
         code_revision: request.code_revision,
         image_ref: request.image_ref,
         working_directory: request.working_directory,
@@ -104,11 +130,15 @@ async fn register_deployment(
 
 async fn issue_workflow_token(
     State(state): State<PublicApiState>,
-    Path(namespace_id): Path<String>,
+    Path(path): Path<NamespacePath>,
     headers: HeaderMap,
     Json(request): Json<IssueWorkflowTokenRequest>,
 ) -> Result<Json<IssueWorkflowTokenReply>, ApiError> {
     authorized_admin(&state.admin, &headers)?;
+    let namespace_id = path
+        .namespace_id
+        .as_deref()
+        .unwrap_or(&state.admin.default_namespace);
     if request.execution_id.is_empty() || request.execution_id.len() > 255 {
         return Err(ApiError::bad_request("workflow execution ID is invalid"));
     }
@@ -117,7 +147,7 @@ async fn issue_workflow_token(
     }
     if !state
         .admin
-        .deployment_exists(&namespace_id)
+        .deployment_exists(namespace_id)
         .await
         .map_err(ApiError::internal)?
     {
@@ -126,7 +156,7 @@ async fn issue_workflow_token(
     let issued = state
         .admin
         .issue_workflow_token(
-            &namespace_id,
+            namespace_id,
             &request.execution_id,
             &request.storage_region,
             request.deadline_unix_ms,
@@ -146,7 +176,7 @@ async fn jwks(State(state): State<PublicApiState>) -> Result<Json<Value>, ApiErr
 
 async fn resolve_actor_target(
     State(state): State<PublicApiState>,
-    Path((namespace_id, actor_type, actor_id)): Path<(String, String, String)>,
+    Path(path): Path<ActorPath>,
     headers: HeaderMap,
 ) -> Result<Json<ActorTargetReply>, ApiError> {
     let mut timings = TargetResolutionTimings::new();
@@ -155,15 +185,19 @@ async fn resolve_actor_target(
         .and_then(|value| value.to_str().ok())
         .unwrap_or("")
         .to_owned();
-    let actor = ActorKey {
-        namespace_id,
-        actor_type,
-        actor_id,
-    };
+    let principal = state
+        .invocations
+        .authenticate_application(
+            &state.admin,
+            authorization(&headers)?,
+            path.namespace_id.as_deref(),
+        )
+        .map_err(|_| ApiError::unauthorized("application credential was rejected"))?;
+    let actor = path.into_actor(&principal.scope.namespace_id);
     let result: Result<Json<ActorTargetReply>, ApiError> = async {
         actor.validate().map_err(ApiError::bad_request)?;
         timings.request_validated_at_ms = Some(timings.elapsed_ms());
-        let principal = authorized_workflow(&state.invocations, &headers, &actor)?;
+        authorize_actor(&principal, &actor)?;
         timings.workflow_authenticated_at_ms = Some(timings.elapsed_ms());
         let target = state
             .invocations
@@ -173,6 +207,7 @@ async fn resolve_actor_target(
                 ApiError::unavailable(format!("actor host is unavailable: {error:#}"))
             })?;
         Ok(Json(ActorTargetReply {
+            namespace_id: actor.namespace_id.clone(),
             route: target.route,
             token: target.token,
             owner_epoch: target.owner_epoch,
@@ -232,23 +267,43 @@ async fn resolve_actor_target(
     result
 }
 
-fn authorized_workflow(
-    service: &ControlPlaneService,
-    headers: &HeaderMap,
+fn authorize_actor(
+    principal: &super::auth::ActorPrincipal,
     actor: &ActorKey,
-) -> Result<super::auth::ActorPrincipal, ApiError> {
-    let principal = service
-        .authenticate_workflow(authorization(headers)?)
-        .map_err(|_| ApiError::unauthorized("workflow token was rejected"))?;
+) -> Result<(), ApiError> {
     if principal.process_role != ActorProcessRole::Workflow {
-        return Err(ApiError::forbidden("credential is not a workflow token"));
+        return Err(ApiError::forbidden(
+            "credential cannot call application actors",
+        ));
     }
     if !principal.scope.contains(actor) {
         return Err(ApiError::forbidden(
             "workflow token cannot cross namespace scope",
         ));
     }
-    Ok(principal)
+    Ok(())
+}
+
+#[derive(Deserialize)]
+struct NamespacePath {
+    namespace_id: Option<String>,
+}
+
+#[derive(Deserialize)]
+pub(super) struct ActorPath {
+    pub namespace_id: Option<String>,
+    actor_type: String,
+    actor_id: String,
+}
+
+impl ActorPath {
+    pub(super) fn into_actor(self, namespace_id: &str) -> ActorKey {
+        ActorKey {
+            namespace_id: self.namespace_id.unwrap_or_else(|| namespace_id.to_owned()),
+            actor_type: self.actor_type,
+            actor_id: self.actor_id,
+        }
+    }
 }
 
 fn authorized_admin(admin: &AdminService, headers: &HeaderMap) -> Result<(), ApiError> {
@@ -307,6 +362,7 @@ struct IssueWorkflowTokenReply {
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 struct ActorTargetReply {
+    namespace_id: String,
     route: String,
     token: String,
     owner_epoch: u64,

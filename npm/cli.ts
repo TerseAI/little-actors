@@ -60,24 +60,20 @@ async function runRuntime(args: string[]): Promise<number> {
 }
 
 async function runClient(script: string, args: string[], directory: string): Promise<number> {
-    const { connection, token } = await localSession(directory)
+    const connection = await localConnection(directory)
     const environment: NodeJS.ProcessEnv = {
         ...process.env,
-        DURABLE_OBJECT_TOKEN: token,
-        DURABLE_OBJECT_NAMESPACE_ID: connection.namespaceId,
+        DURABLE_OBJECT_API_KEY: connection.apiKey,
         DURABLE_OBJECT_CONTROL_PLANE_URL: connection.controlPlaneUrl
     }
-    delete environment.DURABLE_OBJECT_API_KEY
+    delete environment.DURABLE_OBJECT_TOKEN
+    delete environment.DURABLE_OBJECT_NAMESPACE_ID
     delete environment.DURABLE_OBJECT_SOCKET_GATEWAY_URL
     return runProcess(process.execPath, ["--import", import.meta.resolve("tsx"), script, ...args], environment)
 }
 
 async function localSession(directory: string) {
-    const connection = await readFile(path.resolve(directory, "runtime.json"), "utf8")
-        .then(JSON.parse)
-        .catch(() => {
-            throw new Error("No local runtime found. Start `npx little-actors dev` in this project first; use the same --data-dir for both commands.")
-        })
+    const connection = await localConnection(directory)
     const response = await fetch(`${connection.controlPlaneUrl}/v1/namespaces/${connection.namespaceId}/session-scoped-token`, {
         method: "POST",
         headers: { authorization: `Bearer ${connection.apiKey}`, "content-type": "application/json" },
@@ -89,6 +85,14 @@ async function localSession(directory: string) {
     if (!response.ok) throw new Error(`Local runtime could not issue a client token (HTTP ${response.status}). Restart it and try again.`)
     const { token } = (await response.json()) as { token: string }
     return { connection, token }
+}
+
+async function localConnection(directory: string) {
+    return readFile(path.resolve(directory, "runtime.json"), "utf8")
+        .then(JSON.parse)
+        .catch(() => {
+            throw new Error("No local runtime found. Start `npx little-actors dev` in this project first; use the same --data-dir for both commands.")
+        })
 }
 
 async function version(): Promise<string> {

@@ -116,6 +116,29 @@ impl ControlPlaneService {
         self.auth.authenticate_authorization(authorization)
     }
 
+    pub(super) fn authenticate_application(
+        &self,
+        admin: &AdminService,
+        authorization: &str,
+        namespace_id: Option<&str>,
+    ) -> Result<ActorPrincipal> {
+        if admin.authenticate(authorization).is_err() {
+            return self.authenticate_workflow(authorization);
+        }
+        let mut regions = self.storage_urls.regions();
+        regions.sort();
+        let region = regions
+            .iter()
+            .find(|region| region.as_str() == FALLBACK_REGION)
+            .or_else(|| regions.first())
+            .context("no storage region is configured")?;
+        Ok(ActorPrincipal::for_application(
+            namespace_id.unwrap_or(&admin.default_namespace),
+            region.clone(),
+            i64::MAX,
+        ))
+    }
+
     pub(super) async fn authorize_socket(
         &self,
         request: super::socket_auth::SocketAuthorizationRequest,
@@ -1786,15 +1809,19 @@ mod tests {
 
     #[async_trait]
     impl HostProvisioner for FakeRoutingProvisioner {
-        async fn ensure_host(&self, _spec: &HostLaunchSpec, region: &str) -> Result<HostLease> {
+        async fn ensure_host(&self, spec: &HostLaunchSpec, region: &str) -> Result<HostLease> {
             self.calls.lock().unwrap().push(region.to_owned());
             ensure!(
                 !self.failed_regions.contains(&region),
                 "host unavailable in {region}"
             );
             Ok(HostLease {
-                id: HostId::new(format!("host.v1.project.revision.{region}")),
-                session_id: "session".into(),
+                id: HostId::new(format!(
+                    "host.v1.{}.{}.{region}",
+                    spec.namespace_id,
+                    spec.host_revision()
+                )),
+                session_id: uuid::Uuid::new_v4().to_string(),
                 route: "https://host.example.com".into(),
                 expires_at_ms: u64::MAX,
             })
@@ -1913,6 +1940,127 @@ mod tests {
                 assert_eq!(placements.get(&actor.storage_key()).await?, before);
             }
         }
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn api_key_access_defaults_to_one_application_and_preserves_delegation() -> Result<()> {
+        let issuer = test_issuer()?;
+        let auth = ActorJwtVerifier::for_scope(
+            issuer.verifier_keys_json()?,
+            "issuer",
+            "authority",
+            ActorTokenPurpose::ControlPlane,
+            Duration::from_secs(60),
+        )?;
+        let registry = Arc::new(LocalAdminRegistry::default());
+        let admin = AdminService::new("api-key".into(), registry.clone(), issuer.clone())?;
+        let service = ControlPlaneService::new(
+            Arc::new(FakeLeaseStore {
+                leases: Mutex::new(HashMap::new()),
+            }),
+            Arc::new(LocalObjectPlacementStore::default()),
+            Arc::new(FakeStorageUrls(&["north-america-east"])),
+            auth,
+            registry,
+            issuer.clone(),
+            Arc::new(FakeRoutingProvisioner {
+                failed_regions: vec![],
+                calls: Mutex::new(vec![]),
+            }),
+        );
+        let routes = super::super::public_api::router(service, admin);
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+        let origin = format!("http://{}", listener.local_addr()?);
+        let server = tokio::spawn(async { axum::serve(listener, routes).await });
+        let client = reqwest::Client::new();
+        let deployment = serde_json::json!({ "codeRevision": "revision", "imageRef": "image", "workingDirectory": "/app" });
+        let registered = client
+            .put(format!("{origin}/v1/deployment"))
+            .bearer_auth("api-key")
+            .json(&deployment)
+            .send()
+            .await?;
+        assert_eq!(registered.status(), reqwest::StatusCode::OK);
+        for suffix in ["target", "socket-effects"] {
+            let url = format!("{origin}/v1/actors/Counter/one/{suffix}");
+            for key in ["", "wrong-key"] {
+                assert_eq!(
+                    client
+                        .post(&url)
+                        .bearer_auth(key)
+                        .json(&serde_json::json!({"effects":[]}))
+                        .send()
+                        .await?
+                        .status(),
+                    reqwest::StatusCode::UNAUTHORIZED
+                );
+            }
+        }
+        let target: serde_json::Value = client
+            .post(format!("{origin}/v1/actors/Counter/one/target"))
+            .bearer_auth("api-key")
+            .send()
+            .await?
+            .error_for_status()?
+            .json()
+            .await?;
+        assert_eq!(target["namespaceId"], "default");
+        assert_ne!(target["token"], "api-key");
+        assert_eq!(
+            client
+                .post(format!("{origin}/v1/actors/Counter/one/socket-effects"))
+                .bearer_auth("api-key")
+                .json(&serde_json::json!({"effects":[]}))
+                .send()
+                .await?
+                .status(),
+            reqwest::StatusCode::NO_CONTENT
+        );
+        client
+            .put(format!("{origin}/v1/namespaces/customer/deployment"))
+            .bearer_auth("api-key")
+            .json(&deployment)
+            .send()
+            .await?
+            .error_for_status()?;
+        let deadline = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)?
+            .as_millis() as i64
+            + 30_000;
+        let token = issuer
+            .issue_workflow("customer", "execution", "north-america-east", deadline)?
+            .token;
+        let delegated: serde_json::Value = client
+            .post(format!("{origin}/v1/actors/Counter/one/target"))
+            .bearer_auth(&token)
+            .send()
+            .await?
+            .error_for_status()?
+            .json()
+            .await?;
+        assert_eq!(delegated["namespaceId"], "customer");
+        assert_eq!(
+            client
+                .post(format!(
+                    "{origin}/v1/namespaces/default/actors/Counter/one/target"
+                ))
+                .bearer_auth(&token)
+                .send()
+                .await?
+                .status(),
+            reqwest::StatusCode::FORBIDDEN
+        );
+        assert_eq!(
+            client
+                .get(format!("{origin}/v1/deployment"))
+                .bearer_auth(&token)
+                .send()
+                .await?
+                .status(),
+            reqwest::StatusCode::UNAUTHORIZED
+        );
+        server.abort();
         Ok(())
     }
 

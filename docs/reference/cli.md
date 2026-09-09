@@ -1,16 +1,16 @@
 # Command Line Interface
 
-The `little-actors` command starts actors, runs TypeScript clients, and issues local credentials. It is installed with the Node.js package. For a complete example, see the [chat tutorial](../../README.md#build-a-chat-room-in-your-terminal).
+The `little-actors` command starts actors and runs TypeScript clients. It is installed with the Node.js package. For a complete example, see the [chat tutorial](../../README.md#build-a-chat-room-in-your-terminal).
 
-These commands require npm version `0.1.26` or later. Follow [local development](../guides/local-development.md) to build and link a source checkout.
+This reference describes npm version `0.1.27` and later. Follow [local development](../guides/local-development.md) to build and link a source checkout.
 
 - [Find your actors](#find-your-actors)
 - [Run the development server](#run-the-development-server)
 - [Run a client](#run-a-client)
-- [Issue a local token](#issue-a-local-token)
 - [Start a hosted server](#start-a-hosted-server)
 - [Environment variables](#environment-variables)
 - [Runtime installation](#runtime-installation)
+- [Issue a local token](#issue-a-local-token)
 - [Help and version](#help-and-version)
 - [Output and exit codes](#output-and-exit-codes)
 - [Troubleshooting](#troubleshooting)
@@ -33,7 +33,7 @@ The entrypoint resolves relative to the project. In this example, the server loa
 npx little-actors dev
 ```
 
-Starts a server on IPv4 loopback, loads the actor entrypoint, and registers it in the `local` namespace. Keep it running while using clients. Wait for the ready message before connecting:
+Starts a server on IPv4 loopback, loads the actor entrypoint, and registers your actors. Keep it running while using clients. Wait for the ready message before connecting:
 
 ```text
 Local actors ready at http://127.0.0.1:7100
@@ -116,45 +116,11 @@ In the first example, `process.argv[2]` is `Alice`. In the second, the client's 
 
 ### Connect to the right server
 
-Use the same data directory as `dev`. When launching from another directory, pass an absolute `--data-dir` path. `run` requests a new token for each invocation and does not refresh it while the script runs.
+Use the same data directory as `dev`. When launching from another directory, pass an absolute `--data-dir` path. `run` reads the local API key and server URL without issuing a session token.
 
-The child process receives `DURABLE_OBJECT_TOKEN`, `DURABLE_OBJECT_NAMESPACE_ID`, and `DURABLE_OBJECT_CONTROL_PLANE_URL`. Inherited `DURABLE_OBJECT_API_KEY` and `DURABLE_OBJECT_SOCKET_GATEWAY_URL` are removed from that process; other environment variables are inherited. Standard input, output, and error are inherited, so interactive clients work normally.
+The child process receives `DURABLE_OBJECT_API_KEY` and `DURABLE_OBJECT_CONTROL_PLANE_URL`. Inherited `DURABLE_OBJECT_TOKEN`, `DURABLE_OBJECT_NAMESPACE_ID`, and `DURABLE_OBJECT_SOCKET_GATEWAY_URL` are removed; other environment variables are inherited. Standard input, output, and error are inherited, so interactive clients work normally. Use `run` for trusted development scripts.
 
 For hosted clients, configure the [SDK environment](api.md#client-configuration) and launch the script directly instead of using the local `run` command.
-
-## Issue a local token
-
-```sh
-npx little-actors token
-```
-
-Requests a session token from the running local server. Standard output contains only the token followed by a newline. Errors go to standard error.
-
-### token options
-
-```text
-little-actors token [options]
-```
-
-- `--data-dir <directory>` — Directory belonging to the running local server. Defaults to `.little-actors`, relative to the current directory.
-- `-h`, `--help` — Print command help.
-
-The requested deadline is one hour in the future. Token issuance adds up to 30 seconds of grace, subject to the server's lifetime cap. Regenerate the token after a server restart.
-
-The token permits application access throughout the `local` namespace. It is neither an admin credential nor restricted to one room. See [session tokens](http.md#session-tokens) for scope and expiration rules.
-
-### Connect with a WebSocket tool
-
-```sh
-TOKEN="$(npx little-actors token)"
-npx --yes wscat \
-    -c ws://127.0.0.1:7100/v1/namespaces/local/actors/ChatRoom/lobby/websocket \
-    -H "Authorization: Bearer $TOKEN" \
-    -x '{"type":"initialize","metadata":{}}' \
-    -w -1
-```
-
-Use the server's actual port, and pass `--data-dir` to `token` if the server uses a custom directory. The [WebSocket reference](http.md#direct-websocket-connections) describes initialization and message formats.
 
 ## Start a hosted server
 
@@ -216,6 +182,40 @@ Prebuilt platforms are macOS and Linux on ARM64 and x64. Linux requires glibc 2.
 A prebuilt runtime does not require Rust. For source builds, see [local development](../guides/local-development.md#build-the-sdk-and-runtime).
 
 The default cache path is `~/.cache/little-actors/<version>/<platform>-<arch>/`. Override its root with `DURABLE_OBJECT_CACHE_DIR`, or select an existing executable with `DURABLE_OBJECT_BINARY`.
+
+## Issue a local token
+
+```sh
+npx little-actors token
+```
+
+Requests a session token from the running local server. Standard output contains only the token followed by a newline. Errors go to standard error.
+
+### token options
+
+```text
+little-actors token [options]
+```
+
+- `--data-dir <directory>` — Directory belonging to the running local server. Defaults to `.little-actors`, relative to the current directory.
+- `-h`, `--help` — Print command help.
+
+The requested deadline is one hour in the future. Token issuance adds up to 30 seconds of grace, subject to the server's lifetime cap. Regenerate the token after a server restart.
+
+The token permits application access throughout the `local` namespace. It is neither an admin credential nor restricted to one room. See [session tokens](http.md#session-tokens) for scope and expiration rules.
+
+### Connect with a WebSocket tool
+
+```sh
+TOKEN="$(npx little-actors token)"
+npx --yes wscat \
+    -c ws://127.0.0.1:7100/v1/namespaces/local/actors/ChatRoom/lobby/websocket \
+    -H "Authorization: Bearer $TOKEN" \
+    -x '{"type":"initialize","metadata":{}}' \
+    -w -1
+```
+
+Use the server's actual port, and pass `--data-dir` to `token` if the server uses a custom directory. The [WebSocket reference](http.md#direct-websocket-connections) describes initialization and message formats.
 
 ## Help and version
 

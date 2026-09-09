@@ -9,6 +9,71 @@ import type { ActorConnection } from "../shared/socket.js"
 
 import { RemoteActorClient } from "./remoteClient.js"
 
+test("API-key clients invoke, connect, and broadcast without a namespace or session token", async () => {
+    const requests: string[] = []
+    const client = new RemoteActorClient(undefined, {
+        environment: { DURABLE_OBJECT_API_KEY: "backend-key", DURABLE_OBJECT_CONTROL_PLANE_URL: "https://control.example.com" },
+        telemetry: () => {},
+        fetch: async (url, options) => {
+            requests.push(String(url))
+            assert.equal(new Headers(options?.headers).get("authorization"), "Bearer backend-key")
+            if (String(url).endsWith("socket-effects")) return new Response(null, { status: 204 })
+            return Response.json({
+                namespaceId: "local",
+                route: "https://host.example.com",
+                token: "invocation-ticket",
+                ownerEpoch: 1,
+                stateVersion: 0,
+                stateReadUrl: "",
+                expiresAtMs: 4_000_000_000_000
+            })
+        },
+        actorHost: {
+            async invoke(target, invocation) {
+                assert.equal(target.token, "invocation-ticket")
+                assert.equal(invocation.namespaceId, "local")
+                return { type: "completed", result: 7, effects: [] }
+            }
+        },
+        async connectWebSocket(url, credential) {
+            assert.equal(url, "wss://control.example.com/v1/actors/Counter/one/websocket")
+            assert.equal(credential, "backend-key")
+            return {} as ActorConnection
+        }
+    })
+    assert.equal(await client.invoke("Counter", "one", "increment", []), 7)
+    await client.connect("Counter", "one", {})
+    await client.broadcast("Counter", "one", "updated")
+    assert.deepEqual(requests, ["https://control.example.com/v1/actors/Counter/one/target", "https://control.example.com/v1/actors/Counter/one/socket-effects"])
+})
+
+test("delegated clients can let the server resolve the namespace from their session token", async () => {
+    const client = new RemoteActorClient(undefined, {
+        environment: { DURABLE_OBJECT_TOKEN: "delegated-token", DURABLE_OBJECT_CONTROL_PLANE_URL: "https://control.example.com" },
+        async connectWebSocket(url, credential) {
+            assert.equal(url, "wss://control.example.com/v1/actors/Counter/one/websocket")
+            assert.equal(credential, "delegated-token")
+            return {} as ActorConnection
+        }
+    })
+    await client.connect("Counter", "one", {})
+})
+
+test("clients reject ambiguous API-key and session-token configuration", async () => {
+    const client = new RemoteActorClient(undefined, {
+        environment: {
+            DURABLE_OBJECT_API_KEY: "backend-key",
+            DURABLE_OBJECT_TOKEN: "delegated-token",
+            DURABLE_OBJECT_NAMESPACE_ID: "project",
+            DURABLE_OBJECT_CONTROL_PLANE_URL: "https://control.example.com"
+        },
+        async connectWebSocket() {
+            return {} as ActorConnection
+        }
+    })
+    await assert.rejects(client.connect("Counter", "one", {}), /exactly one/i)
+})
+
 test("target expiry uses real time even when workflow Date.now is frozen", async () => {
     const originalNow = Date.now
     let resolutions = 0

@@ -30,21 +30,20 @@ npx little-actors run src/chat.ts Bob
 
 Once both clients have joined, type a message and press Enter. Both receive it. Reconnect either client to see the saved conversation. The CLI supplies credentials and stores SQLite metadata and snapshots in `.little-actors/`. State survives restarts; losing that directory loses the actors. Restart `dev` after actor code changes.
 
-`dev --help` lists options. `token` prints a one-hour local credential for tools such as `wscat`.
+`dev --help` lists options.
 
-These CLI commands require version `0.1.26` or later.
+These examples use version `0.1.27` or later.
 
 ## Hosted clients
 
 Set these before the first actor call:
 
 ```sh
-export DURABLE_OBJECT_TOKEN='<session-token>'
-export DURABLE_OBJECT_NAMESPACE_ID='my-project'
+export DURABLE_OBJECT_API_KEY='<your-api-key>'
 export DURABLE_OBJECT_CONTROL_PLANE_URL='https://objects.example.com'
 ```
 
-Use a session token issued by your trusted backend. Terse supplies these variables to workflows. The SDK connects to the named actor and calls its methods.
+Keep the API key on your backend, where you check user permissions. The SDK connects to the named actor and calls its methods. Mobile and browser apps use [WebSockets authorized by your backend](https://github.com/TerseAI/little-actors/blob/main/docs/guides/self-hosting.md#websocket-configuration).
 
 See [self-hosting](https://github.com/TerseAI/little-actors/blob/main/docs/guides/self-hosting.md) for deployment and credentials. Runtime distributions bundle the Go provider.
 
@@ -74,8 +73,9 @@ WebSockets use the control-plane URL unless `DURABLE_OBJECT_SOCKET_GATEWAY_URL` 
 
 - [CLI reference](https://github.com/TerseAI/little-actors/blob/main/docs/reference/cli.md): commands, options, and environment variables.
 - [TypeScript API reference](https://github.com/TerseAI/little-actors/blob/main/docs/reference/api.md): actors, methods, connections, types, and errors.
-- [HTTP and WebSocket reference](https://github.com/TerseAI/little-actors/blob/main/docs/reference/http.md): deployments, tokens, connections, and callbacks.
+- [HTTP and WebSocket reference](https://github.com/TerseAI/little-actors/blob/main/docs/reference/http.md): deployments, backend access, connections, and callbacks.
 - [Local development](https://github.com/TerseAI/little-actors/blob/main/docs/guides/local-development.md): build and link a source checkout.
+- [Advanced access configuration](https://github.com/TerseAI/little-actors/blob/main/docs/guides/advanced-access.md).
 
 ## License
 

@@ -13,6 +13,7 @@ import type { JsonValue, SocketEffect } from "../shared/types.js"
 const MAX_MESSAGE_BYTES = 32 * 1024 * 1024
 
 interface ActorHostTarget {
+    readonly namespaceId?: string
     readonly route: string
     readonly token: string
     readonly ownerEpoch: number
