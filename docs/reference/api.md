@@ -132,7 +132,9 @@ The current actor ID, available inside an actor method or lifecycle hook. Readin
 protected readonly connections: readonly ActorSocket<Metadata, Outgoing, Tag>[]
 ```
 
-Connections available during the invocation. Includes the connecting socket during `onConnect` and excludes the disconnected socket during `onDisconnect`. Access outside an invocation raises an `Error`.
+Connections available inside any actor method or lifecycle hook. Includes the connecting socket during `onConnect` and excludes the disconnected socket during `onDisconnect`. Access outside an invocation raises an `Error`.
+
+Ordinary method calls fetch the current connections from the gateway before execution. If the lookup fails, the method does not run.
 
 Socket objects belong to the current invocation and are not saved actor state. Each actor supports up to 128 connections per gateway process.
 
@@ -596,6 +598,7 @@ Server-reported error category. This is an open string, not a closed enum; addit
 | `unauthenticated`    | Session token rejected or access not permitted. HTTP `401` and `403` during method calls map to this code. |
 | `actor_error`        | Actor execution failed, including user exceptions or invalid output.                                       |
 | `resource_exhausted` | Execution resource limit reached.                                                                          |
+| `socket_gateway_unavailable` | The host could not load connections from the gateway. The actor method did not run. |
 | `unavailable`        | Actor could not be reached or made available.                                                              |
 | `outcome_unknown`    | Caller could not confirm the result; the operation may have run and saved state.                           |
 | `invalid_request`    | Invalid request reported by the server.                                                                    |

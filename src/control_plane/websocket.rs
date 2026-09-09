@@ -89,12 +89,30 @@ pub(crate) fn router(
             "/v1/namespaces/{namespace_id}/actors/{actor_type}/{actor_id}/socket-effects",
             post(apply_effects),
         )
+        .route(
+            "/v1/namespaces/{namespace_id}/actors/{actor_type}/{actor_id}/connections",
+            get(list_connections),
+        )
         .layer(DefaultBodyLimit::max(MAX_SOCKET_EFFECTS_REQUEST_BYTES))
         .with_state(SocketServerState {
             service,
             registry,
             admin,
         })
+}
+
+async fn list_connections(
+    State(state): State<SocketServerState>,
+    Path(path): Path<ActorPath>,
+    headers: HeaderMap,
+) -> Result<Json<Vec<ActorSocketConnection>>, SocketApiError> {
+    let (actor, principal) = authenticate_socket(&state, &headers, path)?;
+    state
+        .service
+        .socket_connections(&principal, &actor)
+        .await
+        .map(Json)
+        .map_err(|_| SocketApiError::forbidden("host cannot list connections for this actor"))
 }
 
 async fn apply_effects(
@@ -424,7 +442,7 @@ impl SocketRegistry {
         removed
     }
 
-    async fn connections(&self, actor: &ActorKey) -> Vec<ActorSocketConnection> {
+    pub(super) async fn connections(&self, actor: &ActorKey) -> Vec<ActorSocketConnection> {
         self.entries
             .read()
             .await

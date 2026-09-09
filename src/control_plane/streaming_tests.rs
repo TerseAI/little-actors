@@ -1,7 +1,7 @@
 use super::tests::{FakeLeaseStore, FakeStorageUrls, FakeWarmProvisioner, test_issuer};
 use super::*;
 use crate::{
-    actor::{ActorExecutorListener, ActorSocketPublisher},
+    actor::{ActorExecutorListener, ActorSocketPublisher, ActorSocketSource},
     control_plane::{ActorTokenPurpose, ControlPlaneClient, admin::LocalAdminRegistry},
     grpc::ActorHostGrpcService,
     host::{ActorHost, HostEndpoint},
@@ -19,6 +19,69 @@ use tokio_tungstenite::{
 };
 
 type Socket = WebSocketStream<MaybeTlsStream<tokio::net::TcpStream>>;
+
+#[tokio::test]
+#[ignore = "requires pnpm --dir npm build"]
+async fn ordinary_methods_list_and_address_gateway_connections() -> Result<()> {
+    let mut stack = Stack::start().await?;
+    assert_eq!(
+        stack.invoke("clients", vec![]).await?,
+        serde_json::json!([])
+    );
+    let mut socket = stack.connect().await?;
+    receive(&mut socket).await?;
+    let clients = stack.invoke("clients", vec![]).await?;
+    assert_eq!(clients.as_array().unwrap().len(), 1);
+    assert_eq!(
+        clients[0]["metadata"],
+        serde_json::json!({"name": "member"})
+    );
+    assert_eq!(clients[0]["tags"], serde_json::json!(["member"]));
+    let mut outside = stack.actor.clone();
+    outside.namespace_id = "another-project".into();
+    assert!(stack.publisher.connections(&outside).await.is_err());
+    outside = stack.actor.clone();
+    outside.actor_id = "another-actor".into();
+    assert!(stack.publisher.connections(&outside).await.is_err());
+    let response = reqwest::Client::new()
+        .get(format!(
+            "{}/v1/namespaces/project-1/actors/Counter/counter-1/connections",
+            stack.gateway
+        ))
+        .bearer_auth(&stack.workflow_token)
+        .send()
+        .await?;
+    assert_eq!(response.status(), reqwest::StatusCode::FORBIDDEN);
+    stack
+        .invoke("notifyClient", vec![clients[0]["id"].clone()])
+        .await?;
+    assert_eq!(
+        receive(&mut socket).await?,
+        serde_json::json!({"text": "from method"})
+    );
+    assert_eq!(
+        stack.invoke("clients", vec![]).await?[0]["metadata"]["notified"],
+        true
+    );
+    socket.close(None).await?;
+    tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            if stack.invoke("clients", vec![]).await? == serde_json::json!([]) {
+                return Ok::<_, anyhow::Error>(());
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await??;
+    stack
+        .leases
+        .unregister(&stack.host_id, "00000000-0000-4000-8000-000000000001")
+        .await?;
+    assert!(stack.publisher.connections(&stack.actor).await.is_err());
+    assert!(stack.invoke("clients", vec![]).await.is_err());
+    stack.child.kill().await?;
+    Ok(())
+}
 
 #[tokio::test]
 #[ignore = "requires pnpm --dir npm build; exercises a handler longer than 30 seconds"]
@@ -71,6 +134,7 @@ struct Stack {
     host_id: HostId,
     leases: Arc<FakeLeaseStore>,
     publisher: Arc<ControlPlaneClient>,
+    host: Arc<ActorHost>,
 }
 
 impl Stack {
@@ -164,6 +228,7 @@ impl Stack {
             connection.executor(),
             publisher.clone(),
             Arc::new(MemoryState::default()),
+            publisher.clone(),
         ));
         tasks.spawn(async move {
             let _ = connection
@@ -177,9 +242,10 @@ impl Stack {
             ActorTokenPurpose::Invocation,
             Duration::from_secs(60),
         )?;
+        let serving_host = host.clone();
         tasks.spawn(async move {
             let _ = tonic::transport::Server::builder()
-                .add_service(ActorHostGrpcService::new(host, auth).into_service())
+                .add_service(ActorHostGrpcService::new(serving_host, auth).into_service())
                 .serve_with_incoming(TcpListenerStream::new(host_listener))
                 .await;
         });
@@ -201,7 +267,33 @@ impl Stack {
             host_id,
             leases,
             publisher,
+            host,
         })
+    }
+
+    async fn invoke(
+        &self,
+        method: &str,
+        args: Vec<serde_json::Value>,
+    ) -> Result<serde_json::Value> {
+        let result = self
+            .host
+            .invoke_actor(
+                crate::actor::ActorInvocation {
+                    request_id: uuid::Uuid::new_v4().to_string(),
+                    actor: self.actor.clone(),
+                    method: method.into(),
+                    args,
+                },
+                1,
+                0,
+                String::new(),
+            )
+            .await?;
+        match result {
+            crate::actor::ActorExecutionResult::Completed { result, .. } => Ok(result),
+            other => anyhow::bail!("actor call failed: {other:?}"),
+        }
     }
 
     async fn connect(&self) -> Result<Socket> {
@@ -276,6 +368,18 @@ import {{ existsSync }} from 'node:fs';
 import {{ setTimeout }} from 'node:timers/promises';
 export class Counter extends Actor {{
     history = '';
+    async onConnect(socket) {{
+        socket.metadata = {{ name: 'member' }};
+        socket.setTags('member');
+    }}
+    async clients() {{
+        return this.connections.map(socket => ({{ id: socket.id, metadata: socket.metadata, tags: socket.tags }}));
+    }}
+    async notifyClient(id) {{
+        const socket = this.connections.find(socket => socket.id === id);
+        socket.metadata = {{ ...socket.metadata, notified: true }};
+        socket.send({{ text: 'from method' }});
+    }}
     async onMessage() {{
         if (process.env.TEST_ACTOR_SECRET !== 'injected') throw new Error('actor secret missing');
         this.history += 'first';

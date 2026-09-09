@@ -1,8 +1,15 @@
 use anyhow::{Context, Result, ensure};
+use async_trait::async_trait;
 use base64::{Engine, engine::general_purpose::STANDARD};
 use serde_json::Value;
 
 use super::executor_connection::{ActorSocketEffect, ActorSocketMessage};
+use super::{ActorKey, ActorSocketConnection};
+
+#[async_trait]
+pub(crate) trait ActorSocketSource: Send + Sync {
+    async fn connections(&self, actor: &ActorKey) -> Result<Vec<ActorSocketConnection>>;
+}
 
 pub(crate) const MAX_SOCKET_METADATA_BYTES: usize = 64 * 1024;
 pub(crate) const MAX_SOCKET_MESSAGE_BYTES: usize = 16 * 1024 * 1024;

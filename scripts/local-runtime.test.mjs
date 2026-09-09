@@ -106,13 +106,37 @@ async function prepareProject(project) {
 export class Counter extends Actor {
     count = 0
     async increment() { return ++this.count }
+    async clients() { return this.connections.map(socket => ({ id: socket.id, metadata: socket.metadata })) }
+    async notifyClient(id: string) { this.connections.find(socket => socket.id === id)!.send({ text: "from method" }) }
 }
 `
     )
     await writeFile(
         path.join(project, "src/client.ts"),
-        `import { Counter } from "./durable-objects.js"
-console.log(await Counter.get("tutorial").increment())
+        `import assert from "node:assert/strict"
+import { setTimeout } from "node:timers/promises"
+import { Counter } from "./durable-objects.js"
+const room = Counter.get("tutorial")
+assert.deepEqual(await room.clients(), [])
+const socket = await room.connect({ user: "test" })
+try {
+    let clients = await room.clients()
+    const deadline = Date.now() + 5000
+    while (clients.length === 0 && Date.now() < deadline) {
+        await setTimeout(10)
+        clients = await room.clients()
+    }
+    assert.equal(clients.length, 1)
+    assert.deepEqual(clients[0].metadata, { user: "test" })
+    const message = new Promise(resolve => socket.addEventListener("message", event => {
+        if (event.data.text === "from method") resolve(event.data)
+    }))
+    await room.notifyClient(clients[0].id)
+    assert.deepEqual(await message, { text: "from method" })
+    console.log(await room.increment())
+} finally {
+    socket.close()
+}
 `
     )
 }
