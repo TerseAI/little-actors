@@ -1,37 +1,38 @@
 import { ActorProtocolError } from "./errors.js"
-import { cloneJson } from "./types.js"
+import { incomingMessage, outgoingMessage, socketMetadata, socketTags } from "./socketValidation.js"
+import type { ActorSchemas, ActorStateMessage } from "./socketValidation.js"
 import type { JsonValue, SocketConnection, SocketEffect, SocketMessage } from "./types.js"
 
 type ActorSocketState = "connecting" | "open" | "closed"
-type ActorSocketMessage = string | Uint8Array
+type ActorSocketMessage = JsonValue
 
-interface ActorSocket<Metadata = JsonValue> {
+interface ActorSocket<Metadata = JsonValue, Outgoing = JsonValue, Tag extends string = string> {
     readonly id: string
     metadata: Metadata
-    readonly tags: readonly string[]
+    readonly tags: readonly Tag[]
     readonly state: ActorSocketState
-    send(message: ActorSocketMessage): void
+    send(message: Outgoing): void
     close(code?: number, reason?: string): void
     reject(code?: number, reason?: string): void
-    setTags(...tags: string[]): void
+    setTags(...tags: Tag[]): void
 }
 
-interface ActorBroadcastOptions {
-    readonly except?: ActorSocket | readonly ActorSocket[]
-    readonly tags?: readonly string[]
+interface ActorBroadcastOptions<Tag extends string = string> {
+    readonly except?: Pick<ActorSocket, "id"> | readonly Pick<ActorSocket, "id">[]
+    readonly tags?: readonly Tag[]
 }
 
-interface ActorConnection {
+interface ActorConnection<Send = JsonValue, Receive = Send, State = JsonValue> {
     readonly readyState: number
-    send(data: string | ArrayBufferLike | ArrayBufferView): void
+    send(data: Send): void
     close(code?: number, reason?: string): void
-    addEventListener<Type extends keyof ActorConnectionEventMap>(type: Type, listener: (event: ActorConnectionEventMap[Type]) => void): void
-    removeEventListener<Type extends keyof ActorConnectionEventMap>(type: Type, listener: (event: ActorConnectionEventMap[Type]) => void): void
+    addEventListener<Type extends keyof ActorConnectionEventMap<Receive, State>>(type: Type, listener: (event: ActorConnectionEventMap<Receive, State>[Type]) => void): void
+    removeEventListener<Type extends keyof ActorConnectionEventMap<Receive, State>>(type: Type, listener: (event: ActorConnectionEventMap<Receive, State>[Type]) => void): void
 }
 
-interface ActorConnectionEventMap {
+interface ActorConnectionEventMap<Receive = JsonValue, State = JsonValue> {
     readonly open: { readonly type: "open" }
-    readonly message: { readonly type: "message"; readonly data: string | Uint8Array | ArrayBuffer }
+    readonly message: { readonly type: "message"; readonly data: Receive | ActorStateMessage<State> }
     readonly close: { readonly type: "close"; readonly code: number; readonly reason: string; readonly wasClean: boolean }
     readonly error: { readonly type: "error" }
 }
@@ -44,9 +45,10 @@ class ActorSocketScope {
 
     constructor(
         connections: readonly SocketConnection[],
-        readonly effects: Pick<SocketEffect[], "push">
+        readonly effects: Pick<SocketEffect[], "push">,
+        private readonly schemas: ActorSchemas
     ) {
-        const sockets = connections.map(connection => new RuntimeActorSocket(connection, effects))
+        const sockets = connections.map(connection => new RuntimeActorSocket(connection, effects, schemas))
         this.sockets = sockets
         this.byId = new Map(sockets.map(socket => [socket.id, socket]))
     }
@@ -57,7 +59,7 @@ class ActorSocketScope {
             socket.setState(state)
             return socket
         }
-        return new RuntimeActorSocket(connection, this.effects, state)
+        return new RuntimeActorSocket(connection, this.effects, this.schemas, state)
     }
 
     connection(connectionId: string): RuntimeActorSocket {
@@ -66,12 +68,12 @@ class ActorSocketScope {
         return socket
     }
 
-    broadcast(message: ActorSocketMessage, options: ActorBroadcastOptions = {}): void {
+    broadcast(message: unknown, options: ActorBroadcastOptions = {}): void {
         this.effects.push({
             type: "broadcast",
-            message: socketMessage(message),
+            message: socketMessage(message, this.schemas),
             except_connection_ids: excludedSocketIds(options.except),
-            tags: options.tags?.map(validateTag) ?? []
+            tags: socketTags(options.tags ?? [], this.schemas)
         })
     }
 }
@@ -83,11 +85,12 @@ class RuntimeActorSocket<Metadata = JsonValue> implements ActorSocket<Metadata> 
     constructor(
         connection: SocketConnection,
         private readonly effects: Pick<SocketEffect[], "push">,
+        private readonly schemas: ActorSchemas,
         private stateValue: ActorSocketState = "open"
     ) {
         this.id = connection.id
-        this.metadataValue = connection.metadata as Metadata
-        this.tagsValue = connection.tags
+        this.metadataValue = socketMetadata(connection.metadata, schemas) as Metadata
+        this.tagsValue = socketTags(connection.tags, schemas)
     }
 
     readonly id: string
@@ -101,7 +104,7 @@ class RuntimeActorSocket<Metadata = JsonValue> implements ActorSocket<Metadata> 
     }
 
     set metadata(value: Metadata) {
-        const metadata = cloneJson(value, "socket metadata")
+        const metadata = socketMetadata(value, this.schemas)
         this.metadataValue = metadata as Metadata
         this.effects.push({ type: "set_metadata", connection_id: this.id, metadata })
     }
@@ -112,7 +115,7 @@ class RuntimeActorSocket<Metadata = JsonValue> implements ActorSocket<Metadata> 
 
     send(message: ActorSocketMessage): void {
         if (this.stateValue === "closed") throw new ActorProtocolError("cannot send on a closed actor socket")
-        this.effects.push({ type: "send", connection_id: this.id, message: socketMessage(message) })
+        this.effects.push({ type: "send", connection_id: this.id, message: socketMessage(message, this.schemas) })
     }
 
     close(code = 1000, reason = ""): void {
@@ -130,10 +133,7 @@ class RuntimeActorSocket<Metadata = JsonValue> implements ActorSocket<Metadata> 
     }
 
     setTags(...tags: string[]): void {
-        const unique = [...new Set(tags.map(validateTag))]
-        if (unique.length > 128 || unique.reduce((bytes, tag) => bytes + Buffer.byteLength(tag), 0) > 8 * 1024) {
-            throw new ActorProtocolError("socket tags must not exceed 128 entries or 8 KiB")
-        }
+        const unique = socketTags(tags, this.schemas)
         this.tagsValue = unique
         this.effects.push({ type: "set_tags", connection_id: this.id, tags: unique })
     }
@@ -147,11 +147,12 @@ async function runWithActorSockets<T>(
     instance: object,
     connections: readonly SocketConnection[],
     operation: (scope: ActorSocketScope) => Promise<T>,
-    publish?: (effects: readonly SocketEffect[]) => Promise<void>
+    publish?: (effects: readonly SocketEffect[]) => Promise<void>,
+    schemas: ActorSchemas = {}
 ): Promise<{ readonly value: T; readonly effects: readonly SocketEffect[] }> {
     const effects: SocketEffect[] = []
     const output = publish === undefined ? undefined : new SocketOutput(publish)
-    const scope = new ActorSocketScope(connections, output ?? effects)
+    const scope = new ActorSocketScope(connections, output ?? effects, schemas)
     scopes.set(instance, scope)
     try {
         return { value: await operation(scope), effects }
@@ -202,11 +203,11 @@ class SocketOutput {
     }
 }
 
-function actorConnections(instance: object): readonly ActorSocket[] {
-    return socketScope(instance).sockets
+function actorConnections<Metadata, Outgoing, Tag extends string>(instance: object): readonly ActorSocket<Metadata, Outgoing, Tag>[] {
+    return socketScope(instance).sockets as unknown as readonly ActorSocket<Metadata, Outgoing, Tag>[]
 }
 
-function broadcastActor(instance: object, message: ActorSocketMessage, options?: ActorBroadcastOptions): void {
+function broadcastActor(instance: object, message: unknown, options?: ActorBroadcastOptions): void {
     socketScope(instance).broadcast(message, options)
 }
 
@@ -216,19 +217,18 @@ function socketScope(instance: object): ActorSocketScope {
     return scope
 }
 
-function socketMessage(message: ActorSocketMessage): SocketMessage {
-    if (typeof message === "string") return { type: "text", data: message }
-    if (!(message instanceof Uint8Array)) throw new ActorProtocolError("socket messages must be strings or Uint8Arrays")
-    return { type: "binary", data: Buffer.from(message).toString("base64") }
+function socketMessage(message: unknown, schemas: ActorSchemas = {}): SocketMessage {
+    if (ArrayBuffer.isView(message) || message instanceof ArrayBuffer) throw new ActorProtocolError("socket messages must be JSON values, not bytes")
+    return { type: "text", data: JSON.stringify(outgoingMessage(message, schemas)) }
 }
 
-function decodeSocketMessage(message: SocketMessage): ActorSocketMessage {
-    return message.type === "text" ? message.data : new Uint8Array(Buffer.from(message.data, "base64"))
-}
-
-function validateTag(tag: string): string {
-    if (typeof tag !== "string" || tag.length === 0 || tag.length > 256) throw new ActorProtocolError("socket tags must contain between 1 and 256 characters")
-    return tag
+function decodeSocketMessage(message: SocketMessage, schemas: ActorSchemas = {}): ActorSocketMessage {
+    if (message.type !== "text") throw new ActorProtocolError("socket messages must be JSON text frames")
+    try {
+        return incomingMessage(JSON.parse(message.data), schemas)
+    } catch (error) {
+        throw new ActorProtocolError("socket message is not valid JSON", { cause: error })
+    }
 }
 
 function validateClose(code: number, reason: string): void {
@@ -242,4 +242,4 @@ function excludedSocketIds(except: ActorBroadcastOptions["except"]): readonly st
 }
 
 export { actorConnections, broadcastActor, decodeSocketMessage, runWithActorSockets, socketMessage }
-export type { ActorBroadcastOptions, ActorConnection, ActorSocket, ActorSocketMessage, ActorSocketState }
+export type { ActorBroadcastOptions, ActorConnection, ActorConnectionEventMap, ActorSocket, ActorSocketMessage, ActorSocketState }

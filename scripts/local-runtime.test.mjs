@@ -2,6 +2,7 @@ import assert from "node:assert/strict"
 import { execFile, spawn } from "node:child_process"
 import { once } from "node:events"
 import { mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises"
+import { createServer } from "node:http"
 import { tmpdir } from "node:os"
 import path from "node:path"
 import test from "node:test"
@@ -12,6 +13,43 @@ import { promisify } from "node:util"
 const root = fileURLToPath(new URL("../", import.meta.url))
 const execute = promisify(execFile)
 const binary = process.env.DURABLE_OBJECT_TEST_BINARY
+
+test("run supplies the local API key without issuing a session or inheriting an explicit scope", async t => {
+    const project = await mkdtemp(path.join(tmpdir(), "ldo-run-auth-"))
+    t.after(() => rm(project, { recursive: true, force: true }))
+    let requests = 0
+    const server = createServer((_request, response) => {
+        requests++
+        response.writeHead(401).end()
+    })
+    await new Promise(resolve => server.listen(0, "127.0.0.1", resolve))
+    t.after(() => new Promise(resolve => server.close(resolve)))
+    const controlPlaneUrl = `http://127.0.0.1:${server.address().port}`
+    await mkdir(path.join(project, ".little-actors"))
+    await writeFile(path.join(project, ".little-actors/runtime.json"), JSON.stringify({ apiKey: "local-test-key", namespaceId: "local", controlPlaneUrl }))
+    await writeFile(
+        path.join(project, "client.mjs"),
+        `import assert from "node:assert/strict"
+assert.equal(process.env.DURABLE_OBJECT_API_KEY, "local-test-key")
+assert.equal(process.env.DURABLE_OBJECT_CONTROL_PLANE_URL, ${JSON.stringify(controlPlaneUrl)})
+assert.equal(process.env.DURABLE_OBJECT_TOKEN, undefined)
+assert.equal(process.env.DURABLE_OBJECT_NAMESPACE_ID, undefined)
+assert.equal(process.env.DURABLE_OBJECT_SOCKET_GATEWAY_URL, undefined)
+`
+    )
+    await execute(process.execPath, [path.join(root, "npm/dist/cli.js"), "run", "client.mjs"], {
+        cwd: project,
+        env: {
+            ...process.env,
+            DURABLE_OBJECT_API_KEY: "inherited-key",
+            DURABLE_OBJECT_TOKEN: "inherited-token",
+            DURABLE_OBJECT_NAMESPACE_ID: "other-project",
+            DURABLE_OBJECT_SOCKET_GATEWAY_URL: "https://other.example.com"
+        },
+        timeout: 10_000
+    })
+    assert.equal(requests, 0)
+})
 
 test("the local CLI runs actors and restores acknowledged state after shutdown", { skip: !binary, timeout: 120_000 }, async t => {
     const project = await mkdtemp(path.join(tmpdir(), "ldo-local-"))

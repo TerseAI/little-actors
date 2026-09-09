@@ -92,6 +92,7 @@ pub(crate) trait AdminRegistry: Send + Sync {
 #[derive(Clone)]
 pub(crate) struct AdminService {
     api_key: String,
+    pub(super) default_namespace: String,
     registry: std::sync::Arc<dyn AdminRegistry>,
     issuer: ActorJwtIssuer,
 }
@@ -108,9 +109,16 @@ impl AdminService {
         );
         Ok(Self {
             api_key,
+            default_namespace: "default".into(),
             registry,
             issuer,
         })
+    }
+
+    pub(super) fn with_default_namespace(mut self, namespace_id: &str) -> Result<Self> {
+        validate_namespace(namespace_id)?;
+        self.default_namespace = namespace_id.to_owned();
+        Ok(self)
     }
 
     pub(crate) fn authenticate(&self, authorization: &str) -> Result<()> {

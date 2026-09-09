@@ -112,7 +112,8 @@ impl SocketAuthenticator for HttpSocketAuthenticator {
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct SocketAuthorizationResponse {
-    namespace_id: String,
+    #[serde(default)]
+    namespace_id: Option<String>,
     actor_type: String,
     actor_id: String,
     storage_region: String,
@@ -136,7 +137,7 @@ impl SocketAuthorizationResponse {
         );
         validate_socket_metadata(&self.metadata)?;
         let actor = ActorKey {
-            namespace_id: self.namespace_id,
+            namespace_id: self.namespace_id.unwrap_or_else(|| "default".into()),
             actor_type: self.actor_type,
             actor_id: self.actor_id,
         };
@@ -191,9 +192,22 @@ mod tests {
     use super::*;
 
     #[test]
+    fn socket_authorization_can_omit_the_namespace() -> Result<()> {
+        let response: SocketAuthorizationResponse = serde_json::from_value(json!({
+            "actorType": "ChatRoom", "actorId": "lobby",
+            "storageRegion": "north-america-east", "metadata": {"name":"Alice"},
+            "expiresAt": i64::MAX,
+        }))?;
+        let authorization = response.into_authorization("lobby")?;
+        assert_eq!(authorization.actor.namespace_id, "default");
+        assert_eq!(authorization.actor.actor_id, "lobby");
+        Ok(())
+    }
+
+    #[test]
     fn rejects_oversized_authorized_socket_metadata() {
         let response = SocketAuthorizationResponse {
-            namespace_id: "project-1".into(),
+            namespace_id: Some("project-1".into()),
             actor_type: "ChatRoom".into(),
             actor_id: "room-1".into(),
             storage_region: "north-america-east".into(),

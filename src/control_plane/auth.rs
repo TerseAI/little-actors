@@ -54,18 +54,14 @@ pub(crate) struct ActorInvocationCapability {
 }
 
 impl ActorPrincipal {
-    pub(crate) fn for_external_socket(
-        actor: &crate::actor::ActorKey,
-        region: String,
-        expires_at: i64,
-    ) -> Self {
+    pub(crate) fn for_application(namespace_id: &str, region: String, expires_at: i64) -> Self {
         Self {
             scope: ActorScope {
-                namespace_id: actor.namespace_id.clone(),
+                namespace_id: namespace_id.to_owned(),
             },
             host_id: HostId::new(format!(
-                "workflow.v1.{}.socket.{}",
-                actor.namespace_id,
+                "workflow.v1.{}.client.{}",
+                namespace_id,
                 uuid::Uuid::new_v4()
             )),
             session_id: uuid::Uuid::new_v4().to_string(),

@@ -11,7 +11,7 @@ Recommended setup:
 
 WebSocket connections live in control-plane memory: clients must reconnect after a restart. Multiple instances require gateway routing.
 
-This example uses version `0.1.26`. Its container includes the Rust runtime and Go provider; neither compiler is required.
+This example uses version `0.1.27`. Its container includes the Rust runtime and Go provider; neither compiler is required.
 
 ## 1. Configure storage and credentials
 
@@ -48,7 +48,7 @@ openssl genpkey -algorithm Ed25519 -outform DER | base64 | tr -d '\n'
 openssl rand -hex 32
 ```
 
-Run each command separately and copy its output into the corresponding field. Reuse both keys after restarts. The signing key issues tokens; the API key authorizes administration. Give clients session tokens.
+Run each command separately and copy its output into the corresponding field. Reuse both keys after restarts. The runtime uses the signing key internally. Your backend uses the API key to deploy and call actors.
 
 ## 2. Run the control plane
 
@@ -59,7 +59,7 @@ docker run --rm --name durable-objects \
     -p 7100:7100 \
     --env-file control-plane.env \
     --mount type=bind,source=/absolute/path/to/service-account.json,target=/credentials/gcs.json,readonly \
-    us-central1-docker.pkg.dev/fluid-analogy-473415-c2/public/little-actors:0.1.26
+    us-central1-docker.pkg.dev/fluid-analogy-473415-c2/public/little-actors:0.1.27
 ```
 
 For an attached Google service account, omit the credential variable and mount.
@@ -77,16 +77,16 @@ Expect JSON with a `keys` array. Your first actor call will also exercise host p
 
 ## 3. Package your actor code
 
-In your counter project, pin the SDK to the runtime version:
+In the chat project from the local tutorial, pin the SDK to the runtime version:
 
 ```sh
-npm install --save-exact little-actors@0.1.26
+npm install --save-exact little-actors@0.1.27
 ```
 
-Create a `Dockerfile` in your counter project:
+Create a `Dockerfile` in your chat project:
 
 ```dockerfile
-FROM us-central1-docker.pkg.dev/fluid-analogy-473415-c2/public/little-actors:0.1.26 AS runtime
+FROM us-central1-docker.pkg.dev/fluid-analogy-473415-c2/public/little-actors:0.1.27 AS runtime
 
 FROM node:22-bookworm
 COPY --from=runtime /usr/local/bin/little-actors /usr/local/bin/little-actors
@@ -102,7 +102,7 @@ Build and push an amd64 image to a registry you control:
 
 ```sh
 docker buildx build --platform linux/amd64 \
-    --tag YOUR_REGISTRY/counter-example:counter-v1 --push .
+    --tag YOUR_REGISTRY/chat-example:chat-v1 --push .
 ```
 
 Import the image with Modal's Python API. This cloud-only step can run in CI:
@@ -120,10 +120,10 @@ Create `build_image.py`:
 import modal
 
 image = modal.Image.from_registry(
-    "YOUR_REGISTRY/counter-example:counter-v1",
+    "YOUR_REGISTRY/chat-example:chat-v1",
     add_python="3.12",
 )
-app = modal.App.lookup("counter-example-images", create_if_missing=True)
+app = modal.App.lookup("chat-example-images", create_if_missing=True)
 with modal.enable_output():
     image.build(app)
 print(image.object_id)
@@ -139,20 +139,19 @@ Keep the printed `im-...` ID. Private registries require a [Modal registry secre
 
 ## 4. Register the deployment
 
-Register the image and actor file under a namespace, which groups your project's actors:
+Register the image and actor file:
 
 ```sh
 export DURABLE_OBJECT_API_KEY='<the-admin-api-key-from-step-1>'
-export DURABLE_OBJECT_NAMESPACE_ID='counter-example'
 export ACTOR_IMAGE_ID='<the-im-prefixed-image-id-from-step-3>'
 
 curl --fail --silent --show-error \
-    -X PUT "$DURABLE_OBJECT_CONTROL_PLANE_URL/v1/namespaces/$DURABLE_OBJECT_NAMESPACE_ID/deployment" \
+    -X PUT "$DURABLE_OBJECT_CONTROL_PLANE_URL/v1/deployment" \
     -H "Authorization: Bearer $DURABLE_OBJECT_API_KEY" \
     -H 'Content-Type: application/json' \
     --data @- <<EOF
 {
-    "codeRevision": "counter-v1",
+    "codeRevision": "chat-v1",
     "imageRef": "$ACTOR_IMAGE_ID",
     "workingDirectory": "/app",
     "actorEntrypoint": "src/durable-objects.ts"
@@ -162,44 +161,25 @@ EOF
 
 Registration returns `{"changed":true}`, or `false` for an unchanged deployment. The first call starts a host. After code changes, rebuild and import the image, then register its ID with a new `codeRevision`.
 
-## 5. Give your application a session token
+## 5. Connect your backend
 
-Issue a one-hour token for this namespace:
-
-```sh
-SESSION_DEADLINE_MS="$(node -p 'Date.now() + 60 * 60 * 1000')"
-
-curl --fail --silent --show-error \
-    -X POST "$DURABLE_OBJECT_CONTROL_PLANE_URL/v1/namespaces/$DURABLE_OBJECT_NAMESPACE_ID/session-scoped-token" \
-    -H "Authorization: Bearer $DURABLE_OBJECT_API_KEY" \
-    -H 'Content-Type: application/json' \
-    --data @- <<EOF
-{
-    "executionId": "counter-demo-1",
-    "deadlineUnixMs": $SESSION_DEADLINE_MS,
-    "storageRegion": "north-america-east"
-}
-EOF
-```
-
-Copy the response's `token` into your environment:
+Set the API key and server URL in your backend environment. To try the hosted chat from a trusted terminal:
 
 ```sh
-export DURABLE_OBJECT_TOKEN='<the-token-from-the-response>'
-unset DURABLE_OBJECT_API_KEY
-node --import tsx src/client.ts
+export DURABLE_OBJECT_API_KEY='<the-api-key-from-step-1>'
+export DURABLE_OBJECT_CONTROL_PLANE_URL='https://objects.example.com'
+node --import tsx src/chat.ts Alice
 ```
 
-Keep the namespace and control-plane URL variables set. A new counter prints:
+A new room prints:
 
-```text
-1
-2
+```json
+{ "type": "state", "state": { "history": [] } }
 ```
 
-Each call increments the same counter. Rerunning prints `3`, then `4`. Cloud actors start independently of local state.
+In another terminal, set the same client environment variables and run `node --import tsx src/chat.ts Bob`. Once both clients have joined, type a message in either terminal. Both receive it; reconnecting restores the saved conversation. Hosted state is separate from the local demo's state.
 
-In production, a trusted backend issues session tokens. Terse supplies them to workflows. `storageRegion` places new actors; existing actors keep their region.
+Keep the API key on your backend, where you check user permissions before calling actors. Mobile and browser apps connect through [WebSockets authorized by your backend](#websocket-configuration).
 
 ## Local execution with GCS
 
@@ -215,10 +195,10 @@ npx little-actors dev --storage gcs --data-dir .gcs-demo
 In a second terminal in the same project:
 
 ```sh
-npx little-actors run --data-dir .gcs-demo src/client.ts
+npx little-actors run --data-dir .gcs-demo src/chat.ts Alice
 ```
 
-With a new state directory, the counter prints `1`, then `2`; rerunning prints `3`, then `4`.
+With a new state directory, the chat room starts with an empty history. Send a message, close the client, and rerun it to see the saved conversation.
 
 Changing backends or buckets requires a separate state directory; existing actors are not migrated. References remain in SQLite, so losing that file still loses access to your actors. Use backed-up PostgreSQL for production.
 
@@ -226,7 +206,17 @@ Changing backends or buckets requires a separate state directory; existing actor
 
 WebSockets use the control-plane origin by default. For a separate gateway, set `DURABLE_OBJECT_SOCKET_GATEWAY_URL` for clients and `socketGatewayUrl` in the deployment.
 
-The callback request and response formats are documented in the [HTTP reference](../reference/http.md#websocket-callbacks).
+For mobile or browser clients, set your backend's authorization URL in `control-plane.env` and restart the control plane:
+
+```dotenv
+DURABLE_OBJECT_SOCKET_AUTH_URL=https://api.example.com/actors/authorize
+```
+
+Clients connect to `/v1/socket/{triggerId}/{actorId}` with an application-issued credential. The gateway asks your backend to authorize that credential for the requested actor. Your callback selects the actor class, storage region, trusted metadata, and credential expiration. For the chat demo, approve `ChatRoom` and supply metadata such as `{"name":"Alice"}` from the authenticated user's profile.
+
+Authenticate callback requests using their `Authorization: Bearer <DURABLE_OBJECT_API_KEY>` header. Reject credentials that cannot access the requested actor. The callback runs at connection time; actor `onMessage` handlers must enforce permissions for application messages. An incoming-message event callback runs after actor handling and cannot authorize that handling.
+
+Your backend supplies application credentials. Keep the API key on the backend. Connection examples and callback formats are documented in the [HTTP reference](../reference/http.md#external-connections).
 
 ## Server configuration
 
@@ -248,7 +238,7 @@ Nonempty JSON region-to-bucket map. Region names contain 1–64 lowercase ASCII 
 
 **Required.**
 
-Admin bearer credential; no surrounding whitespace. Also authenticates outgoing WebSocket callbacks.
+Backend bearer credential for deployments and actor access; no surrounding whitespace. Also authenticates outgoing WebSocket callbacks.
 
 ### `DURABLE_OBJECT_JWT_SIGNING_KEY`
 
@@ -357,3 +347,7 @@ Path to a service-account credentials file for GCS. An attached Google identity 
 **Default:** `info`.
 
 Runtime log filter, for example `warn` or `debug`.
+
+## Further configuration
+
+See [advanced access configuration](advanced-access.md) for integrations that need separate scopes or delegated credentials.

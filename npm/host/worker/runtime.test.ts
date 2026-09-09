@@ -41,18 +41,18 @@ interface ChatSession {
     readonly connectedAt: number
 }
 
-export class ChatRoom extends Actor {
+export class ChatRoom extends Actor<ChatSession, { text: string }> {
     private events: string[] = []
 
     async onConnect(socket: ActorSocket<ChatSession>): Promise<void> {
         this.events.push(`connect:${socket.metadata.userId}:${this.connections.length}`)
         socket.metadata = { ...socket.metadata, connectedAt: 2 }
         socket.setTags("member")
-        socket.send("ready")
+        socket.send({ text: "ready" })
     }
 
-    async onMessage(socket: ActorSocket<ChatSession>, message: string | Uint8Array): Promise<void> {
-        this.events.push(`message:${socket.metadata.userId}:${typeof message === "string" ? message : message.byteLength}`)
+    async onMessage(socket: ActorSocket<ChatSession>, message: { text: string }): Promise<void> {
+        this.events.push(`message:${socket.metadata.userId}:${message.text}`)
         this.broadcast(message)
     }
 
@@ -65,7 +65,7 @@ export class ChatRoom extends Actor {
     }
 
     async announce(message: string): Promise<void> {
-        this.broadcast(message)
+        this.broadcast({ text: message })
     }
 }
 
@@ -129,8 +129,8 @@ test("streams actor output before execution finishes without replaying it in the
     assert.deepEqual(
         effects.map(effect => effect.type === "broadcast" && effect.message),
         [
-            { type: "text", data: "first" },
-            { type: "text", data: "last" }
+            { type: "text", data: JSON.stringify("first") },
+            { type: "text", data: JSON.stringify("last") }
         ]
     )
 })
@@ -166,7 +166,7 @@ test("batches pending stream output in order and surfaces publish failures", asy
     assert.ok(batches.length <= 2, "queued deltas should not each cost a network round trip")
     assert.deepEqual(
         batches.flat().map(effect => effect.type === "broadcast" && effect.message.data),
-        Array.from({ length: 10 }, (_, index) => String(index))
+        Array.from({ length: 10 }, (_, index) => JSON.stringify(String(index)))
     )
     const failing = new ActorRuntime(definition, async () => {
         throw new Error("publish denied")
@@ -385,7 +385,7 @@ test("runs the full socket lifecycle and exposes live actor connections", async 
             effects: [
                 { type: "set_metadata", connection_id: "connection-1", metadata: { userId: "user-1", connectedAt: 2 } },
                 { type: "set_tags", connection_id: "connection-1", tags: ["member"] },
-                { type: "send", connection_id: "connection-1", message: { type: "text", data: "ready" } },
+                { type: "send", connection_id: "connection-1", message: { type: "text", data: JSON.stringify({ text: "ready" }) } },
                 {
                     type: "send",
                     connection_id: "connection-1",
@@ -401,14 +401,14 @@ test("runs the full socket lifecycle and exposes live actor connections", async 
             type: "websocket_event",
             request_id: "request-2",
             actor,
-            event: { type: "message", connection_id: "connection-1", message: { type: "text", data: "hello" } },
+            event: { type: "message", connection_id: "connection-1", message: { type: "text", data: JSON.stringify({ text: "hello" }) } },
             connections: [connected],
             state: { events: ["connect:user-1:1"] }
         }),
         {
             type: "websocket_handled",
             state: { events: ["connect:user-1:1", "message:user-1:hello"] },
-            effects: [{ type: "broadcast", message: { type: "text", data: "hello" }, except_connection_ids: [], tags: [] }]
+            effects: [{ type: "broadcast", message: { type: "text", data: JSON.stringify({ text: "hello" }) }, except_connection_ids: [], tags: [] }]
         }
     )
 
@@ -426,7 +426,7 @@ test("runs the full socket lifecycle and exposes live actor connections", async 
             type: "invoked",
             result: null,
             state: { events: ["connect:user-1:1", "message:user-1:hello"] },
-            effects: [{ type: "broadcast", message: { type: "text", data: "announcement" }, except_connection_ids: [], tags: [] }]
+            effects: [{ type: "broadcast", message: { type: "text", data: JSON.stringify({ text: "announcement" }) }, except_connection_ids: [], tags: [] }]
         }
     )
 

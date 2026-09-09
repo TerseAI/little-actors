@@ -14,8 +14,8 @@ class SessionCounter extends Actor {
     }
 
     async stream(): Promise<number> {
-        this.broadcast("first")
-        this.broadcast("last")
+        this.broadcast({ delta: "first" })
+        this.broadcast({ delta: "last" })
         return this.count
     }
 

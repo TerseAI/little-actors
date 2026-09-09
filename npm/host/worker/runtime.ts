@@ -1,4 +1,4 @@
-import type { ActorDefinition } from "../../shared/actor.js"
+import type { ActorDefinition, AnyActor } from "../../shared/actor.js"
 import { Actor, bindActorIdentity } from "../../shared/actor.js"
 import { ActorProtocolError } from "../../shared/errors.js"
 import { runInActorInvocation } from "../../shared/invocationContext.js"
@@ -7,7 +7,7 @@ import { cloneJson, errorMessage, failedReply, hydrateActorState, snapshotActorS
 import type { ActorExecutorCommand, ActorExecutorReply, InvokeCommand, JsonObject, JsonValue, SocketEffect, WebSocketEventCommand } from "../../shared/types.js"
 
 class ActorRuntime {
-    private instance: Actor | undefined
+    private instance: AnyActor | undefined
     private identity: ActorIdentity | undefined
 
     constructor(
@@ -36,7 +36,8 @@ class ActorRuntime {
                 instance,
                 command.connections ?? [],
                 async () => runInActorInvocation(async () => Reflect.apply(method, instance, command.args) as Promise<unknown>),
-                this.publish
+                this.publish,
+                this.definition.schemas
             )
             const result: JsonValue = operation.value === undefined ? null : cloneJson(operation.value, "actor result")
             return {
@@ -62,12 +63,13 @@ class ActorRuntime {
                 instance,
                 command.connections,
                 async scope => {
+                    const args = lifecycleArguments(command, scope, this.definition.schemas)
                     if (method === undefined) return
                     if (typeof method !== "function") throw new ActorProtocolError(`actor lifecycle hook ${this.definition.actorType}.${methodName} is not callable`)
-                    const args = lifecycleArguments(command, scope)
                     await runInActorInvocation(async () => Reflect.apply(method, instance, args) as Promise<unknown>)
                 },
-                command.event.type === "connect" ? undefined : this.publish
+                command.event.type === "connect" ? undefined : this.publish,
+                this.definition.schemas
             )
             const state = snapshotActorState(instance)
             return { type: "websocket_handled", state, effects: socketEffects(command, state, operation.effects) }
@@ -77,7 +79,7 @@ class ActorRuntime {
         }
     }
 
-    private prepare(command: InvokeCommand | WebSocketEventCommand): Actor | ActorExecutorReply {
+    private prepare(command: InvokeCommand | WebSocketEventCommand): AnyActor | ActorExecutorReply {
         const identity = identityFrom(command.actor)
         if (identity.actorType !== this.definition.actorType) {
             return failedReply("actor_type_not_found", `actor type ${identity.actorType} is not loaded in this customer process`)
@@ -96,8 +98,8 @@ class ActorRuntime {
         this.identity = undefined
     }
 
-    private createInstance(identity: ActorIdentity, state: JsonValue | null): Actor {
-        const instance = Reflect.construct(this.definition.actorClass, []) as Actor
+    private createInstance(identity: ActorIdentity, state: JsonValue | null): AnyActor {
+        const instance = Reflect.construct(this.definition.actorClass, []) as AnyActor
         bindActorIdentity(instance, identity.actorId)
         if (state !== null) hydrateActorState(instance, persistedState(state))
         this.identity = identity
@@ -133,12 +135,12 @@ function lifecycleMethod(command: WebSocketEventCommand): "onConnect" | "onMessa
     }
 }
 
-function lifecycleArguments(command: WebSocketEventCommand, scope: Parameters<Parameters<typeof runWithActorSockets>[2]>[0]): readonly unknown[] {
+function lifecycleArguments(command: WebSocketEventCommand, scope: Parameters<Parameters<typeof runWithActorSockets>[2]>[0], schemas: ActorDefinition["schemas"]): readonly unknown[] {
     switch (command.event.type) {
         case "connect":
             return [scope.eventSocket(command.event.connection, "connecting")]
         case "message":
-            return [scope.connection(command.event.connection_id), decodeSocketMessage(command.event.message)]
+            return [scope.connection(command.event.connection_id), decodeSocketMessage(command.event.message, schemas)]
         case "disconnect":
             return [scope.eventSocket(command.event.connection, "closed"), command.event.code, command.event.reason, command.event.was_clean]
     }

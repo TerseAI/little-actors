@@ -1,47 +1,47 @@
 # HTTP and WebSocket reference
 
-This page documents deployment management, session tokens, direct WebSocket connections, and application callbacks. Use the [TypeScript API](api.md) for actor methods and the [self-hosting guide](../guides/self-hosting.md) to configure a server.
+This page documents deployment management, backend access, WebSocket connections, and application callbacks. Use the [TypeScript API](api.md) for actor methods and the [self-hosting guide](../guides/self-hosting.md) to configure a server.
 
 - [Authentication](#authentication)
 - [Deployments](#deployments)
-- [Session tokens](#session-tokens)
 - [Storage regions](#storage-regions)
 - [Public signing keys](#public-signing-keys)
 - [Direct WebSocket connections](#direct-websocket-connections)
 - [WebSocket callbacks](#websocket-callbacks)
+- [Advanced scopes](#advanced-scopes)
+- [Session tokens](#session-tokens)
 - [HTTP errors](#http-errors)
 
 ## Authentication
 
-Use your configured server origin as the base URL. JSON requests use `Content-Type: application/json`. Administrative operations require:
+Use your configured server origin as the base URL. JSON requests use `Content-Type: application/json`. Backend operations require:
 
 ```http
-Authorization: Bearer <admin-api-key>
+Authorization: Bearer <api-key>
 ```
 
-The admin key is the server's `DURABLE_OBJECT_API_KEY`. It can register and remove deployments and issue namespace-wide session tokens. Use it only on your trusted backend. Application connections use session tokens or external socket credentials instead.
+Use the server's `DURABLE_OBJECT_API_KEY` on your trusted backend to manage deployments, call actors, and publish updates. Mobile and browser apps connect with application credentials checked by your WebSocket authorization callback.
 
-| Operation                           | Method and path                                                           | Credential                               |
-| ----------------------------------- | ------------------------------------------------------------------------- | ---------------------------------------- |
-| Register or replace deployment      | `PUT /v1/namespaces/{namespaceId}/deployment`                             | Admin API key.                           |
-| Read deployment                     | `GET /v1/namespaces/{namespaceId}/deployment`                             | Admin API key.                           |
-| Remove deployment                   | `DELETE /v1/namespaces/{namespaceId}/deployment`                          | Admin API key.                           |
-| Issue session token                 | `POST /v1/namespaces/{namespaceId}/session-scoped-token`                  | Admin API key.                           |
-| Read public signing keys            | `GET /.well-known/jwks.json`                                              | None.                                    |
-| Connect with a session token        | `GET /v1/namespaces/{namespaceId}/actors/{actorType}/{actorId}/websocket` | Session bearer token; WebSocket upgrade. |
-| Connect with an external credential | `GET /v1/socket/{triggerId}/{actorId}`                                    | External credential; WebSocket upgrade.  |
+| Operation                      | Method and path                                  | Credential                                 |
+| ------------------------------ | ------------------------------------------------ | ------------------------------------------ |
+| Register or replace deployment | `PUT /v1/deployment`                             | API key.                                   |
+| Read deployment                | `GET /v1/deployment`                             | API key.                                   |
+| Remove deployment              | `DELETE /v1/deployment`                          | API key.                                   |
+| Read public signing keys       | `GET /.well-known/jwks.json`                     | None.                                      |
+| Connect from a backend         | `GET /v1/actors/{actorType}/{actorId}/websocket` | API key; WebSocket upgrade.                |
+| Connect from an app            | `GET /v1/socket/{triggerId}/{actorId}`           | Application credential; WebSocket upgrade. |
 
 Call actor methods and send application broadcasts through the [TypeScript SDK](api.md). Management JSON request bodies are limited to 16 MiB; larger bodies receive `413`.
 
-Path parameters `namespaceId`, `actorType`, and `actorId` follow the [actor identity limits](api.md#identity).
+Path parameters `actorType` and `actorId` follow the [actor identity limits](api.md#identity).
 
 ## Deployments
 
-All three operations require the admin API key. `namespaceId` is the namespace whose active deployment is being managed.
+All three operations require the API key and manage the default deployment.
 
-### PUT /v1/namespaces/{namespaceId}/deployment
+### PUT /v1/deployment
 
-Registers actor code for a namespace, creating the namespace if needed. There is one active deployment per namespace. The JSON request replaces the complete deployment specification.
+Registers actor code for your application. There is one active deployment. The JSON request replaces the complete deployment specification.
 
 ```json
 {
@@ -77,15 +77,15 @@ An identical deployment returns `{"changed":false}`. Changing the specification 
 
 Warmup is asynchronous and does not guarantee an already running actor. Invalid or unconfigured warmup regions are skipped; warmup failures are logged without turning a successful registration into a failed response.
 
-### GET /v1/namespaces/{namespaceId}/deployment
+### GET /v1/deployment
 
 Reads the active deployment.
 
-**Response:** `200 OK` with the stored specification, including `namespaceId`:
+**Response:** `200 OK` with the stored specification, including its internal application identity:
 
 ```json
 {
-    "namespaceId": "chat-project",
+    "namespaceId": "default",
     "codeRevision": "chat-v1",
     "imageRef": "im-your-actor-image",
     "workingDirectory": "/workspace",
@@ -99,62 +99,21 @@ If no deployment exists, the response is JSON `null`. The record omits `warmRegi
 
 **Errors:** `401` for a rejected admin credential; `500` if the deployment cannot be read.
 
-### DELETE /v1/namespaces/{namespaceId}/deployment
+### DELETE /v1/deployment
 
 Stops the deployment's cloud hosts and removes the active deployment registration.
 
-**Response:** `200 OK` with `{"changed":true}`, or `{"changed":false}` if no deployment existed. It does not delete saved actor state or the namespace. New session tokens cannot be issued until actor code is registered again.
+**Response:** `200 OK` with `{"changed":true}`, or `{"changed":false}` if no deployment existed. It preserves saved actor state. Register actor code again before making new calls.
 
 **Errors:** `401` for a rejected admin credential; `500` if removal fails.
 
 There is no public actor-state deletion, actor-listing, or individual actor reset API. Expose application-specific reset behavior as an actor method if needed.
 
-## Session tokens
-
-### POST /v1/namespaces/{namespaceId}/session-scoped-token
-
-Requires a registered deployment and the admin API key.
-
-**JSON parameters**
-
-- `executionId` (`string`, required) — Application execution requesting access, 1–255 bytes.
-- `deadlineUnixMs` (`integer`, required) — Future Unix timestamp in milliseconds.
-- `storageRegion` (`string`, required) — 1–64 lowercase ASCII letters, digits, `.`, `_`, or `-`. See [storage regions](#storage-regions) for selection behavior.
-
-For example, from a trusted Node.js backend:
-
-```ts
-const response = await fetch(`${process.env.DURABLE_OBJECT_CONTROL_PLANE_URL}/v1/namespaces/chat-project/session-scoped-token`, {
-    method: "POST",
-    headers: {
-        authorization: `Bearer ${process.env.DURABLE_OBJECT_API_KEY}`,
-        "content-type": "application/json"
-    },
-    body: JSON.stringify({
-        executionId: "chat-session-1",
-        deadlineUnixMs: Date.now() + 3_600_000,
-        storageRegion: "north-america-east"
-    })
-})
-if (!response.ok) throw new Error(await response.text())
-const { token, expiresAtMs } = await response.json()
-```
-
-**Response:** `200 OK` with JSON:
-
-```json
-{ "token": "<signed-session-token>", "expiresAtMs": 1800000000000 }
-```
-
-Expiration is the earliest of the requested deadline plus 30 seconds, issuance time plus the configured maximum token lifetime, and issuance time plus 24 hours. It is rounded down to whole seconds and returned as milliseconds in `expiresAtMs`. Use the returned expiration instead of calculating it yourself.
-
-The token permits application actor operations within the requested namespace; it does not restrict access to a single class, actor, or method. It is not an admin key. There is no refresh endpoint: have your trusted backend issue a new token when needed.
-
-**Errors:** `409` for a missing deployment, `400` for invalid fields or an expired deadline, and `401` for a rejected admin credential.
-
 ## Storage regions
 
-Existing actors retain their selected region. For a new actor, the requested region is used if it exactly matches a configured bucket-map key. Otherwise the server maps known cloud region names to these region groups:
+For API-key callers, new actors use `north-america-central` when configured; otherwise they use the first configured region in alphabetical order. Existing actors keep their selected region. Delegated sessions can request a different region as described below.
+
+When a session or WebSocket callback requests a region for a new actor, the server uses an exact configured bucket-map key first. Otherwise it maps known cloud region names to these region groups:
 
 | Group                   | Recognized aliases                                                                                                                                        |
 | ----------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -177,19 +136,19 @@ If the requested or mapped region has no configured bucket, the server uses `nor
 
 ## Direct WebSocket connections
 
-### Session-token connections
+### Backend connections
 
 ```http
-GET /v1/namespaces/{namespaceId}/actors/{actorType}/{actorId}/websocket
+GET /v1/actors/{actorType}/{actorId}/websocket
 ```
 
 Upgrades to a WebSocket connection (`101 Switching Protocols`). Connect to:
 
 ```text
-wss://objects.example.com/v1/namespaces/{namespaceId}/actors/{actorType}/{actorId}/websocket
+wss://objects.example.com/v1/actors/{actorType}/{actorId}/websocket
 ```
 
-Send `Authorization: Bearer <session-token>` with the upgrade request. Use `ws://` for a local HTTP server. The token must permit the path's namespace.
+Send `Authorization: Bearer <api-key>` with the upgrade request. Use `ws://` for a local HTTP server.
 
 Within 10 seconds of opening, send this as the first text frame:
 
@@ -197,7 +156,7 @@ Within 10 seconds of opening, send this as the first text frame:
 { "type": "initialize", "metadata": { "userId": "alice" } }
 ```
 
-The initialization document may be at most 64 KiB plus 128 bytes, and its metadata must fit the 64 KiB metadata limit. After initialization, application text and binary frames go to [`onMessage`](api.md#actoronmessage). The runtime sends the automatic state message after successful acceptance. Subsequent outgoing application messages have the format chosen by your actor.
+The initialization document may be at most 64 KiB plus 128 bytes, and its metadata must fit the 64 KiB metadata limit. After initialization, send application JSON in text frames. The TypeScript runtime parses and validates each message before calling [`onMessage`](api.md#actoronmessage). It sends the automatic state message after successful acceptance. Outgoing application messages are also JSON text frames.
 
 The SDK performs this handshake for [`reference.connect()`](api.md#referenceconnect). The browser WebSocket API cannot set the required Authorization header; use the external route below for browser connections.
 
@@ -219,23 +178,26 @@ Supply either `Authorization: Bearer <credential>` or the WebSocket subprotocols
 
 ```js
 const socket = new WebSocket("wss://objects.example.com/v1/socket/chat/lobby", ["terse-do", `terse-ticket.${credential}`])
-socket.addEventListener("message", ({ data }) => console.log(data))
+socket.addEventListener("message", ({ data }) => console.log(JSON.parse(data)))
+socket.addEventListener("open", () => socket.send(JSON.stringify({ type: "post", text: "Hello" })))
 ```
 
 `credential` is an application-issued credential accepted by your authorization callback and must be valid inside a WebSocket subprotocol token. The runtime does not provide an external-ticket issuance endpoint. The accepted subprotocol is `terse-do`.
 
-The callback selects the namespace, actor class, region, metadata, and credential expiration. It must preserve the requested actor ID. There is no client initialization frame on this route: the callback supplies metadata. Sending an initialization document here would be an application message.
+Native WebSocket clients encode and decode JSON themselves. The `little-actors` SDK handles this automatically for `reference.connect()` connections.
+
+The callback selects the actor class, region, metadata, and credential expiration. It must preserve the requested actor ID. There is no client initialization frame on this route: the callback supplies metadata. Sending an initialization document here would be an application message.
 
 ### Message limits
 
-Each actor supports up to 128 connections per gateway process. Text and binary messages or frames are limited to 16 MiB; the binary limit applies to decoded data. Connection metadata is limited to 64 KiB of JSON-encoded UTF-8.
+Each actor supports up to 128 connections per gateway process. Application messages must be JSON text and fit 16 MiB of UTF-8, including JSON encoding overhead. The TypeScript SDK rejects binary application messages. Connection metadata is limited to 64 KiB of JSON-encoded UTF-8.
 
 ### Close behavior
 
 | Code          | Meaning                                                                |
 | ------------- | ---------------------------------------------------------------------- |
 | `1000`        | Normal closure.                                                        |
-| `1002`        | Missing or invalid initialization on the session-token route.          |
+| `1002`        | Missing or invalid initialization on the backend connection route.     |
 | `1006`        | An observed abnormal disconnect; not a close frame sent by the server. |
 | `1011`        | Connection handling or an actor socket handler failed.                 |
 | `1013`        | Actor connection limit reached.                                        |
@@ -265,7 +227,6 @@ Set `DURABLE_OBJECT_SOCKET_AUTH_URL` to your authorization endpoint. For an exte
 
 ```json
 {
-    "namespaceId": "chat-project",
     "actorType": "ChatRoom",
     "actorId": "lobby",
     "storageRegion": "north-america-east",
@@ -274,14 +235,15 @@ Set `DURABLE_OBJECT_SOCKET_AUTH_URL` to your authorization endpoint. For an exte
 }
 ```
 
-**Response fields** (all required)
+**Response fields**
 
-- `namespaceId` (`string`) — Namespace containing the actor deployment.
 - `actorType` (`string`) — Exported actor class name.
 - `actorId` (`string`) — Must match the requested actor ID.
 - `storageRegion` (`string`) — Nonempty region selection for new actors.
 - `metadata` (JSON value) — Connection metadata, at most 64 KiB.
 - `expiresAt` (`integer`) — Future Unix timestamp in **seconds**, unlike `expiresAtMs` on the session-token API.
+
+An optional `namespaceId` selects a different deployment; omission uses the default application.
 
 Actor identity must pass the [identity limits](api.md#identity). The entire response must fit 128 KiB. The authorization request has a 30-second timeout.
 
@@ -294,12 +256,12 @@ Set `DURABLE_OBJECT_SOCKET_EVENT_URL` to receive messages after successful actor
 ```json
 {
     "eventId": "<event-id>",
-    "namespaceId": "chat-project",
+    "namespaceId": "default",
     "actorType": "ChatRoom",
     "actorId": "lobby",
     "triggerId": "chat",
     "connectionId": "<connection-id>",
-    "message": { "type": "text", "data": "hello" }
+    "message": { "type": "text", "data": "{\"type\":\"post\",\"text\":\"Hello\"}" }
 }
 ```
 
@@ -307,13 +269,64 @@ Set `DURABLE_OBJECT_SOCKET_EVENT_URL` to receive messages after successful actor
 
 - `eventId` (`string`) — Unique event ID.
 - `namespaceId` (`string`), `actorType` (`string`), `actorId` (`string`) — Actor that handled the message.
-- `triggerId` (`string | null`) — External route's trigger ID, or `null` for a session-token connection.
+- `triggerId` (`string | null`) — External route's trigger ID, or `null` for a backend connection.
 - `connectionId` (`string`) — Connection that sent the message.
-- `message` (`object`) — `{"type":"text","data":"hello"}` for text, or `{"type":"binary","data":"<base64>"}` for binary.
+- `message` (`object`) — The transport envelope `{"type":"text","data":"<JSON text>"}`. Parse `message.data` to read the application value. The transport also defines a binary envelope, but the TypeScript actor runtime rejects binary application messages.
 
 Events cover successfully handled incoming messages. Connection changes and outgoing broadcasts do not produce events.
 
 **Response:** A successful HTTP status; no response body is required. Delivery is asynchronous and best effort, with no automatic retry or durable delivery guarantee. A callback failure is logged and does not undo the actor's completed message handling.
+
+## Advanced scopes
+
+The default API requires no namespace setting. For explicit scopes, deployment, target, socket-effects, WebSocket, and session-token routes also accept `/v1/namespaces/{namespaceId}` in place of `/v1`. An API key can access all namespaces on its server. Session tokens are restricted to their own namespace and cannot manage deployments or issue credentials.
+
+Application routes also accept session bearer tokens. Without an explicit namespace in the path, they derive it from the authenticated token. Existing namespaced routes and actor identities remain supported. See [advanced access configuration](../guides/advanced-access.md).
+
+## Session tokens
+
+Session tokens are optional credentials for delegated workers or customer-provided code. See [advanced access configuration](../guides/advanced-access.md) for examples, including the local demo.
+
+### POST /v1/session-scoped-token
+
+Requires a registered deployment and the API key. This route issues a token for the default application. Use `POST /v1/namespaces/{namespaceId}/session-scoped-token` to delegate another namespace.
+
+**JSON parameters**
+
+- `executionId` (`string`, required) — Application execution requesting access, 1–255 bytes.
+- `deadlineUnixMs` (`integer`, required) — Future Unix timestamp in milliseconds.
+- `storageRegion` (`string`, required) — 1–64 lowercase ASCII letters, digits, `.`, `_`, or `-`. See [storage regions](#storage-regions) for selection behavior.
+
+For example, from a trusted Node.js backend:
+
+```ts
+const response = await fetch(`${process.env.DURABLE_OBJECT_CONTROL_PLANE_URL}/v1/session-scoped-token`, {
+    method: "POST",
+    headers: {
+        authorization: `Bearer ${process.env.DURABLE_OBJECT_API_KEY}`,
+        "content-type": "application/json"
+    },
+    body: JSON.stringify({
+        executionId: "chat-session-1",
+        deadlineUnixMs: Date.now() + 3_600_000,
+        storageRegion: "north-america-east"
+    })
+})
+if (!response.ok) throw new Error(await response.text())
+const { token, expiresAtMs } = await response.json()
+```
+
+**Response:** `200 OK` with JSON:
+
+```json
+{ "token": "<signed-session-token>", "expiresAtMs": 1800000000000 }
+```
+
+Expiration is the earliest of the requested deadline plus 30 seconds, issuance time plus the configured maximum token lifetime, and issuance time plus 24 hours. It is rounded down to whole seconds and returned as milliseconds in `expiresAtMs`. Use the returned expiration instead of calculating it yourself.
+
+The token permits application actor operations within the requested namespace; it does not restrict access to a single class, actor, or method. It is not an admin key. There is no refresh endpoint: have your trusted backend issue a new token when needed.
+
+**Errors:** `409` for a missing deployment, `400` for invalid fields or an expired deadline, and `401` for a rejected admin credential.
 
 ## HTTP errors
 
