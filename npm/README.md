@@ -52,6 +52,10 @@ See [self-hosting](https://github.com/TerseAI/little-actors/blob/main/docs/guide
 
 The gateway keeps connections while actors hibernate. Each accepted connection receives `{"type":"state","state":{...}}` automatically.
 
+Send JSON values directly with `socket.send({ type: "chat", text: "Hello" })`. The SDK encodes outgoing messages and parses incoming messages, including the initial state.
+
+`Actor<Metadata, Incoming, Outgoing = Incoming, Tag extends string = string>` types metadata, both message directions, and tags. Use `ActorSocketOf<ChatRoom>` and `ActorMessageOf<ChatRoom>` in hooks to reuse those types. Optional static Zod schemas validate metadata, incoming and outgoing messages, and tags at runtime; see [generics and wire validation](https://github.com/TerseAI/little-actors/blob/main/docs/reference/api.md#generics-and-wire-validation).
+
 | API                                  | Behavior                                             |
 | ------------------------------------ | ---------------------------------------------------- |
 | `Actor.get(id).connect(metadata)`    | Opens a connection with JSON-serializable metadata.  |

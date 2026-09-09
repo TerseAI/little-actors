@@ -171,7 +171,7 @@ test("the actor session carries only owned execution commands", async t => {
             assert.deepEqual(await readMessage(iterator), {
                 type: "socket_effects",
                 message_id: 100,
-                effects: [{ type: "broadcast", message: { type: "text", data }, except_connection_ids: [], tags: [] }]
+                effects: [{ type: "broadcast", message: { type: "text", data: JSON.stringify({ delta: data }) }, except_connection_ids: [], tags: [] }]
             })
             customerSocket.write(`${JSON.stringify({ type: "socket_effects_published", message_id: 100 })}\n`)
         }

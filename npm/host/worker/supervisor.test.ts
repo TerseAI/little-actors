@@ -262,7 +262,7 @@ async function exerciseSocketHibernation(entrypoint: string): Promise<void> {
                 type: "websocket_event",
                 request_id: "socket-request-2",
                 actor: actorIdentity,
-                event: { type: "message", connection_id: "socket-1", message: { type: "text", data: "hello" } },
+                event: { type: "message", connection_id: "socket-1", message: { type: "text", data: JSON.stringify({ text: "hello" }) } },
                 connections: [connection],
                 state: { count: 1 }
             },
@@ -276,7 +276,7 @@ async function exerciseSocketHibernation(entrypoint: string): Promise<void> {
             effects: []
         }
     )
-    assert.deepEqual(published, [{ type: "send", connection_id: "socket-1", message: { type: "text", data: "user-1:hello" } }])
+    assert.deepEqual(published, [{ type: "send", connection_id: "socket-1", message: { type: "text", data: JSON.stringify({ text: "user-1:hello" }) } }])
     runtime.close()
 }
 
@@ -334,9 +334,9 @@ export class ${actorType} extends Actor {
         this.count += 1
     }
 
-    async onMessage(socket: { metadata: { userId: string }, send(message: string): void }, message: string): Promise<void> {
+    async onMessage(socket: { metadata: { userId: string }, send(message: { text: string }): void }, message: { text: string }): Promise<void> {
         this.count += 1
-        socket.send(\`${"${socket.metadata.userId}"}:${"${message}"}\`)
+        socket.send({ text: \`${"${socket.metadata.userId}"}:${"${message.text}"}\` })
     }
 }
 `

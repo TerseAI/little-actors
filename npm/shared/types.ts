@@ -234,7 +234,7 @@ type SocketEffect =
     | { readonly type: "set_metadata"; readonly connection_id: string; readonly metadata: JsonValue }
     | { readonly type: "set_tags"; readonly connection_id: string; readonly tags: readonly string[] }
 
-export { cloneJson, hydrateActorState, snapshotActorState, errorMessage, failedReply, parseActorSessionServerMessage, parseSocketEffects, validateActorComponent }
+export { cloneJson, jsonValueSchema, socketTagsSchema, hydrateActorState, snapshotActorState, errorMessage, failedReply, parseActorSessionServerMessage, parseSocketEffects, validateActorComponent }
 export type {
     ActorExecutorCommand,
     ActorExecutorReply,

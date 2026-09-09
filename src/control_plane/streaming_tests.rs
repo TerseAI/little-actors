@@ -29,7 +29,11 @@ async fn streams_through_real_worker_host_and_gateway_then_catches_up_reconnect(
     let mut stack = Stack::start().await?;
     let mut first = stack.connect().await?;
     assert_eq!(receive(&mut first).await?["state"]["history"], "");
-    first.send(Message::Text("start".into())).await?;
+    first
+        .send(Message::Text(
+            serde_json::json!({"type": "start"}).to_string().into(),
+        ))
+        .await?;
     assert_eq!(receive(&mut first).await?["delta"], "first");
 
     let mut late = stack.connect().await?;
@@ -275,10 +279,10 @@ export class Counter extends Actor {{
     async onMessage() {{
         if (process.env.TEST_ACTOR_SECRET !== 'injected') throw new Error('actor secret missing');
         this.history += 'first';
-        this.broadcast(JSON.stringify({{ delta: 'first' }}));
+        this.broadcast({{ delta: 'first' }});
         while (!existsSync({})) await setTimeout(10);
         this.history += 'last';
-        this.broadcast(JSON.stringify({{ delta: 'last' }}));
+        this.broadcast({{ delta: 'last' }});
     }}
 }}
 "#,

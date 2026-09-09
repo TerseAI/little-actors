@@ -6,6 +6,8 @@ import { ActorInvocationError, ActorProtocolError } from "../shared/errors.js"
 import { currentActorInvocation } from "../shared/invocationContext.js"
 import { socketMessage } from "../shared/socket.js"
 import type { ActorConnection, ActorSocketMessage } from "../shared/socket.js"
+import { socketMetadata } from "../shared/socketValidation.js"
+import type { ActorSchemas } from "../shared/socketValidation.js"
 import { LatencyTimeline, stderrTelemetry } from "../shared/telemetry.js"
 import type { TelemetrySink } from "../shared/telemetry.js"
 import { cloneJson, validateActorComponent } from "../shared/types.js"
@@ -14,6 +16,7 @@ import type { JsonValue, SocketEffect } from "../shared/types.js"
 import { GrpcActorHostTransport } from "./actorHostGrpc.js"
 import type { ActorHostTarget, ActorHostTransport, DirectActorInvocation } from "./actorHostGrpc.js"
 import { configuredSettings } from "./clientSettings.js"
+import { SocketConnection } from "./socketConnection.js"
 
 const errorDocumentSchema = z.object({
     error: z.object({
@@ -88,16 +91,15 @@ class RemoteActorClient {
         }
     }
 
-    async connect(actorType: string, actorId: string, metadata: unknown): Promise<ActorConnection> {
+    async connect(actorType: string, actorId: string, metadata: unknown, schemas: ActorSchemas = {}): Promise<ActorConnection> {
         const requestId = validateActorComponent("request ID", this.requestId())
         if (currentActorInvocation() !== undefined) throw new ActorInvocationError("actor_error", requestId, "actor-to-actor socket connections are not available")
         const actor = {
             actorType: validateActorComponent("actor type", actorType),
             actorId: validateActorComponent("actor ID", actorId)
         }
-        const attachment = cloneJson(metadata, "socket metadata")
-        if (Buffer.byteLength(JSON.stringify(attachment)) > 64 * 1024) throw new ActorProtocolError("socket metadata must not exceed 64 KiB")
-        return this.connectWebSocket(socketUrl(this.settings.socketGatewayUrl, this.settings.namespaceId, actor.actorType, actor.actorId), this.settings.token, attachment)
+        const attachment = socketMetadata(metadata, schemas)
+        return this.connectWebSocket(socketUrl(this.settings.socketGatewayUrl, this.settings.namespaceId, actor.actorType, actor.actorId), this.settings.token, attachment, schemas)
     }
 
     async broadcast(actorType: string, actorId: string, message: ActorSocketMessage): Promise<void> {
@@ -258,12 +260,13 @@ function socketEffectsUrl(settings: RemoteActorSettings, actorType: string, acto
     return `${settings.socketGatewayUrl}/v1/namespaces/${encodeURIComponent(settings.namespaceId)}/actors/${encodeURIComponent(actor)}/${encodeURIComponent(id)}/socket-effects`
 }
 
-function openWebSocket(url: string, token: string, metadata: JsonValue): Promise<ActorConnection> {
+function openWebSocket(url: string, token: string, metadata: JsonValue, schemas: ActorSchemas): Promise<ActorConnection> {
     const socket = new WebSocket(url, {
         headers: {
             authorization: `Bearer ${token}`
         }
     })
+    const connection = new SocketConnection(socket, schemas)
     return new Promise((resolve, reject) => {
         let opened = false
         socket.addEventListener(
@@ -272,7 +275,7 @@ function openWebSocket(url: string, token: string, metadata: JsonValue): Promise
                 try {
                     socket.send(JSON.stringify({ type: "initialize", metadata }))
                     opened = true
-                    resolve(socket as ActorConnection)
+                    resolve(connection)
                 } catch (error) {
                     socket.close()
                     reject(error)
@@ -326,7 +329,7 @@ interface RemoteActorClientDependencies {
     readonly connectWebSocket?: WebSocketConnector
 }
 
-type WebSocketConnector = (url: string, token: string, metadata: JsonValue) => Promise<ActorConnection>
+type WebSocketConnector = (url: string, token: string, metadata: JsonValue, schemas: ActorSchemas) => Promise<ActorConnection>
 
 export { RemoteActorClient }
 export type { DurableObjectsClientOptions, RemoteActorClientDependencies }

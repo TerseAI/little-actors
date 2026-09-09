@@ -31,20 +31,24 @@ Create `src/durable-objects.ts`:
 
 ```ts
 import { Actor } from "little-actors"
-import type { ActorSocket } from "little-actors"
+import type { ActorMessageOf, ActorSocketOf } from "little-actors"
 
-export class ChatRoom extends Actor {
+type Message = { type: "chat"; text: string }
+
+export class ChatRoom extends Actor<{ name: string }, Message> {
     history: string[] = []
 
-    async onMessage(_socket: ActorSocket, message: string | Uint8Array): Promise<void> {
-        if (typeof message !== "string") return
-        this.history.push(message)
-        this.broadcast(message)
+    async onMessage(socket: ActorSocketOf<ChatRoom>, message: ActorMessageOf<ChatRoom>): Promise<void> {
+        const text = `${socket.metadata.name}: ${message.text}`
+        this.history.push(text)
+        this.broadcast({ type: "chat", text })
     }
 }
 ```
 
 `history` is saved actor state. Each incoming message appends to it and broadcasts to everyone in the room, including the sender. When a client connects, the runtime automatically sends the saved state, including the full history.
+
+The SDK encodes and decodes JSON automatically. The actor's generic parameters type connection metadata and messages; optional [Zod schemas](docs/reference/api.md#generics-and-wire-validation) validate their application-specific shapes at runtime.
 
 ### 3. Create the terminal client
 
@@ -56,14 +60,16 @@ import { createInterface as readLines } from "node:readline"
 import { ChatRoom } from "./durable-objects.js"
 
 const name = process.argv[2] ?? "Anonymous"
-const socket = await ChatRoom.get("lobby").connect({})
+const socket = await ChatRoom.get("lobby").connect({ name })
 const terminal = readLines({ input: process.stdin, output: process.stdout })
 
-socket.addEventListener("message", ({ data }) => console.log(String(data)))
+socket.addEventListener("message", ({ data }) => {
+    console.log(data.type === "state" ? JSON.stringify(data) : data.text)
+})
 socket.addEventListener("close", () => terminal.close())
 
 for await (const line of terminal) {
-    socket.send(`${name}: ${line}`)
+    socket.send({ type: "chat", text: line })
 }
 socket.close()
 ```
@@ -106,7 +112,7 @@ npx little-actors run src/chat.ts Bob
 { "type": "state", "state": { "history": [] } }
 ```
 
-Leave both running: each listens for messages and lets you send your own. The client prints incoming data directly, so saved history appears as JSON and live messages appear as text.
+Leave both running: each listens for messages and lets you send your own. The client formats saved history as JSON and prints the text from live messages.
 
 Once both have joined, type `Hello, Bob!` in Alice's terminal and press Enter. Then type `Hey, Alice!` in Bob's terminal and press Enter. Both clients receive:
 

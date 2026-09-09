@@ -1,10 +1,11 @@
 import { AsyncLocalStorage } from "node:async_hooks"
 
 import type { ActorConnection, ActorSocketMessage } from "../shared/socket.js"
+import type { ActorSchemas } from "../shared/socketValidation.js"
 
 interface ActorClientTransport {
     invoke(actorType: string, actorId: string, method: string, args: readonly unknown[]): Promise<unknown>
-    connect(actorType: string, actorId: string, metadata: unknown): Promise<ActorConnection>
+    connect(actorType: string, actorId: string, metadata: unknown, schemas?: ActorSchemas): Promise<ActorConnection>
     broadcast(actorType: string, actorId: string, message: ActorSocketMessage): Promise<void>
 }
 
@@ -25,8 +26,8 @@ class LazyActorClient implements ActorClientTransport {
         return (await this.load()).invoke(actorType, actorId, method, args)
     }
 
-    async connect(actorType: string, actorId: string, metadata: unknown): Promise<ActorConnection> {
-        return (await this.load()).connect(actorType, actorId, metadata)
+    async connect(actorType: string, actorId: string, metadata: unknown, schemas?: ActorSchemas): Promise<ActorConnection> {
+        return (await this.load()).connect(actorType, actorId, metadata, schemas)
     }
 
     async broadcast(actorType: string, actorId: string, message: ActorSocketMessage): Promise<void> {

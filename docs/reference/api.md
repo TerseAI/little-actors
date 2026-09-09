@@ -42,6 +42,59 @@ Remote methods must be `async` prototype methods. Getters, setters, symbol metho
 
 TypeScript `private` and `protected` do not provide authorization for discovered prototype methods. Access checks belong in application code. JavaScript private methods are not remotely discovered.
 
+### Generics and wire validation
+
+```text
+Actor<Metadata = JsonValue, Incoming = JsonValue, Outgoing = Incoming, Tag extends string = string>
+```
+
+Declare socket types once on the base class: `class ChatRoom extends Actor<ChatroomMetadata>`. The first parameter types `connect()` metadata, hook sockets, and `this.connections`. The remaining parameters type incoming messages, outgoing messages, and connection tags. Outgoing messages default to the incoming type.
+
+For runtime validation, install `zod@^4` and declare static schemas. Derive types with `z.infer` so schemas and TypeScript share one definition:
+
+```ts
+import { z } from "zod"
+import { Actor } from "little-actors"
+import type { ActorMessageOf, ActorSocketOf } from "little-actors"
+
+const metadata = z.object({ userId: z.string() })
+const incoming = z.object({ type: z.literal("post"), text: z.string().min(1) })
+const outgoing = z.object({ type: z.literal("posted"), text: z.string(), userId: z.string() })
+const tag = z.enum(["member", "moderator"])
+
+export class ChatRoom extends Actor<z.infer<typeof metadata>, z.infer<typeof incoming>, z.infer<typeof outgoing>, z.infer<typeof tag>> {
+    static schemas = { metadata, incoming, outgoing, tag }
+    history: string[] = []
+
+    async onMessage(socket: ActorSocketOf<ChatRoom>, message: ActorMessageOf<ChatRoom>): Promise<void> {
+        this.history.push(message.text)
+        socket.setTags("member")
+        this.broadcast({ type: "posted", text: message.text, userId: socket.metadata.userId }, { tags: ["member"] })
+    }
+}
+```
+
+Client code uses the same actor declaration:
+
+```ts
+import { ChatRoom } from "./durable-objects.js"
+
+const connection = await ChatRoom.get("lobby").connect({ userId: "alice" })
+connection.send({ type: "post", text: "Hello" })
+connection.addEventListener("message", ({ data }) => {
+    if (data.type === "state") console.log(data.state.history)
+    else console.log(data.userId, data.text)
+})
+```
+
+`ActorSocketOf<ChatRoom>` and `ActorMessageOf<ChatRoom>` reuse the actor's types in hooks. Tags constrain `setTags()`, `socket.tags`, and broadcast filters. References infer client send and receive types, initial state from public fields, and remote method arguments and results from their signatures.
+
+Each schema is optional. JSON shape and size checks always run. When supplied, `metadata` validates connection initialization, assignment, and restoration; `incoming` validates client sends and actor receipt; `outgoing` validates actor sends, broadcasts, and client receipt; `tag` validates individual tags on assignment, restoration, and broadcast filters. Validation runs before a hook receives input or an SDK operation publishes invalid output. Direct HTTP broadcasts are validated by SDK receivers; application schemas are not installed in the gateway.
+
+Schemas are synchronous validators. Their input and output types must agree with the corresponding generic. Parsed schema output is not substituted: defaults, coercion, transformations, and unknown-key stripping do not rewrite wire data. Use refinements or strict objects to reject unwanted values. Static schemas are not saved actor state.
+
+The message type `"state"` is reserved for automatic initial state delivery. This message uses the runtime's state envelope validation and bypasses the application outgoing schema. Generic types alone do not validate application-specific shapes at runtime.
+
 ### Actor.get
 
 ```text
@@ -76,7 +129,7 @@ The current actor ID, available inside an actor method or lifecycle hook. Readin
 ### Actor.connections
 
 ```text
-protected readonly connections: readonly ActorSocket[]
+protected readonly connections: readonly ActorSocket<Metadata, Outgoing, Tag>[]
 ```
 
 Connections available during the invocation. Includes the connecting socket during `onConnect` and excludes the disconnected socket during `onDisconnect`. Access outside an invocation raises an `Error`.
@@ -86,14 +139,14 @@ Socket objects belong to the current invocation and are not saved actor state. E
 ### Actor.broadcast
 
 ```text
-protected broadcast(message: ActorSocketMessage, options?: ActorBroadcastOptions): void
+protected broadcast(message: Outgoing, options?: ActorBroadcastOptions<Tag>): void
 ```
 
 Sends to currently open connections. By default, this includes the sender when called from `onMessage`.
 
 **Parameters**
 
-- `message` ([ActorSocketMessage](#actorsocketmessage), required) — Text or binary data to send.
+- `message` ([ActorSocketMessage](#actorsocketmessage), required) — JSON value matching the actor's outgoing message type.
 - `options` ([ActorBroadcastOptions](#actorbroadcastoptions), optional) — Recipient exclusions and tag filters. Omitted options send to all open connections.
 
 **Returns:** `void`. Recipients do not acknowledge delivery, and broadcasting does not add the message to saved state.
@@ -103,21 +156,21 @@ Sends to currently open connections. By default, this includes the sender when c
 Inside an actor method or hook:
 
 ```ts
-this.broadcast("Hello", { except: socket })
-this.broadcast("Document updated", { tags: ["editors", "document-1"] })
+this.broadcast({ type: "chat", text: "Hello" }, { except: socket })
+this.broadcast({ type: "updated" }, { tags: ["editors", "document-1"] })
 ```
 
 ### Actor.onConnect
 
 ```text
-async onConnect(socket: ActorSocket<Metadata>): Promise<void>
+async onConnect(socket: ActorSocket<Metadata, Outgoing, Tag>): Promise<void>
 ```
 
 Optional lifecycle hook called when a connection is initialized. The socket is `"connecting"`; acceptance is automatic when the hook succeeds without rejecting it. Calling `socket.reject(4003, "Access denied")` suppresses acceptance and initial state delivery.
 
 **Parameters**
 
-- `socket` ([ActorSocket](#actorsocket)) — Joining connection. Its metadata type is inferred by [`reference.connect()`](#referenceconnect).
+- `socket` ([ActorSocket](#actorsocket)) — Joining connection. Its metadata, outgoing messages, and tags follow the actor generics.
 
 **Returns:** `Promise<void>`. Successful state changes are saved.
 
@@ -132,15 +185,15 @@ Messages sent with `socket.send()` during the hook precede that state message. E
 ### Actor.onMessage
 
 ```text
-async onMessage(socket: ActorSocket<Metadata>, message: ActorSocketMessage): Promise<void>
+async onMessage(socket: ActorSocket<Metadata, Outgoing, Tag>, message: Incoming): Promise<void>
 ```
 
-Optional lifecycle hook called for incoming application messages. Text arrives unchanged; the runtime does not JSON-parse it. Incoming activity wakes a hibernating actor as needed.
+Optional lifecycle hook called for incoming application messages. The runtime parses JSON and validates it against the optional incoming schema before calling the hook. Incoming activity wakes a hibernating actor as needed.
 
 **Parameters**
 
 - `socket` ([ActorSocket](#actorsocket)) — Sending connection, in state `"open"`.
-- `message` ([ActorSocketMessage](#actorsocketmessage)) — A `string` for text or `Uint8Array` for binary data.
+- `message` (`Incoming`) — Parsed JSON matching the actor's incoming message type.
 
 **Returns:** `Promise<void>`. Successful state changes are saved.
 
@@ -149,7 +202,7 @@ The [chat tutorial](../../README.md#2-create-the-room) shows a complete implemen
 ### Actor.onDisconnect
 
 ```text
-async onDisconnect(socket: ActorSocket<Metadata>, code: number, reason: string, wasClean: boolean): Promise<void>
+async onDisconnect(socket: ActorSocket<Metadata, Outgoing, Tag>, code: number, reason: string, wasClean: boolean): Promise<void>
 ```
 
 Optional lifecycle hook called when the server observes a connection closing. The socket is absent from `this.connections` and cannot send messages.
@@ -184,7 +237,7 @@ The runtime saves an actor's own enumerable string-keyed properties after succes
 
 On restoration, saved fields replace initialized enumerable fields. New field initializers are **not merged into existing saved state**. After adding a field to an existing actor, an application can initialize it in a method with `this.history ??= []`.
 
-Arguments, results, metadata, and state use JSON serialization:
+Remote method arguments, results, and saved state use JSON serialization:
 
 | Value                                                            | Serialization behavior                                                                               |
 | ---------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------- |
@@ -196,7 +249,7 @@ Arguments, results, metadata, and state use JSON serialization:
 | `BigInt` or circular references                                  | Fail serialization.                                                                                  |
 | `Map`, `Set`, custom classes                                     | Serialize their enumerable properties or `toJSON()` result; prototypes and methods are not retained. |
 
-A method returning `undefined` produces `null` at runtime. TypeScript return annotations do not change JSON behavior. Binary WebSocket messages do not use this JSON representation.
+A method returning `undefined` produces `null` at runtime. TypeScript return annotations do not change JSON behavior. Socket messages and metadata use stricter JSON validation: unsupported values such as `undefined`, `Date`, `BigInt`, non-finite numbers, bytes, and circular references are rejected before sending.
 
 When an actor method throws, its state changes are not saved. External effects, including HTTP requests and already sent WebSocket messages, cannot be rolled back. Socket output can arrive before state is committed; receiving a broadcast does not confirm persistence.
 
@@ -223,14 +276,14 @@ Actor-to-actor remote calls, connections, and broadcasts are not supported insid
 ### reference.connect
 
 ```text
-connect(metadata: Metadata): Promise<ActorConnection>
+connect(metadata: Metadata): Promise<ActorConnection<Incoming, Outgoing, ActorState>>
 ```
 
 Opens a WebSocket connection to the actor. The SDK handles bearer authentication and initialization.
 
 **Parameters**
 
-- `metadata` (required) — JSON-serializable connection metadata; use `{}` for no metadata. Its type is inferred from `onConnect(socket: ActorSocket<Metadata>)`, or is `unknown` without that hook. Other lifecycle hooks do not establish the inferred type.
+- `metadata` (required) — JSON connection metadata matching the actor's first generic parameter, even when no lifecycle hooks are defined. Use `{}` for no metadata with an untyped actor.
 
 **Returns:** `Promise<ActorConnection>`, resolving when the WebSocket opens and initialization is sent. The actor's `onConnect` hook and initial state delivery can still be pending.
 
@@ -240,7 +293,7 @@ Opens a WebSocket connection to the actor. The SDK handles bearer authentication
 import { ChatRoom } from "./durable-objects.js"
 
 const socket = await ChatRoom.get("lobby").connect({})
-socket.addEventListener("message", ({ data }) => console.log(String(data)))
+socket.addEventListener("message", ({ data }) => console.log(data))
 ```
 
 Install message and close listeners immediately after awaiting `connect()`. A reconnect requires a new call with fresh metadata; neither automatic reconnect nor transient-message replay is provided.
@@ -248,14 +301,14 @@ Install message and close listeners immediately after awaiting `connect()`. A re
 ### reference.broadcast
 
 ```text
-broadcast(message: ActorSocketMessage): Promise<void>
+broadcast(message: Outgoing): Promise<void>
 ```
 
 Sends transient output to the actor's currently connected clients. It does not execute an actor method, update saved state, or retain the message for future connections. There are no recipient-filter options.
 
 **Parameters**
 
-- `message` ([ActorSocketMessage](#actorsocketmessage), required) — Text or binary data to send.
+- `message` ([ActorSocketMessage](#actorsocketmessage), required) — JSON value matching the actor's outgoing message type.
 
 **Returns:** `Promise<void>`. With no connected clients, there is nothing to deliver.
 
@@ -264,7 +317,7 @@ Sends transient output to the actor's currently connected clients. It does not e
 ```ts
 import { ChatRoom } from "./durable-objects.js"
 
-await ChatRoom.get("lobby").broadcast("Deployment completed")
+await ChatRoom.get("lobby").broadcast({ type: "notice", text: "Deployment completed" })
 ```
 
 To save and broadcast together, invoke an actor method that updates a field and calls [`this.broadcast()`](#actorbroadcast).
@@ -275,7 +328,7 @@ To save and broadcast together, invoke an actor method that updates a field and 
 import type { ActorSocket } from "little-actors"
 ```
 
-Actor-side connection passed to lifecycle hooks and listed in `this.connections`. `ActorSocket<Metadata>` describes the metadata shape; its default metadata type is JSON-compatible values. Import it as a type; it is not a constructor.
+Actor-side connection passed to lifecycle hooks and listed in `this.connections`. `ActorSocket<Metadata, Outgoing, Tag>` describes metadata, sent messages, and tags. Defaults are JSON values for metadata and messages, and `string` for tags. Prefer `ActorSocketOf<YourActor>` to reuse the actor declaration. Import it as a type; it is not a constructor.
 
 ### ActorSocket.id
 
@@ -291,7 +344,7 @@ Unique connection ID.
 metadata: Metadata
 ```
 
-JSON metadata supplied at connection time. Assign the whole value to retain a change for later events; mutating a nested property alone does not publish an update. Assignment raises an `Error` if the value cannot be serialized.
+JSON metadata supplied at connection time. Assign the whole value to retain a change for later events; mutating a nested property alone does not publish an update. Assignment raises an `Error` if the value is not JSON or fails the metadata schema.
 
 Inside a hook using `ActorSocket<{ userId: string }>`:
 
@@ -304,7 +357,7 @@ Metadata is limited to 64 KiB of JSON-encoded UTF-8. SDK clients supply their ow
 ### ActorSocket.tags
 
 ```text
-readonly tags: readonly string[]
+readonly tags: readonly Tag[]
 ```
 
 Current connection tags. Replace them with [`setTags()`](#actorsocketsettags). Tags last for the connection and are not saved actor fields.
@@ -320,14 +373,14 @@ Connection state: `"connecting"` during `onConnect`, `"open"` during message han
 ### ActorSocket.send
 
 ```text
-send(message: ActorSocketMessage): void
+send(message: Outgoing): void
 ```
 
-Sends text or binary data to this connection, including during `onConnect`.
+Sends a JSON value to this connection, including during `onConnect`. The SDK validates and encodes it automatically.
 
 **Parameters**
 
-- `message` ([ActorSocketMessage](#actorsocketmessage), required) — A `string` or `Uint8Array`.
+- `message` (`Outgoing`, required) — JSON value matching the actor's outgoing message type.
 
 **Returns:** `void`.
 
@@ -336,7 +389,7 @@ Sends text or binary data to this connection, including during `onConnect`.
 Inside an actor method or hook:
 
 ```ts
-socket.send("Hello")
+socket.send({ type: "chat", text: "Hello" })
 ```
 
 ### ActorSocket.close
@@ -382,14 +435,14 @@ socket.reject(4003, "Access denied")
 ### ActorSocket.setTags
 
 ```text
-setTags(...tags: string[]): void
+setTags(...tags: Tag[]): void
 ```
 
 Replaces connection tags, removing duplicates. Calling with no arguments clears all tags.
 
 **Parameters**
 
-- `tags` (`string[]`) — Up to 128 unique tags, each 1–256 JavaScript string code units. Total tag text must fit 8 KiB of UTF-8.
+- `tags` (`Tag[]`) — Up to 128 unique tags, each 1–256 JavaScript string code units. Total tag text must fit 8 KiB of UTF-8. Values must pass the optional `schemas.tag` validator.
 
 **Returns:** `void`.
 
@@ -401,7 +454,7 @@ socket.setTags("editors", "document-1")
 
 ### Socket output limits
 
-Text and binary messages or frames are limited to 16 MiB; the binary limit applies to decoded data. Pending actor socket output is limited to 512 queued operations or 24 MiB of serialized queued output. Exceeding the queue limit fails the operation.
+JSON text messages are limited to 16 MiB of UTF-8, including JSON encoding overhead. Binary application messages are unsupported. Pending actor socket output is limited to 512 queued operations or 24 MiB of serialized queued output. Exceeding the queue limit fails the operation.
 
 Sending and broadcasting do not acknowledge persistence or recipient delivery. Already sent output cannot be rolled back if the actor later fails.
 
@@ -411,7 +464,7 @@ Sending and broadcasting do not acknowledge persistence or recipient delivery. A
 import type { ActorConnection } from "little-actors"
 ```
 
-Client-side connection returned by [`reference.connect()`](#referenceconnect). The SDK handles authentication and initialization; application code handles message encoding, validation, display, and replay beyond the initial saved state. Import it as a type; it is not a constructor.
+Client-side connection returned by [`reference.connect()`](#referenceconnect). The SDK handles authentication, initialization, JSON encoding and decoding, and declared schema validation. `ActorConnection<Send, Receive, State>` types sent messages, received application messages, and initial state. `connect()` infers all three from the actor. Application code handles display and replay beyond the initial saved state. Import it as a type; it is not a constructor.
 
 ### ActorConnection.readyState
 
@@ -424,18 +477,18 @@ WebSocket state: `0` connecting, `1` open, `2` closing, or `3` closed. The conne
 ### ActorConnection.send
 
 ```text
-send(data: string | ArrayBufferLike | ArrayBufferView): void
+send(data: Send): void
 ```
 
 Sends application data to the actor's `onMessage` hook. Send only while the connection is open.
 
 **Parameters**
 
-- `data` (`string | ArrayBufferLike | ArrayBufferView`, required) — Strings are text frames; buffers and typed-array views are binary frames.
+- `data` (`Send`, required) — JSON value matching the actor's incoming message type. Pass objects directly; do not call `JSON.stringify()` first.
 
 **Returns:** `void`. This is not an acknowledgment of actor handling or persistence.
 
-**Raises:** An `Error` if the WebSocket is still connecting. Later transport failures arrive through connection events.
+**Raises:** An `Error` if data is not JSON, fails the incoming schema, exceeds the message limit, or the WebSocket is still connecting. Later transport failures arrive through connection events.
 
 ### ActorConnection.close
 
@@ -491,11 +544,11 @@ Removes an event listener.
 | Event     | Fields                                                                 | Meaning                                                                       |
 | --------- | ---------------------------------------------------------------------- | ----------------------------------------------------------------------------- |
 | `open`    | `type: "open"`                                                         | Connection opened. Normally occurs before `connect()` returns the connection. |
-| `message` | `type: "message"`, `data: string \| Uint8Array \| ArrayBuffer`         | Initial state or actor-sent application data.                                 |
+| `message` | `type: "message"`, `data: Receive \| ActorStateMessage<State>`         | Initial state or actor-sent application data.                                 |
 | `close`   | `type: "close"`, `code: number`, `reason: string`, `wasClean: boolean` | Connection closed.                                                            |
 | `error`   | `type: "error"`                                                        | Connection error. The public event type has no message field.                 |
 
-The initial state is a JSON text message with shape `{"type":"state","state":{...}}`. Subsequent application messages use the encoding chosen by the actor. See [close behavior](http.md#close-behavior) for common codes.
+The initial state arrives as a parsed object with shape `{"type":"state","state":{...}}`. Its state type is inferred from the actor's public data fields. Application messages are parsed and checked against the outgoing schema. Malformed JSON or invalid messages cause an `error` event and closure with code `1007`; binary frames close with `1003`. See [close behavior](http.md#close-behavior) for common server codes.
 
 ## ActorInvocationError
 
@@ -567,6 +620,25 @@ Validation, actor definition, configuration, serialization, and socket failures 
 
 These types are exported from `little-actors` alongside `ActorSocket` and `ActorConnection`.
 
+### ActorSocketOf and ActorMessageOf
+
+`ActorSocketOf<Instance>` derives an actor-side socket's metadata, outgoing message, and tag types. `ActorMessageOf<Instance>` derives the incoming message type. Pass the actor instance type, such as `ChatRoom`, rather than `typeof ChatRoom`.
+
+### ActorSchemas
+
+`ActorSchemas<Metadata, Incoming, Outgoing = Incoming, Tag extends string = string>` describes optional Zod validators named `metadata`, `incoming`, `outgoing`, and `tag`. See [generics and wire validation](#generics-and-wire-validation).
+
+### ActorStateMessage
+
+```text
+interface ActorStateMessage<State> {
+    readonly type: "state"
+    readonly state: State
+}
+```
+
+The automatic initial state message, included in the client message event union. Narrow on `data.type === "state"` when using an application message union with distinct `type` values.
+
 ### ActorClass
 
 ```ts
@@ -574,8 +646,9 @@ import type { ActorClass } from "little-actors"
 ```
 
 ```text
-type ActorClass<Instance extends Actor = Actor> = Function & {
+type ActorClass<Instance extends Actor<unknown, unknown, unknown> = Actor<unknown, unknown, unknown>> = Function & {
     readonly prototype: Instance
+    readonly schemas?: ActorSchemas
 }
 ```
 
@@ -587,12 +660,12 @@ An actor class whose prototype has type `Instance`. The type describes the class
 import type { ActorBroadcastOptions } from "little-actors"
 ```
 
-Recipient filters for [`Actor.broadcast()`](#actorbroadcast). Both properties are readonly and optional; filters and exclusions can be combined.
+`ActorBroadcastOptions<Tag = string>` supplies recipient filters for [`Actor.broadcast()`](#actorbroadcast). Both properties are readonly and optional; filters and exclusions can be combined.
 
 #### ActorBroadcastOptions.except
 
 ```text
-readonly except?: ActorSocket | readonly ActorSocket[]
+readonly except?: Pick<ActorSocket, "id"> | readonly Pick<ActorSocket, "id">[]
 ```
 
 Connections to exclude. Defaults to none; at most 128 exclusions are allowed.
@@ -600,18 +673,20 @@ Connections to exclude. Defaults to none; at most 128 exclusions are allowed.
 #### ActorBroadcastOptions.tags
 
 ```text
-readonly tags?: readonly string[]
+readonly tags?: readonly Tag[]
 ```
 
-Deliver only to connections having **all** listed tags. Omitted or empty means no tag filter. Each tag must contain 1–256 JavaScript string code units.
+Deliver only to connections having **all** listed tags. Omitted or empty means no tag filter. Each tag must contain 1–256 JavaScript string code units and pass the actor's tag schema. The same count and byte limits as `setTags()` apply.
 
 ### ActorSocketMessage
 
 ```text
-type ActorSocketMessage = string | Uint8Array
+type ActorSocketMessage = string | number | boolean | null
+    | readonly ActorSocketMessage[]
+    | { readonly [key: string]: ActorSocketMessage }
 ```
 
-Text or binary data accepted by actor-side send and broadcast methods and passed to `onMessage`. Import with `import type { ActorSocketMessage } from "little-actors"`.
+The default JSON message type. Strings are encoded as JSON strings; raw text and binary frames are unsupported by the SDK. Import with `import type { ActorSocketMessage } from "little-actors"`.
 
 ### ActorSocketState (type)
 

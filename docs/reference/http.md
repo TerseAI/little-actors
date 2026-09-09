@@ -197,7 +197,7 @@ Within 10 seconds of opening, send this as the first text frame:
 { "type": "initialize", "metadata": { "userId": "alice" } }
 ```
 
-The initialization document may be at most 64 KiB plus 128 bytes, and its metadata must fit the 64 KiB metadata limit. After initialization, application text and binary frames go to [`onMessage`](api.md#actoronmessage). The runtime sends the automatic state message after successful acceptance. Subsequent outgoing application messages have the format chosen by your actor.
+The initialization document may be at most 64 KiB plus 128 bytes, and its metadata must fit the 64 KiB metadata limit. After initialization, send application JSON in text frames. The TypeScript runtime parses and validates each message before calling [`onMessage`](api.md#actoronmessage). It sends the automatic state message after successful acceptance. Outgoing application messages are also JSON text frames.
 
 The SDK performs this handshake for [`reference.connect()`](api.md#referenceconnect). The browser WebSocket API cannot set the required Authorization header; use the external route below for browser connections.
 
@@ -219,16 +219,19 @@ Supply either `Authorization: Bearer <credential>` or the WebSocket subprotocols
 
 ```js
 const socket = new WebSocket("wss://objects.example.com/v1/socket/chat/lobby", ["terse-do", `terse-ticket.${credential}`])
-socket.addEventListener("message", ({ data }) => console.log(data))
+socket.addEventListener("message", ({ data }) => console.log(JSON.parse(data)))
+socket.addEventListener("open", () => socket.send(JSON.stringify({ type: "post", text: "Hello" })))
 ```
 
 `credential` is an application-issued credential accepted by your authorization callback and must be valid inside a WebSocket subprotocol token. The runtime does not provide an external-ticket issuance endpoint. The accepted subprotocol is `terse-do`.
+
+Native WebSocket clients encode and decode JSON themselves. The `little-actors` SDK handles this automatically for `reference.connect()` connections.
 
 The callback selects the namespace, actor class, region, metadata, and credential expiration. It must preserve the requested actor ID. There is no client initialization frame on this route: the callback supplies metadata. Sending an initialization document here would be an application message.
 
 ### Message limits
 
-Each actor supports up to 128 connections per gateway process. Text and binary messages or frames are limited to 16 MiB; the binary limit applies to decoded data. Connection metadata is limited to 64 KiB of JSON-encoded UTF-8.
+Each actor supports up to 128 connections per gateway process. Application messages must be JSON text and fit 16 MiB of UTF-8, including JSON encoding overhead. The TypeScript SDK rejects binary application messages. Connection metadata is limited to 64 KiB of JSON-encoded UTF-8.
 
 ### Close behavior
 
@@ -299,7 +302,7 @@ Set `DURABLE_OBJECT_SOCKET_EVENT_URL` to receive messages after successful actor
     "actorId": "lobby",
     "triggerId": "chat",
     "connectionId": "<connection-id>",
-    "message": { "type": "text", "data": "hello" }
+    "message": { "type": "text", "data": "{\"type\":\"post\",\"text\":\"Hello\"}" }
 }
 ```
 
@@ -309,7 +312,7 @@ Set `DURABLE_OBJECT_SOCKET_EVENT_URL` to receive messages after successful actor
 - `namespaceId` (`string`), `actorType` (`string`), `actorId` (`string`) — Actor that handled the message.
 - `triggerId` (`string | null`) — External route's trigger ID, or `null` for a session-token connection.
 - `connectionId` (`string`) — Connection that sent the message.
-- `message` (`object`) — `{"type":"text","data":"hello"}` for text, or `{"type":"binary","data":"<base64>"}` for binary.
+- `message` (`object`) — The transport envelope `{"type":"text","data":"<JSON text>"}`. Parse `message.data` to read the application value. The transport also defines a binary envelope, but the TypeScript actor runtime rejects binary application messages.
 
 Events cover successfully handled incoming messages. Connection changes and outgoing broadcasts do not produce events.
 

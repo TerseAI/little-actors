@@ -3,14 +3,27 @@ import { actorClient } from "../workflow/client.js"
 import { ActorDefinitionError } from "./errors.js"
 import { actorConnections, broadcastActor } from "./socket.js"
 import type { ActorBroadcastOptions, ActorConnection, ActorSocket, ActorSocketMessage } from "./socket.js"
+import { outgoingMessage, socketMetadata } from "./socketValidation.js"
+import type { ActorSchemas } from "./socketValidation.js"
 import { validateActorComponent } from "./types.js"
+import type { JsonValue } from "./types.js"
+
+declare const actorTypes: unique symbol
 
 const actorMetadata = new WeakMap<object, ActorMetadata>()
 const actorDefinitions = new Map<string, ActorDefinition>()
 const asyncFunction = Object.getPrototypeOf(async () => {}).constructor
 const referenceClasses = new WeakMap<Function, ActorReferenceClass>()
 
-abstract class Actor {
+interface Actor<Metadata = JsonValue, Incoming = JsonValue, Outgoing = Incoming, Tag extends string = string> {
+    onConnect?(socket: ActorSocket<Metadata, Outgoing, Tag>): Promise<void>
+    onMessage?(socket: ActorSocket<Metadata, Outgoing, Tag>, message: Incoming): Promise<void>
+    onDisconnect?(socket: ActorSocket<Metadata, Outgoing, Tag>, code: number, reason: string, wasClean: boolean): Promise<void>
+}
+
+abstract class Actor<Metadata = JsonValue, Incoming = JsonValue, Outgoing = Incoming, Tag extends string = string> {
+    declare readonly [actorTypes]: { metadata: Metadata; incoming: Incoming; outgoing: Outgoing; tag: Tag }
+
     protected constructor() {}
 
     static get<TActorClass extends ActorClass>(this: ValidActorClass<TActorClass>, actorId: string): ActorReference<TActorClass["prototype"]> {
@@ -21,16 +34,16 @@ abstract class Actor {
         return metadataFor(this).actorId
     }
 
-    protected get connections(): readonly ActorSocket[] {
-        return actorConnections(this)
+    protected get connections(): readonly ActorSocket<Metadata, Outgoing, Tag>[] {
+        return actorConnections<Metadata, Outgoing, Tag>(this)
     }
 
-    protected broadcast(message: ActorSocketMessage, options?: ActorBroadcastOptions): void {
+    protected broadcast(message: Outgoing, options?: ActorBroadcastOptions<Tag>): void {
         broadcastActor(this, message, options)
     }
 }
 
-function registerActorClass<Instance extends Actor>(actorClass: ActorClass<Instance>): ActorDefinition {
+function registerActorClass<Instance extends AnyActor>(actorClass: ActorClass<Instance>): ActorDefinition {
     const actorType = actorName(actorClass)
     const existing = actorDefinitions.get(actorType)
     if (existing !== undefined) {
@@ -42,6 +55,7 @@ function registerActorClass<Instance extends Actor>(actorClass: ActorClass<Insta
     const definition = {
         actorType: validateActorComponent("actor type", actorType),
         actorClass,
+        schemas: actorClass.schemas ?? {},
         methods: new Set(discoverMethods(actorClass, actorType))
     }
     actorDefinitions.set(actorType, definition)
@@ -58,7 +72,7 @@ function getActorReference<TActorClass extends ActorClass>(actorClass: TActorCla
     return new Reference(actorId) as unknown as ActorReference<TActorClass["prototype"]>
 }
 
-function bindActorIdentity(instance: Actor, actorId: string): void {
+function bindActorIdentity(instance: AnyActor, actorId: string): void {
     actorMetadata.set(instance, { actorId: validateActorComponent("actor ID", actorId) })
 }
 
@@ -79,7 +93,7 @@ function referenceClass(definition: ActorDefinition): ActorReferenceClass {
         writable: false,
         value: function connectActor(this: Actor, metadata: unknown): Promise<ActorConnection> {
             const actor = metadataFor(this)
-            return actorClient().connect(definition.actorType, actor.actorId, metadata)
+            return actorClient().connect(definition.actorType, actor.actorId, socketMetadata(metadata, definition.schemas), definition.schemas)
         }
     })
 
@@ -89,7 +103,7 @@ function referenceClass(definition: ActorDefinition): ActorReferenceClass {
         writable: false,
         value: function broadcastActorMessage(this: Actor, message: ActorSocketMessage): Promise<void> {
             const actor = metadataFor(this)
-            return actorClient().broadcast(definition.actorType, actor.actorId, message)
+            return actorClient().broadcast(definition.actorType, actor.actorId, outgoingMessage(message, definition.schemas))
         }
     })
 
@@ -108,7 +122,7 @@ function referenceClass(definition: ActorDefinition): ActorReferenceClass {
     return ActorReference
 }
 
-function metadataFor(instance: Actor): ActorMetadata {
+function metadataFor(instance: AnyActor): ActorMetadata {
     const metadata = actorMetadata.get(instance)
     if (metadata === undefined) throw new ActorDefinitionError("actor identity is unavailable outside an actor invocation")
     return metadata
@@ -145,6 +159,7 @@ function actorName(actorClass: ActorClass): string {
 interface ActorDefinition {
     readonly actorType: string
     readonly actorClass: ActorClass
+    readonly schemas: ActorSchemas
     readonly methods: ReadonlySet<string>
 }
 
@@ -152,24 +167,47 @@ interface ActorMetadata {
     readonly actorId: string
 }
 
-type ActorClass<Instance extends Actor = Actor> = Function & {
+type AnyActor = Actor<unknown, unknown, unknown>
+type ActorClass<Instance extends AnyActor = AnyActor> = Function & {
     readonly prototype: Instance
+    readonly schemas?: ActorSchemas
 }
 type ActorReferenceClass = new (actorId: string) => Actor
 type AsyncMethod = (...args: never[]) => Promise<unknown>
-type PubliclyConstructibleActorClass = abstract new (...args: never[]) => Actor
-type InvalidActorMethod<Instance extends Actor> = {
-    [Key in keyof Instance]: Instance[Key] extends (...args: never[]) => unknown ? (Instance[Key] extends AsyncMethod ? never : Key) : never
+type PubliclyConstructibleActorClass = abstract new (...args: never[]) => AnyActor
+type InvalidActorMethod<Instance extends AnyActor> = {
+    [Key in keyof Instance]-?: NonNullable<Instance[Key]> extends (...args: never[]) => unknown ? (NonNullable<Instance[Key]> extends AsyncMethod ? never : Key) : never
 }[keyof Instance]
-type ValidActorClass<TActorClass extends ActorClass> = TActorClass extends PubliclyConstructibleActorClass ? never : InvalidActorMethod<TActorClass["prototype"]> extends never ? TActorClass : never
-type ActorReference<Instance extends Actor> = {
+type ValidActorClass<TActorClass extends ActorClass> = TActorClass extends PubliclyConstructibleActorClass
+    ? never
+    : InvalidActorMethod<TActorClass["prototype"]> extends never
+      ? TActorClass extends {
+            readonly schemas: ActorSchemas<
+                SocketMetadata<TActorClass["prototype"]>,
+                SocketIncoming<TActorClass["prototype"]>,
+                SocketOutgoing<TActorClass["prototype"]>,
+                SocketTag<TActorClass["prototype"]>
+            >
+        }
+          ? TActorClass
+          : TActorClass extends { readonly schemas: unknown }
+            ? never
+            : TActorClass
+      : never
+type ActorReference<Instance extends AnyActor> = {
     [Key in keyof Instance as Instance[Key] extends AsyncMethod ? (Key extends SocketLifecycleMethod ? never : Key) : never]: Instance[Key]
 } & {
-    connect(metadata: SocketMetadata<Instance>): Promise<ActorConnection>
-    broadcast(message: ActorSocketMessage): Promise<void>
+    connect(metadata: SocketMetadata<Instance>): Promise<ActorConnection<SocketIncoming<Instance>, SocketOutgoing<Instance>, ActorState<Instance>>>
+    broadcast(message: SocketOutgoing<Instance>): Promise<void>
 }
 type SocketLifecycleMethod = "onConnect" | "onMessage" | "onDisconnect"
-type SocketMetadata<Instance> = Instance extends { onConnect(socket: ActorSocket<infer Metadata>): Promise<unknown> } ? Metadata : unknown
+type SocketMetadata<Instance extends AnyActor> = Instance[typeof actorTypes]["metadata"]
+type SocketIncoming<Instance extends AnyActor> = Instance[typeof actorTypes]["incoming"]
+type SocketOutgoing<Instance extends AnyActor> = Instance[typeof actorTypes]["outgoing"]
+type SocketTag<Instance extends AnyActor> = Instance[typeof actorTypes]["tag"]
+type ActorSocketOf<Instance extends AnyActor> = ActorSocket<SocketMetadata<Instance>, SocketOutgoing<Instance>, SocketTag<Instance>>
+type ActorMessageOf<Instance extends AnyActor> = SocketIncoming<Instance>
+type ActorState<Instance> = { [Key in keyof Instance as Key extends symbol ? never : NonNullable<Instance[Key]> extends (...args: never[]) => unknown ? never : Key]: Instance[Key] }
 
 export { Actor, bindActorIdentity, findActorDefinition, registerActorClass }
-export type { ActorClass, ActorDefinition, ActorReference }
+export type { ActorClass, ActorDefinition, ActorMessageOf, ActorReference, ActorSocketOf, AnyActor }

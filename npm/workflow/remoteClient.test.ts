@@ -253,7 +253,7 @@ test("broadcasts to actor sockets without resolving or invoking an actor host", 
         }
     )
     try {
-        await client.broadcast("ChatRoom", "room-1", "hello")
+        await client.broadcast("ChatRoom", "room-1", { text: "hello" })
         assert.equal(hostInvocations, 0)
         assert.deepEqual(requests, [
             {
@@ -261,7 +261,7 @@ test("broadcasts to actor sockets without resolving or invoking an actor host", 
                 url: "/v1/namespaces/project-1/actors/ChatRoom/room-1/socket-effects",
                 authorization: "Bearer workflow-token",
                 body: {
-                    effects: [{ type: "broadcast", message: { type: "text", data: "hello" }, except_connection_ids: [], tags: [] }]
+                    effects: [{ type: "broadcast", message: { type: "text", data: JSON.stringify({ text: "hello" }) }, except_connection_ids: [], tags: [] }]
                 }
             }
         ])
@@ -298,7 +298,7 @@ test("forwards actor socket effects to the control-plane gateway after a direct 
                     return {
                         type: "completed",
                         result: null,
-                        effects: [{ type: "broadcast", message: { type: "text", data: "hello" }, except_connection_ids: [], tags: [] }]
+                        effects: [{ type: "broadcast", message: { type: "text", data: JSON.stringify({ text: "hello" }) }, except_connection_ids: [], tags: [] }]
                     }
                 }
             }
@@ -310,7 +310,7 @@ test("forwards actor socket effects to the control-plane gateway after a direct 
             method: "POST",
             url: "/v1/namespaces/project-1/actors/ChatRoom/room-1/socket-effects",
             body: {
-                effects: [{ type: "broadcast", message: { type: "text", data: "hello" }, except_connection_ids: [], tags: [] }]
+                effects: [{ type: "broadcast", message: { type: "text", data: JSON.stringify({ text: "hello" }) }, except_connection_ids: [], tags: [] }]
             }
         })
     } finally {
