@@ -27,7 +27,6 @@ use crate::{
 };
 
 use super::service::ControlPlaneService;
-use super::socket_auth::{SocketAuthorizationError, SocketAuthorizationRequest};
 use super::{admin::AdminService, public_api::ActorPath};
 
 const MAX_CONNECTIONS_PER_ACTOR: usize = 128;
@@ -35,10 +34,10 @@ const MAX_SOCKET_EFFECTS_REQUEST_BYTES: usize = 32 * 1024 * 1024;
 const SOCKET_INITIALIZATION_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
 
 #[derive(Clone)]
-struct SocketServerState {
-    service: ControlPlaneService,
-    registry: SocketRegistry,
-    admin: AdminService,
+pub(super) struct SocketServerState {
+    pub(super) service: ControlPlaneService,
+    pub(super) registry: SocketRegistry,
+    pub(super) admin: AdminService,
 }
 
 #[derive(Clone, Default)]
@@ -51,6 +50,7 @@ struct RegisteredSocket {
     connection: ActorSocketConnection,
     outbound: mpsc::UnboundedSender<OutboundMessage>,
     open: bool,
+    state_ready: bool,
     trigger_id: Option<String>,
 }
 
@@ -61,8 +61,9 @@ struct SocketAccess {
     trigger_id: Option<String>,
 }
 
-enum OutboundMessage {
+pub(super) enum OutboundMessage {
     Message(ActorSocketMessage),
+    Control(Value),
     Close { code: u16, reason: String },
 }
 
@@ -84,7 +85,7 @@ pub(crate) fn router(
             "/v1/namespaces/{namespace_id}/actors/{actor_type}/{actor_id}/websocket",
             get(connect_workflow),
         )
-        .route("/v1/socket/{trigger_id}/{actor_id}", get(connect_external))
+        .route("/v1/socket", get(super::browser_socket::connect))
         .route(
             "/v1/namespaces/{namespace_id}/actors/{actor_type}/{actor_id}/socket-effects",
             post(apply_effects),
@@ -152,40 +153,6 @@ async fn connect_workflow(
             principal,
             metadata: None,
             trigger_id: None,
-        },
-    )
-}
-
-async fn connect_external(
-    State(state): State<SocketServerState>,
-    Path((trigger_id, actor_id)): Path<(String, String)>,
-    headers: HeaderMap,
-    upgrade: WebSocketUpgrade,
-) -> Result<Response, SocketApiError> {
-    let credential = external_credential(&headers)
-        .ok_or_else(|| SocketApiError::unauthorized("socket credential is required"))?;
-    let authorization = state
-        .service
-        .authorize_socket(SocketAuthorizationRequest {
-            trigger_id: trigger_id.clone(),
-            actor_id,
-            credential,
-        })
-        .await
-        .map_err(SocketApiError::from_authorization)?;
-    let principal = ActorPrincipal::for_application(
-        &authorization.actor.namespace_id,
-        authorization.storage_region,
-        authorization.expires_at,
-    );
-    upgrade_socket(
-        upgrade.protocols(["terse-do"]),
-        state,
-        SocketAccess {
-            actor: authorization.actor,
-            principal,
-            metadata: Some(authorization.metadata),
-            trigger_id: Some(trigger_id),
         },
     )
 }
@@ -329,6 +296,10 @@ async fn send_outbound(
     message: Option<OutboundMessage>,
 ) -> Result<(), SocketDisconnect> {
     match message {
+        Some(OutboundMessage::Control(value)) => socket
+            .send(Message::Text(value.to_string().into()))
+            .await
+            .map_err(|_| (1006, String::new(), false)),
         Some(OutboundMessage::Message(message)) => {
             let message = websocket_message(message).ok_or_else(|| {
                 (
@@ -350,7 +321,7 @@ async fn send_outbound(
     }
 }
 
-async fn dispatch(
+pub(super) async fn dispatch(
     state: &SocketServerState,
     actor: &ActorKey,
     principal: &ActorPrincipal,
@@ -406,7 +377,7 @@ async fn dispatch(
 }
 
 impl SocketRegistry {
-    async fn insert(
+    pub(super) async fn insert(
         &self,
         actor: &ActorKey,
         connection: ActorSocketConnection,
@@ -424,13 +395,18 @@ impl SocketRegistry {
                 connection,
                 outbound,
                 open: false,
+                state_ready: false,
                 trigger_id,
             },
         );
         true
     }
 
-    async fn remove(&self, actor: &ActorKey, connection_id: &str) -> Option<ActorSocketConnection> {
+    pub(super) async fn remove(
+        &self,
+        actor: &ActorKey,
+        connection_id: &str,
+    ) -> Option<ActorSocketConnection> {
         let mut entries = self.entries.write().await;
         let connections = entries.get_mut(actor)?;
         let removed = connections
@@ -519,6 +495,44 @@ impl SocketRegistry {
 
     async fn apply_one(&self, actor: &ActorKey, effect: ActorSocketEffect) {
         match effect {
+            ActorSocketEffect::StateSnapshot {
+                connection_id,
+                state,
+                version,
+            } => {
+                let Some(version) = version else {
+                    return;
+                };
+                let mut entries = self.entries.write().await;
+                if let Some(entry) = entries
+                    .get_mut(actor)
+                    .and_then(|connections| connections.get_mut(&connection_id))
+                {
+                    entry.state_ready = true;
+                    let _ = entry.outbound.send(OutboundMessage::Control(
+                        serde_json::json!({ "type":"state", "state":state, "version":version }),
+                    ));
+                }
+            }
+            ActorSocketEffect::StateUpdate {
+                changes,
+                removed,
+                except_connection_ids,
+                version,
+            } => {
+                let Some(version) = version else {
+                    return;
+                };
+                let entries = self.entries.read().await;
+                if let Some(connections) = entries.get(actor) {
+                    let value = serde_json::json!({ "type":"state_update", "changes":changes, "removed":removed, "version":version });
+                    for entry in connections.values().filter(|entry| {
+                        entry.state_ready && !except_connection_ids.contains(&entry.connection.id)
+                    }) {
+                        let _ = entry.outbound.send(OutboundMessage::Control(value.clone()));
+                    }
+                }
+            }
             ActorSocketEffect::Broadcast {
                 message,
                 except_connection_ids,
@@ -654,29 +668,6 @@ fn authorize_workflow(principal: &ActorPrincipal, actor: &ActorKey) -> Result<()
     Ok(())
 }
 
-fn external_credential(headers: &HeaderMap) -> Option<String> {
-    if let Some(authorization) = headers
-        .get(header::AUTHORIZATION)
-        .and_then(|value| value.to_str().ok())
-        && let Some(credential) = authorization
-            .strip_prefix("Bearer ")
-            .filter(|value| !value.is_empty())
-    {
-        return Some(credential.to_owned());
-    }
-    headers
-        .get(header::SEC_WEBSOCKET_PROTOCOL)
-        .and_then(|value| value.to_str().ok())
-        .and_then(|value| {
-            value
-                .split(',')
-                .map(str::trim)
-                .find_map(|protocol| protocol.strip_prefix("terse-ticket."))
-        })
-        .filter(|value| !value.is_empty())
-        .map(str::to_owned)
-}
-
 async fn receive_metadata(socket: &mut WebSocket) -> Option<Value> {
     let message = tokio::time::timeout(SOCKET_INITIALIZATION_TIMEOUT, socket.recv())
         .await
@@ -757,18 +748,6 @@ impl SocketApiError {
             message,
         }
     }
-
-    fn from_authorization(error: SocketAuthorizationError) -> Self {
-        match error {
-            SocketAuthorizationError::Rejected => {
-                Self::unauthorized("socket credential was rejected")
-            }
-            SocketAuthorizationError::Unavailable(_) => Self {
-                status: StatusCode::SERVICE_UNAVAILABLE,
-                message: "socket authorization is unavailable",
-            },
-        }
-    }
 }
 
 impl IntoResponse for SocketApiError {
@@ -779,10 +758,24 @@ impl IntoResponse for SocketApiError {
 
 #[cfg(test)]
 mod tests {
-    use axum::http::HeaderValue;
     use serde_json::json;
 
     use super::*;
+
+    #[test]
+    fn accepts_structured_public_state_effects_and_rejects_invalid_snapshots() -> anyhow::Result<()>
+    {
+        let effects: Vec<ActorSocketEffect> = serde_json::from_value(json!([
+            {"type":"state_snapshot","connection_id":"socket","state":{"count":1}},
+            {"type":"state_update","changes":{"count":2},"removed":["optional"]}
+        ]))?;
+        validate_socket_effects(&effects)?;
+        let invalid: Vec<ActorSocketEffect> = serde_json::from_value(json!([
+            {"type":"state_snapshot","connection_id":"socket","state":null}
+        ]))?;
+        assert!(validate_socket_effects(&invalid).is_err());
+        Ok(())
+    }
 
     #[tokio::test]
     async fn socket_writer_runs_while_actor_handler_is_pending() -> anyhow::Result<()> {
@@ -823,29 +816,6 @@ mod tests {
         let _ = socket.next().await;
         server.abort();
         Ok(())
-    }
-
-    #[test]
-    fn external_credentials_support_server_headers_and_browser_protocols() {
-        let mut headers = HeaderMap::new();
-        headers.insert(
-            header::AUTHORIZATION,
-            HeaderValue::from_static("Bearer terse_socket_secret"),
-        );
-        assert_eq!(
-            external_credential(&headers).as_deref(),
-            Some("terse_socket_secret")
-        );
-
-        headers.remove(header::AUTHORIZATION);
-        headers.insert(
-            header::SEC_WEBSOCKET_PROTOCOL,
-            HeaderValue::from_static("terse-do, terse-ticket.ticket-value"),
-        );
-        assert_eq!(
-            external_credential(&headers).as_deref(),
-            Some("ticket-value")
-        );
     }
 
     #[test]

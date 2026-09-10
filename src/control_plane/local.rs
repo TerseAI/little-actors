@@ -96,7 +96,7 @@ pub async fn serve_local(
     let ready = publish_connection(&directory, &origin, &api_key, &storage.region);
     if ready.is_ok() {
         println!(
-            "Local actors ready at {origin}\nState: {}\nRun a client: npx little-actors run src/client.ts\nRestart this command after changing actor code.",
+            "Local actors ready at {origin}\nState: {}\nGenerate a browser SDK: npx lac generate\nRestart this command after changing actor code.",
             directory.display()
         );
         if matches!(options.storage, DevStorage::Local) {
@@ -282,8 +282,9 @@ async fn local_routes(
         issuer.clone(),
         provisioner,
     );
-    let admin =
-        AdminService::new(api_key.to_owned(), database, issuer)?.with_default_namespace("local")?;
+    let admin = AdminService::new(api_key.to_owned(), database, issuer)?
+        .with_default_namespace("local")?
+        .with_socket_origin(origin)?;
     let public = public_api::router(service.clone(), admin).merge(storage.routes.clone());
     Ok(tonic::service::Routes::from(public).add_service(service.into_internal_service()))
 }

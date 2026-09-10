@@ -95,6 +95,7 @@ pub(crate) struct AdminService {
     pub(super) default_namespace: String,
     registry: std::sync::Arc<dyn AdminRegistry>,
     issuer: ActorJwtIssuer,
+    socket_origin: Option<String>,
 }
 
 impl AdminService {
@@ -112,6 +113,7 @@ impl AdminService {
             default_namespace: "default".into(),
             registry,
             issuer,
+            socket_origin: None,
         })
     }
 
@@ -119,6 +121,47 @@ impl AdminService {
         validate_namespace(namespace_id)?;
         self.default_namespace = namespace_id.to_owned();
         Ok(self)
+    }
+
+    pub(super) fn with_socket_origin(mut self, origin: &str) -> Result<Self> {
+        let url = reqwest::Url::parse(origin)?;
+        ensure!(
+            matches!(url.scheme(), "http" | "https")
+                && url.host_str().is_some()
+                && url.username().is_empty()
+                && url.password().is_none()
+                && url.path() == "/"
+                && url.query().is_none()
+                && url.fragment().is_none(),
+            "invalid socket origin"
+        );
+        self.socket_origin = Some(url.to_string());
+        Ok(self)
+    }
+
+    pub(super) async fn issue_socket(
+        &self,
+        grant: super::socket_ticket::SocketGrant,
+    ) -> Result<serde_json::Value> {
+        let spec = self
+            .current_deployment(&grant.actor.namespace_id)
+            .await?
+            .context("actor deployment is not registered")?;
+        let origin = spec
+            .socket_gateway_url
+            .or_else(|| self.socket_origin.clone())
+            .context("socket origin is not configured")?;
+        let mut url = reqwest::Url::parse(&origin)?.join("/v1/socket")?;
+        let scheme = if url.scheme() == "https" { "wss" } else { "ws" };
+        url.set_scheme(scheme)
+            .map_err(|_| anyhow::anyhow!("invalid socket URL"))?;
+        Ok(
+            serde_json::json!({ "websocketUrl": url.as_str(), "key": self.issuer.issue_socket(grant)? }),
+        )
+    }
+
+    pub(super) fn verify_socket(&self, token: &str) -> Result<super::socket_ticket::SocketTicket> {
+        self.issuer.verify_socket(token)
     }
 
     pub(crate) fn authenticate(&self, authorization: &str) -> Result<()> {

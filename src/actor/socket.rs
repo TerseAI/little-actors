@@ -37,6 +37,34 @@ pub(crate) fn validate_socket_effects(effects: &[ActorSocketEffect]) -> Result<(
 
 fn validate_socket_effect(effect: &ActorSocketEffect) -> Result<()> {
     match effect {
+        ActorSocketEffect::StateSnapshot {
+            connection_id,
+            state,
+            ..
+        } => {
+            validate_connection_id(connection_id)?;
+            validate_public_state(state)
+        }
+        ActorSocketEffect::StateUpdate {
+            changes,
+            removed,
+            except_connection_ids,
+            ..
+        } => {
+            validate_public_state(changes)?;
+            ensure!(
+                removed.iter().all(|field| changes.get(field).is_none()),
+                "state field is both changed and removed"
+            );
+            ensure!(
+                serde_json::to_vec(effect)?.len() <= MAX_SOCKET_MESSAGE_BYTES,
+                "state update exceeds message limit"
+            );
+            for connection_id in except_connection_ids {
+                validate_connection_id(connection_id)?;
+            }
+            Ok(())
+        }
         ActorSocketEffect::Send {
             connection_id,
             message,
@@ -87,6 +115,15 @@ fn validate_socket_effect(effect: &ActorSocketEffect) -> Result<()> {
             validate_socket_tags(tags)
         }
     }
+}
+
+fn validate_public_state(state: &Value) -> Result<()> {
+    ensure!(state.is_object(), "public state must be a JSON object");
+    ensure!(
+        serde_json::to_vec(state)?.len() <= MAX_SOCKET_MESSAGE_BYTES - 256,
+        "public state exceeds message limit"
+    );
+    Ok(())
 }
 
 fn validate_socket_message(message: &ActorSocketMessage) -> Result<()> {

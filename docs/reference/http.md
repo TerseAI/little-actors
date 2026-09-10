@@ -20,16 +20,17 @@ Use your configured server origin as the base URL. JSON requests use `Content-Ty
 Authorization: Bearer <api-key>
 ```
 
-Use the server's `DURABLE_OBJECT_API_KEY` on your trusted backend to manage deployments, call actors, and publish updates. Mobile and browser apps connect with application credentials checked by your WebSocket authorization callback.
+Use the server's `DURABLE_OBJECT_API_KEY` on your trusted backend to manage deployments, call actors, and publish updates. Browser apps use the generated SDK and your authenticated proxy endpoint to obtain actor-scoped WebSocket tickets.
 
-| Operation                      | Method and path                                  | Credential                                 |
-| ------------------------------ | ------------------------------------------------ | ------------------------------------------ |
-| Register or replace deployment | `PUT /v1/deployment`                             | API key.                                   |
-| Read deployment                | `GET /v1/deployment`                             | API key.                                   |
-| Remove deployment              | `DELETE /v1/deployment`                          | API key.                                   |
-| Read public signing keys       | `GET /.well-known/jwks.json`                     | None.                                      |
-| Connect from a backend         | `GET /v1/actors/{actorType}/{actorId}/websocket` | API key; WebSocket upgrade.                |
-| Connect from an app            | `GET /v1/socket/{triggerId}/{actorId}`           | Application credential; WebSocket upgrade. |
+| Operation                      | Method and path                                       | Credential                                    |
+| ------------------------------ | ----------------------------------------------------- | --------------------------------------------- |
+| Register or replace deployment | `PUT /v1/deployment`                                  | API key.                                      |
+| Read deployment                | `GET /v1/deployment`                                  | API key.                                      |
+| Remove deployment              | `DELETE /v1/deployment`                               | API key.                                      |
+| Read public signing keys       | `GET /.well-known/jwks.json`                          | None.                                         |
+| Connect from a backend         | `GET /v1/actors/{actorType}/{actorId}/websocket`      | API key; WebSocket upgrade.                   |
+| Issue a socket ticket          | `POST /v1/actors/{actorType}/{actorId}/socket-ticket` | API key only.                                 |
+| Connect from an app            | `GET /v1/socket`                                      | Ticket in the first frame; WebSocket upgrade. |
 
 Call actor methods and send application broadcasts through the [TypeScript SDK](api.md). Management JSON request bodies are limited to 16 MiB; larger bodies receive `413`.
 
@@ -162,31 +163,33 @@ The SDK performs this handshake for [`reference.connect()`](api.md#referenceconn
 
 ### External connections
 
+Use the [generated browser SDK and proxy helper](../../sdk/README.md#browser-clients) to manage this exchange automatically. Your proxy authenticates requests and checks actor access before asking the control plane for authorization.
+
 ```http
-GET /v1/socket/{triggerId}/{actorId}
+POST /v1/actors/{actorType}/{actorId}/socket-ticket
+Authorization: Bearer <api-key>
+Content-Type: application/json
 ```
 
-Upgrades to a WebSocket connection (`101 Switching Protocols`). `triggerId` identifies the application trigger passed to your authorization callback; `actorId` identifies the requested actor.
-
-Requires the server's `DURABLE_OBJECT_SOCKET_AUTH_URL` callback to be configured. Connect to:
-
-```text
-wss://objects.example.com/v1/socket/{triggerId}/{actorId}
+```json
+{ "metadata": { "userId": "alice" }, "authorizationLifetimeMs": 900000 }
 ```
 
-Supply either `Authorization: Bearer <credential>` or the WebSocket subprotocols `terse-do` and `terse-ticket.<credential>`. A bearer header takes precedence. Browser example:
+Only the API key can issue tickets. Session tokens and socket tickets cannot issue them. An existing deployment is required. An optional `connectionId` requests a renewal ticket bound to that connection. Metadata is trusted backend input and limited to 64 KiB. Authorization defaults to 15 minutes, accepts 1 second through 1 day, and is capped by the issuer maximum. The response has `Cache-Control: no-store`:
 
-```js
-const socket = new WebSocket("wss://objects.example.com/v1/socket/chat/lobby", ["terse-do", `terse-ticket.${credential}`])
-socket.addEventListener("message", ({ data }) => console.log(JSON.parse(data)))
-socket.addEventListener("open", () => socket.send(JSON.stringify({ type: "post", text: "Hello" })))
+```json
+{ "websocketUrl": "wss://objects.example.com/v1/socket", "key": "<signed-ticket>" }
 ```
 
-`credential` is an application-issued credential accepted by your authorization callback and must be valid inside a WebSocket subprotocol token. The runtime does not provide an external-ticket issuance endpoint. The accepted subprotocol is `terse-do`.
+The URL uses the deployment's socket gateway origin when configured, otherwise the control-plane origin. Tickets authorize socket operations on exactly one actor instance; they do not authorize backend RPCs or administration. Admission expires after at most 60 seconds.
 
-Native WebSocket clients encode and decode JSON themselves. The `little-actors` SDK handles this automatically for `reference.connect()` connections.
+Connect with WebSocket subprotocol `little-actors.v1`. Within 10 seconds, send `{"type":"authorize","key":"<signed-ticket>"}`. Credentials are carried in the frame, not the URL. A renewal ticket cannot open a new connection.
 
-The callback selects the actor class, region, metadata, and credential expiration. It must preserve the requested actor ID. There is no client initialization frame on this route: the callback supplies metadata. Sending an initialization document here would be an application message.
+After successful `onConnect` and persistence, the server sends `{"type":"state","state":{...},"version":1}` containing public persisted fields, then `{"type":"ready","protocol":1,"connectionId":"...","expiresInMs":900000}`. Explicit actor messages may also arrive before readiness. Application traffic uses `{"type":"message","data":...}` in both directions. Automatic changes use `{"type":"state_update","changes":{...},"removed":[],"version":2}` and contain changed `@Emittable` fields only.
+
+Renew by obtaining a fresh ticket with the current `connectionId` and sending `{"type":"renew","key":"<renewal-ticket>"}` on the existing connection. The acknowledgment is `{"type":"renewed","expiresInMs":900000}`. Lifetimes are relative milliseconds. Renewal verifies the actor and connection binding. Unchanged authorized metadata preserves actor-modified metadata and tags; changed metadata closes with `4409`, causing the SDK to reconnect and rerun `onConnect`.
+
+Expiry is enforced while idle, receiving messages, and running handlers. Reconnect fetches a new ticket and initial snapshot. Live events have no replay, and the SDK never resends application messages.
 
 ### Message limits
 
@@ -194,60 +197,24 @@ Each actor supports up to 128 connections per gateway process. Application messa
 
 ### Close behavior
 
-| Code          | Meaning                                                                |
-| ------------- | ---------------------------------------------------------------------- |
-| `1000`        | Normal closure.                                                        |
-| `1002`        | Missing or invalid initialization on the backend connection route.     |
-| `1006`        | An observed abnormal disconnect; not a close frame sent by the server. |
-| `1011`        | Connection handling or an actor socket handler failed.                 |
-| `1013`        | Actor connection limit reached.                                        |
-| `3000`–`4999` | Application close or rejection codes chosen by the actor.              |
+| Code                | Meaning                                                                |
+| ------------------- | ---------------------------------------------------------------------- |
+| `1000`              | Normal closure.                                                        |
+| `1002`              | Missing or invalid initialization on the backend connection route.     |
+| `1006`              | An observed abnormal disconnect; not a close frame sent by the server. |
+| `1011`              | Connection handling or an actor socket handler failed.                 |
+| `1013`              | Actor connection limit reached.                                        |
+| `4400`              | Invalid browser protocol or actor handler failure; terminal.           |
+| `4401`, `4403`      | Rejected authorization or renewal target mismatch; terminal.           |
+| `4408`              | Authorization expired; reconnect with fresh authorization.             |
+| `4409`              | Authorized metadata changed; reconnect.                                |
+| Other `3000`–`4999` | Application close or rejection; terminal.                              |
 
 These are common runtime outcomes; WebSocket protocol and size failures may produce other standard codes. Receiving output is not an acknowledgment that a message was saved. The runtime does not replay transient broadcasts on reconnect.
 
 ## WebSocket callbacks
 
-Both optional callbacks are configured on the [self-hosted server](../guides/self-hosting.md#server-configuration). The server makes JSON `POST` requests with `Authorization: Bearer <DURABLE_OBJECT_API_KEY>`. Authenticate this header at the callback endpoint. Plain local `dev` does not enable these callbacks.
-
-### External authorization
-
-Set `DURABLE_OBJECT_SOCKET_AUTH_URL` to your authorization endpoint. For an external upgrade, the JSON request contains these required strings:
-
-- `triggerId` — Trigger from the connection URL.
-- `actorId` — Actor ID from the connection URL.
-- `credential` — Credential supplied by the client.
-
-**Request:**
-
-```json
-{ "triggerId": "chat", "actorId": "lobby", "credential": "<external-credential>" }
-```
-
-**Response:** A successful HTTP status with JSON:
-
-```json
-{
-    "actorType": "ChatRoom",
-    "actorId": "lobby",
-    "storageRegion": "north-america-east",
-    "metadata": { "userId": "alice" },
-    "expiresAt": 1800000000
-}
-```
-
-**Response fields**
-
-- `actorType` (`string`) — Exported actor class name.
-- `actorId` (`string`) — Must match the requested actor ID.
-- `storageRegion` (`string`) — Nonempty region selection for new actors.
-- `metadata` (JSON value) — Connection metadata, at most 64 KiB.
-- `expiresAt` (`integer`) — Future Unix timestamp in **seconds**, unlike `expiresAtMs` on the session-token API.
-
-An optional `namespaceId` selects a different deployment; omission uses the default application.
-
-Actor identity must pass the [identity limits](api.md#identity). The entire response must fit 128 KiB. The authorization request has a 30-second timeout.
-
-Return `401`, `403`, or `404` to reject the credential; the upgrade returns `401`. Other callback failures, invalid responses, missing callback configuration, or timeouts cause a `503` upgrade response. The callback runs when the connection is authorized; it is not a per-message refresh mechanism.
+The optional incoming-message callback is configured on the [self-hosted server](../guides/self-hosting.md#server-configuration). The server makes JSON `POST` requests with `Authorization: Bearer <DURABLE_OBJECT_API_KEY>`. Authenticate this header at the callback endpoint. Plain local `dev` does not enable this callback.
 
 ### Incoming message events
 

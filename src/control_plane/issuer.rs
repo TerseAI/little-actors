@@ -1,5 +1,6 @@
 use std::time::Duration;
 
+use super::socket_ticket::{SocketGrant, SocketTicket};
 use anyhow::{Context, Result, ensure};
 use aws_lc_rs::signature::{Ed25519KeyPair, KeyPair};
 use base64::{
@@ -7,7 +8,7 @@ use base64::{
     engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD},
 };
 use jsonwebtoken::{
-    Algorithm, EncodingKey, Header, encode,
+    Algorithm, DecodingKey, EncodingKey, Header, Validation, decode, decode_header, encode,
     jwk::{Jwk, JwkSet, PublicKeyUse},
 };
 use serde::Serialize;
@@ -98,6 +99,68 @@ impl ActorJwtIssuer {
 
     pub(crate) fn verifier_keys_json(&self) -> Result<String> {
         Ok(String::from_utf8(self.jwks_json()?)?)
+    }
+
+    pub(super) fn issue_socket(&self, grant: SocketGrant) -> Result<String> {
+        self.issue_socket_at(grant, unix_millis()?)
+    }
+
+    fn issue_socket_at(&self, grant: SocketGrant, now_ms: i64) -> Result<String> {
+        grant.validate()?;
+        let lifetime = grant
+            .authorization_lifetime_ms
+            .min(duration_millis(self.max_lifetime)?);
+        ensure!(
+            lifetime >= 1000,
+            "configured token lifetime is too short for a socket"
+        );
+        let authorized_until_ms = now_ms
+            .checked_add(lifetime)
+            .context("socket authorization time overflow")?;
+        let connect_by_ms = authorized_until_ms.min(now_ms + 60_000);
+        let claims = SocketTicket {
+            iss: self.issuer.clone(),
+            aud: format!("{}:websocket", self.authority_audience),
+            scope: "actor:socket".into(),
+            iat: now_ms / 1000,
+            nbf: now_ms / 1000,
+            exp: (connect_by_ms + 999) / 1000,
+            actor: grant.actor,
+            region: grant.region,
+            metadata: grant.metadata,
+            authorized_until_ms,
+            connect_by_ms,
+            connection_id: grant.connection_id,
+        };
+        let mut header = Header::new(Algorithm::EdDSA);
+        header.kid = Some(self.key_id.clone());
+        Ok(encode(&header, &claims, &self.encoding_key)?)
+    }
+
+    pub(super) fn verify_socket(&self, token: &str) -> Result<SocketTicket> {
+        self.verify_socket_at(token, unix_millis()?)
+    }
+
+    fn verify_socket_at(&self, token: &str, now_ms: i64) -> Result<SocketTicket> {
+        ensure!(token.len() <= 128 * 1024, "socket ticket is too large");
+        let header = decode_header(token)?;
+        ensure!(
+            header.kid.as_deref() == Some(&self.key_id) && header.alg == Algorithm::EdDSA,
+            "socket signing key is invalid"
+        );
+        let mut validation = Validation::new(Algorithm::EdDSA);
+        validation.set_issuer(&[&self.issuer]);
+        validation.set_audience(&[format!("{}:websocket", self.authority_audience)]);
+        validation.validate_exp = false;
+        validation.validate_nbf = false;
+        let claims = decode::<SocketTicket>(
+            token,
+            &DecodingKey::from_jwk(&self.public_key)?,
+            &validation,
+        )?
+        .claims;
+        claims.validate(now_ms)?;
+        Ok(claims)
     }
 
     pub(crate) fn jwks_json(&self) -> Result<Vec<u8>> {
@@ -282,6 +345,59 @@ mod tests {
 
     use super::*;
     use crate::control_plane::{ActorJwtVerifier, ActorTokenPurpose};
+
+    #[test]
+    fn socket_tickets_bind_actor_metadata_and_renewal_connection_with_short_admission() -> Result<()>
+    {
+        let issuer = socket_issuer()?;
+        let now = 1_700_000_000_000;
+        let grant = || SocketGrant {
+            actor: ActorKey {
+                namespace_id: "project".into(),
+                actor_type: "Room".into(),
+                actor_id: "lobby".into(),
+            },
+            region: "us-east".into(),
+            metadata: serde_json::json!({"userId":"alice"}),
+            authorization_lifetime_ms: 900_000,
+            connection_id: None,
+        };
+        let token = issuer.issue_socket_at(grant(), now)?;
+        let claims = issuer.verify_socket_at(&token, now + 1)?;
+        assert_eq!(claims.actor, grant().actor);
+        assert_eq!(claims.metadata, grant().metadata);
+        assert_eq!(claims.authorized_until_ms, now + 900_000);
+        assert!(claims.connection_id.is_none());
+        assert!(issuer.verify_socket_at(&token, now + 60_000).is_err());
+        assert!(issuer.verify_socket_at(&token, now - 1_000).is_err());
+        let mut renewal = grant();
+        renewal.connection_id = Some("connection-1".into());
+        let renewed = issuer.issue_socket_at(renewal, now)?;
+        assert_eq!(
+            issuer
+                .verify_socket_at(&renewed, now)?
+                .connection_id
+                .as_deref(),
+            Some("connection-1")
+        );
+        assert!(socket_issuer()?.verify_socket_at(&token, now).is_err());
+        let workflow =
+            issuer.issue_workflow("project", "execution", "us-east", unix_millis()? + 30_000)?;
+        assert!(issuer.verify_socket(&workflow.token).is_err());
+        Ok(())
+    }
+
+    fn socket_issuer() -> Result<ActorJwtIssuer> {
+        let pkcs8 = Ed25519KeyPair::generate_pkcs8(&SystemRandom::new())?;
+        ActorJwtIssuer::from_base64_pkcs8(
+            &STANDARD.encode(pkcs8.as_ref()),
+            "key",
+            "issuer",
+            "authority",
+            "invocation",
+            Duration::from_secs(86_400),
+        )
+    }
 
     #[test]
     fn workflow_tokens_never_outlive_twenty_four_hours() -> Result<()> {

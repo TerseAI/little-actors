@@ -10,7 +10,7 @@ use tracing::error;
 use crate::{
     actor::{
         ActorExecutionResult, ActorExecutor, ActorInvocation, ActorInvocationFailure, ActorKey,
-        ActorSocketEvent, ActorSocketInvocation, ActorSocketSource,
+        ActorSocketEvent, ActorSocketInvocation, ActorSocketPublisher, ActorSocketSource,
     },
     actor_state::ActorStorageKey,
     state_transport::StateTransport,
@@ -38,6 +38,7 @@ impl ActorHost {
         commits: Arc<dyn StateCommitAuthority>,
         state: Arc<dyn StateTransport>,
         sockets: Arc<dyn ActorSocketSource>,
+        publisher: Arc<dyn ActorSocketPublisher>,
     ) -> Self {
         let (commands, incoming) = mpsc::channel(HOST_COMMAND_CAPACITY);
         let (activity_tx, activity) = watch::channel(0);
@@ -48,6 +49,7 @@ impl ActorHost {
             commits,
             state,
             sockets,
+            publisher,
             activity_tx,
         );
         tokio::spawn(dispatcher.run(incoming));
@@ -147,6 +149,7 @@ struct HostDispatcher {
     commits: Arc<dyn StateCommitAuthority>,
     state: Arc<dyn StateTransport>,
     sockets: Arc<dyn ActorSocketSource>,
+    publisher: Arc<dyn ActorSocketPublisher>,
     actors: HashMap<ActorStorageKey, ActorMailbox>,
     tasks: JoinSet<()>,
     accepting: watch::Sender<bool>,
@@ -163,6 +166,7 @@ impl HostDispatcher {
         commits: Arc<dyn StateCommitAuthority>,
         state: Arc<dyn StateTransport>,
         sockets: Arc<dyn ActorSocketSource>,
+        publisher: Arc<dyn ActorSocketPublisher>,
         activity: watch::Sender<usize>,
     ) -> Self {
         Self {
@@ -172,6 +176,7 @@ impl HostDispatcher {
             commits,
             state,
             sockets,
+            publisher,
             actors: HashMap::new(),
             tasks: JoinSet::new(),
             accepting: watch::channel(true).0,
@@ -258,6 +263,7 @@ impl HostDispatcher {
             self.commits.clone(),
             self.state.clone(),
             self.sockets.clone(),
+            self.publisher.clone(),
         );
         let (sender, requests) = mpsc::channel(MAX_ADMITTED_INVOCATIONS_PER_ACTOR);
         let task = self.tasks.spawn(run_actor(
@@ -492,6 +498,13 @@ mod tests {
         }
     }
 
+    #[async_trait]
+    impl ActorSocketPublisher for EmptySocketSource {
+        async fn publish(&self, _: &ActorKey, _: Vec<ActorSocketEffect>) -> Result<()> {
+            Ok(())
+        }
+    }
+
     struct IncrementingExecutor {
         invocations: AtomicU64,
     }
@@ -524,6 +537,7 @@ mod tests {
             Arc::new(FakeAuthority::default()),
             state.clone(),
             Arc::new(UnavailableSocketSource),
+            Arc::new(EmptySocketSource),
         );
         assert!(
             matches!(invoke(&host, "request-1").await?, ActorExecutionResult::Failed { failure } if failure.code == "socket_gateway_unavailable")
@@ -614,6 +628,7 @@ mod tests {
             Arc::new(FakeAuthority::default()),
             Arc::new(FakeStateTransport::default()),
             Arc::new(EmptySocketSource),
+            Arc::new(EmptySocketSource),
         );
         (Arc::new(host), receiver, release)
     }
@@ -673,6 +688,7 @@ mod tests {
             executor.clone(),
             authority.clone(),
             Arc::new(FakeStateTransport::default()),
+            Arc::new(EmptySocketSource),
             Arc::new(EmptySocketSource),
         ));
         let caller = host.clone();
@@ -989,6 +1005,7 @@ mod tests {
             authority.clone(),
             state.clone(),
             Arc::new(EmptySocketSource),
+            Arc::new(EmptySocketSource),
         );
 
         assert_eq!(invoke(&host, "request-1").await?, completed(1));
@@ -1030,6 +1047,7 @@ mod tests {
             authority.clone(),
             state.clone(),
             Arc::new(EmptySocketSource),
+            Arc::new(EmptySocketSource),
         );
 
         let first = invoke(&host, "request-1").await?;
@@ -1057,6 +1075,7 @@ mod tests {
             Arc::new(FakeAuthority::default()),
             Arc::new(FakeStateTransport::default()),
             Arc::new(EmptySocketSource),
+            Arc::new(EmptySocketSource),
         );
 
         assert!(matches!(
@@ -1080,6 +1099,7 @@ mod tests {
             authority.clone(),
             state.clone(),
             Arc::new(EmptySocketSource),
+            Arc::new(EmptySocketSource),
         );
 
         assert!(matches!(
@@ -1089,6 +1109,77 @@ mod tests {
         ));
         assert!(state.writes.lock().unwrap().is_empty());
         assert!(authority.commits.lock().unwrap().is_empty());
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn publishes_automatic_state_after_commit_before_returning_to_rpc_callers() -> Result<()>
+    {
+        struct Emitter;
+        #[async_trait]
+        impl ActorExecutor for Emitter {
+            fn supports(&self, _: &str) -> bool {
+                true
+            }
+            async fn invoke(
+                &self,
+                _: ActorMethodInvocation,
+                state: Option<&Value>,
+            ) -> Result<ActorMethodOutcome> {
+                let count = state.and_then(|state| state["count"].as_u64()).unwrap_or(0) + 1;
+                Ok(ActorMethodOutcome::Completed {
+                    result: json!(count),
+                    state: json!({"count": count}),
+                    effects: serde_json::from_value(
+                        json!([{ "type":"state_update", "changes":{"count":count}, "removed":[] }]),
+                    )?,
+                })
+            }
+        }
+        struct Publisher {
+            authority: Arc<FakeAuthority>,
+            values: Mutex<Vec<Value>>,
+        }
+        #[async_trait]
+        impl crate::actor::ActorSocketPublisher for Publisher {
+            async fn publish(&self, _: &ActorKey, effects: Vec<ActorSocketEffect>) -> Result<()> {
+                let commits = self.authority.commits.lock().unwrap().len();
+                let value = serde_json::to_value(effects)?;
+                assert_eq!(value[0]["version"], commits as u64);
+                self.values.lock().unwrap().push(value);
+                Ok(())
+            }
+        }
+        let authority = Arc::new(FakeAuthority::default());
+        let publisher = Arc::new(Publisher {
+            authority: authority.clone(),
+            values: Mutex::new(vec![]),
+        });
+        let host = ActorHost::new(
+            HostEndpoint {
+                id: super::super::HostId::new("host-1"),
+                route: "http://host.invalid/".into(),
+            },
+            "project-1".into(),
+            Arc::new(Emitter),
+            authority.clone(),
+            Arc::new(FakeStateTransport::default()),
+            Arc::new(EmptySocketSource),
+            publisher.clone(),
+        );
+        assert_eq!(invoke(&host, "one").await?, completed(1));
+        assert_eq!(invoke(&host, "two").await?, completed(2));
+        let values = publisher.values.lock().unwrap();
+        assert_eq!(values.len(), 2);
+        assert_eq!(values[0][0]["changes"]["count"], 1);
+        assert_eq!(values[1][0]["changes"]["count"], 2);
+        drop(values);
+        authority.commit_failures.store(1, Ordering::SeqCst);
+        assert!(matches!(
+            invoke(&host, "failed").await?,
+            ActorExecutionResult::Failed { .. }
+        ));
+        assert_eq!(publisher.values.lock().unwrap().len(), 2);
         Ok(())
     }
 
@@ -1117,6 +1208,7 @@ mod tests {
             }),
             authority.clone(),
             state.clone(),
+            Arc::new(EmptySocketSource),
             Arc::new(EmptySocketSource),
         );
 

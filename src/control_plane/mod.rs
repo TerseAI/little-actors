@@ -1,5 +1,6 @@
 pub(crate) mod admin;
 mod auth;
+mod browser_socket;
 mod client;
 mod event_sink;
 mod issuer;
@@ -9,7 +10,7 @@ mod protocol;
 mod public_api;
 mod regions;
 mod service;
-mod socket_auth;
+mod socket_ticket;
 mod websocket;
 
 use std::time::Duration;

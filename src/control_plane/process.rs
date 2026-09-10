@@ -33,7 +33,6 @@ pub struct ControlPlaneProcessConfig {
     pub storage: ControlPlaneStorageConfig,
     pub sandbox_provider: SandboxProviderConfig,
     pub socket_event_sink: Option<SocketEventSinkConfig>,
-    pub socket_authenticator: Option<SocketAuthenticatorConfig>,
 }
 
 pub struct ControlPlaneStorageConfig {
@@ -49,10 +48,6 @@ pub struct SandboxProviderConfig {
 }
 
 pub struct SocketEventSinkConfig {
-    pub url: String,
-}
-
-pub struct SocketAuthenticatorConfig {
     pub url: String,
 }
 
@@ -110,6 +105,7 @@ async fn control_plane_routes(config: ControlPlaneProcessConfig) -> Result<tonic
     let registry = Arc::new(super::PostgresAdminRegistry::from_database(database));
     let storage_urls =
         Arc::new(GcsStorageUrlSigner::from_adc(config.storage.standard_buckets).await?);
+    let socket_origin = config.sandbox_provider.runtime.control_plane_url.clone();
     let provisioner = sandbox_provisioner(config.sandbox_provider, &issuer, &leases)?;
     let socket_events = config
         .socket_event_sink
@@ -118,13 +114,6 @@ async fn control_plane_routes(config: ControlPlaneProcessConfig) -> Result<tonic
         })
         .transpose()?
         .map(|sink| Arc::new(sink) as Arc<dyn super::event_sink::SocketMessageEventSink>);
-    let socket_authenticator = config
-        .socket_authenticator
-        .map(|auth| {
-            super::socket_auth::HttpSocketAuthenticator::new(auth.url, config.api_key.clone())
-        })
-        .transpose()?
-        .map(|auth| Arc::new(auth) as Arc<dyn super::socket_auth::SocketAuthenticator>);
     let service = ControlPlaneService::new(
         leases,
         placements,
@@ -134,9 +123,9 @@ async fn control_plane_routes(config: ControlPlaneProcessConfig) -> Result<tonic
         issuer.clone(),
         provisioner,
     )
-    .with_socket_event_sink(socket_events)
-    .with_socket_authenticator(socket_authenticator);
-    let admin = super::admin::AdminService::new(config.api_key, registry, issuer)?;
+    .with_socket_event_sink(socket_events);
+    let admin = super::admin::AdminService::new(config.api_key, registry, issuer)?
+        .with_socket_origin(&socket_origin)?;
     let public_api = super::public_api::router(service.clone(), admin);
     let internal_api = service.into_internal_service();
     Ok(tonic::service::Routes::from(public_api).add_service(internal_api))
@@ -201,7 +190,6 @@ impl ControlPlaneProcessConfig {
         let sandbox_provider =
             sandbox_provider_config(&mut get, &jwt_issuer, &invocation_audience)?;
         let socket_event_sink = socket_event_sink_config(&mut get)?;
-        let socket_authenticator = socket_authenticator_config(&mut get)?;
         Ok(Self {
             bind,
             jwt_signing_key,
@@ -214,21 +202,8 @@ impl ControlPlaneProcessConfig {
             storage,
             sandbox_provider,
             socket_event_sink,
-            socket_authenticator,
         })
     }
-}
-
-fn socket_authenticator_config(
-    get: &mut impl FnMut(&str) -> Option<String>,
-) -> Result<Option<SocketAuthenticatorConfig>> {
-    get("DURABLE_OBJECT_SOCKET_AUTH_URL")
-        .map(|url| {
-            Ok(SocketAuthenticatorConfig {
-                url: validated_http_url(&url, "DURABLE_OBJECT_SOCKET_AUTH_URL")?,
-            })
-        })
-        .transpose()
 }
 
 fn socket_event_sink_config(
@@ -406,27 +381,6 @@ mod tests {
         assert!(
             socket_event_sink_config(&mut |name| complete.get(name).map(|value| (*value).into()))?
                 .is_none()
-        );
-        Ok(())
-    }
-
-    #[test]
-    fn configures_socket_authorization_without_a_separate_key() -> Result<()> {
-        let mut complete = HashMap::from([(
-            "DURABLE_OBJECT_SOCKET_AUTH_URL",
-            "https://api.example.com/authorize",
-        )]);
-        let auth = socket_authenticator_config(&mut |name| {
-            complete.get(name).map(|value| (*value).into())
-        })?
-        .context("socket authenticator was not configured")?;
-        assert_eq!(auth.url, "https://api.example.com/authorize");
-        complete.remove("DURABLE_OBJECT_SOCKET_AUTH_URL");
-        assert!(
-            socket_authenticator_config(&mut |name| complete
-                .get(name)
-                .map(|value| (*value).into()))?
-            .is_none()
         );
         Ok(())
     }

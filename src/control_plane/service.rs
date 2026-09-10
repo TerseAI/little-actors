@@ -55,7 +55,6 @@ pub struct ControlPlaneService {
     socket_targets: Cache<(ActorKey, HostId, String, i64), Arc<WorkflowActorTarget>>,
     host_channels: Cache<String, Channel>,
     socket_events: Option<Arc<dyn super::event_sink::SocketMessageEventSink>>,
-    socket_authenticator: Option<Arc<dyn super::socket_auth::SocketAuthenticator>>,
 }
 
 impl ControlPlaneService {
@@ -86,7 +85,6 @@ impl ControlPlaneService {
                 .time_to_idle(Duration::from_secs(300))
                 .build(),
             socket_events: None,
-            socket_authenticator: None,
         }
     }
 
@@ -95,14 +93,6 @@ impl ControlPlaneService {
         sink: Option<Arc<dyn super::event_sink::SocketMessageEventSink>>,
     ) -> Self {
         self.socket_events = sink;
-        self
-    }
-
-    pub(crate) fn with_socket_authenticator(
-        mut self,
-        authenticator: Option<Arc<dyn super::socket_auth::SocketAuthenticator>>,
-    ) -> Self {
-        self.socket_authenticator = authenticator;
         self
     }
 
@@ -137,24 +127,6 @@ impl ControlPlaneService {
             region.clone(),
             i64::MAX,
         ))
-    }
-
-    pub(super) async fn authorize_socket(
-        &self,
-        request: super::socket_auth::SocketAuthorizationRequest,
-    ) -> std::result::Result<
-        super::socket_auth::SocketAuthorization,
-        super::socket_auth::SocketAuthorizationError,
-    > {
-        self.socket_authenticator
-            .as_ref()
-            .ok_or_else(|| {
-                super::socket_auth::SocketAuthorizationError::Unavailable(anyhow::anyhow!(
-                    "socket authorization is not configured"
-                ))
-            })?
-            .authorize(request)
-            .await
     }
 
     pub(super) async fn register_deployment(
@@ -1957,6 +1929,100 @@ mod tests {
                 assert_eq!(placements.get(&actor.storage_key()).await?, before);
             }
         }
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn socket_ticket_issuance_requires_api_key_and_cannot_delegate_backend_access()
+    -> Result<()> {
+        let issuer = test_issuer()?;
+        let auth = ActorJwtVerifier::for_scope(
+            issuer.verifier_keys_json()?,
+            "issuer",
+            "authority",
+            ActorTokenPurpose::ControlPlane,
+            Duration::from_secs(60),
+        )?;
+        let registry = Arc::new(LocalAdminRegistry::default());
+        let admin = AdminService::new("api-key".into(), registry.clone(), issuer.clone())?;
+        let service = ControlPlaneService::new(
+            Arc::new(FakeLeaseStore {
+                leases: Mutex::new(HashMap::new()),
+            }),
+            Arc::new(LocalObjectPlacementStore::default()),
+            Arc::new(FakeStorageUrls(&["north-america-east"])),
+            auth,
+            registry,
+            issuer.clone(),
+            Arc::new(FakeRoutingProvisioner {
+                failed_regions: vec![],
+                calls: Mutex::new(vec![]),
+            }),
+        );
+        let routes = super::super::public_api::router(service, admin);
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+        let origin = format!("http://{}", listener.local_addr()?);
+        let server = tokio::spawn(async { axum::serve(listener, routes).await });
+        let client = reqwest::Client::new();
+        let url = format!("{origin}/v1/actors/Room/lobby/socket-ticket");
+        let body =
+            serde_json::json!({"metadata":{"userId":"trusted"},"authorizationLifetimeMs":30000});
+        let workflow = issuer
+            .issue_workflow(
+                "default",
+                "run",
+                "north-america-east",
+                (unix_seconds()? + 30) * 1000,
+            )?
+            .token;
+        for credential in ["", "wrong", &workflow] {
+            assert_eq!(
+                client
+                    .post(&url)
+                    .bearer_auth(credential)
+                    .json(&body)
+                    .send()
+                    .await?
+                    .status(),
+                reqwest::StatusCode::UNAUTHORIZED
+            );
+        }
+        client.put(format!("{origin}/v1/deployment")).bearer_auth("api-key")
+            .json(&serde_json::json!({"codeRevision":"v1","imageRef":"image","workingDirectory":"/app","socketGatewayUrl":"https://gateway.example"}))
+            .send().await?.error_for_status()?;
+        let issued = client
+            .post(&url)
+            .bearer_auth("api-key")
+            .json(&body)
+            .send()
+            .await?
+            .error_for_status()?;
+        assert_eq!(issued.headers().get("cache-control").unwrap(), "no-store");
+        let issued: serde_json::Value = issued.json().await?;
+        assert_eq!(issued["websocketUrl"], "wss://gateway.example/v1/socket");
+        let key = issued["key"].as_str().unwrap();
+        assert_ne!(key, "api-key");
+        assert_eq!(
+            client
+                .post(&url)
+                .bearer_auth(key)
+                .json(&body)
+                .send()
+                .await?
+                .status(),
+            reqwest::StatusCode::UNAUTHORIZED
+        );
+        assert_eq!(
+            client
+                .post(format!("{origin}/v1/actors/Room/lobby/target"))
+                .bearer_auth(key)
+                .json(&serde_json::json!({}))
+                .send()
+                .await?
+                .status(),
+            reqwest::StatusCode::UNAUTHORIZED
+        );
+        server.abort();
         Ok(())
     }
 

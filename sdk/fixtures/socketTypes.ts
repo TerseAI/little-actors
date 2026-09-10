@@ -66,6 +66,9 @@ async function checkReferences(): Promise<void> {
             // @ts-expect-error Snapshot fields require narrowing from JSON values.
             const history: string[] = state.history
             void [state, history]
+        } else if (event.data.type === "state_update") {
+            const changes: Partial<JsonObject> = event.data.changes
+            void changes
         } else {
             const userId: string = event.data.userId
             // @ts-expect-error Received payload fields retain their declared types.

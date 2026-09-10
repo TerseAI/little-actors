@@ -1,6 +1,6 @@
 # Self-hosting
 
-After the [local tutorial](../../README.md#build-a-chat-room-in-your-terminal), use this guide to deploy with Modal and GCS.
+After the [local tutorial](../../README.md#browser-chat-demo), use this guide to deploy with Modal and GCS.
 
 Recommended setup:
 
@@ -161,25 +161,20 @@ EOF
 
 Registration returns `{"changed":true}`, or `false` for an unchanged deployment. The first call starts a host. After code changes, rebuild and import the image, then register its ID with a new `codeRevision`.
 
-## 5. Connect your backend
+## 5. Connect your web app
 
-Set the API key and server URL in your backend environment. To try the hosted chat from a trusted terminal:
+Set the API key and server URL in your application proxy's backend environment:
 
 ```sh
 export DURABLE_OBJECT_API_KEY='<the-api-key-from-step-1>'
 export DURABLE_OBJECT_CONTROL_PLANE_URL='https://objects.example.com'
-node --import tsx src/chat.ts Alice
 ```
 
-A new room prints:
+Use the generated `ActorProxy` in the authenticated route from the [browser chat demo](../../README.md#5-authorize-connections-in-your-application). Generate the client and proxy from the deployed actor source with `lac generate`, and point the frontend client at that application route.
 
-```json
-{ "type": "state", "state": { "history": [] } }
-```
+Start the web app with its normal tooling and open two signed-in browser sessions. A message in either session updates both histories after persistence. Reloading a page supplies the current snapshot. Hosted state is separate from local demo state.
 
-In another terminal, set the same client environment variables and run `node --import tsx src/chat.ts Bob`. Once both clients have joined, type a message in either terminal. Both receive it; reconnecting restores the saved conversation. Hosted state is separate from the local demo's state.
-
-Keep the API key on your backend, where you check user permissions before calling actors. Mobile and browser apps connect through [WebSockets authorized by your backend](#websocket-configuration).
+The proxy checks user access and obtains connection credentials. Application messages travel directly over WebSockets to the actor gateway. Keep the API key on the backend. See [WebSocket configuration](#websocket-configuration) for a separate gateway origin.
 
 ## Local execution with GCS
 
@@ -189,16 +184,10 @@ To save snapshots in GCS while running actors locally:
 export DURABLE_OBJECT_STANDARD_BUCKETS='{"north-america-east":"my-actor-state-bucket"}'
 export GOOGLE_APPLICATION_CREDENTIALS='/absolute/path/to/service-account.json'
 
-npx little-actors dev --storage gcs --data-dir .gcs-demo
+npx lac dev --storage gcs --data-dir .gcs-demo
 ```
 
-In a second terminal in the same project:
-
-```sh
-npx little-actors run --data-dir .gcs-demo src/chat.ts Alice
-```
-
-With a new state directory, the chat room starts with an empty history. Send a message, close the client, and rerun it to see the saved conversation.
+Generate the [browser demo](../../README.md#browser-chat-demo) SDK, point its authenticated proxy at the local server using `.gcs-demo/runtime.json`, and start your web app normally. Send a message and reload the page to see the saved conversation.
 
 Changing backends or buckets requires a separate state directory; existing actors are not migrated. References remain in SQLite, so losing that file still loses access to your actors. Use backed-up PostgreSQL for production.
 
@@ -206,17 +195,11 @@ Changing backends or buckets requires a separate state directory; existing actor
 
 WebSockets use the control-plane origin by default. For a separate gateway, set `DURABLE_OBJECT_SOCKET_GATEWAY_URL` for clients and `socketGatewayUrl` in the deployment.
 
-For mobile or browser clients, set your backend's authorization URL in `control-plane.env` and restart the control plane:
+For browser clients, generate the typed client and proxy with `lac generate`. Expose an application endpoint that authenticates the user and checks access, then calls `ActorProxy.handle()` from the generated `proxy.ts`. Keep `DURABLE_OBJECT_API_KEY` on that backend. The helper obtains an actor-scoped ticket from the control plane, and the browser SDK connects directly to the gateway.
 
-```dotenv
-DURABLE_OBJECT_SOCKET_AUTH_URL=https://api.example.com/actors/authorize
-```
+Connection and renewal use the same application endpoint. The SDK renews authorization over the existing socket; unchanged authorized metadata preserves actor-modified metadata and tags. Changed metadata reconnects through `onConnect`. The gateway enforces expiration even while idle or running a handler.
 
-Clients connect to `/v1/socket/{triggerId}/{actorId}` with an application-issued credential. The gateway asks your backend to authorize that credential for the requested actor. Your callback selects the actor class, storage region, trusted metadata, and credential expiration. For the chat demo, approve `ChatRoom` and supply metadata such as `{"name":"Alice"}` from the authenticated user's profile.
-
-Authenticate callback requests using their `Authorization: Bearer <DURABLE_OBJECT_API_KEY>` header. Reject credentials that cannot access the requested actor. The callback runs at connection time; actor `onMessage` handlers must enforce permissions for application messages. An incoming-message event callback runs after actor handling and cannot authorize that handling.
-
-Your backend supplies application credentials. Keep the API key on the backend. Connection examples and callback formats are documented in the [HTTP reference](../reference/http.md#external-connections).
+See the [browser example](../../sdk/README.md#browser-clients) and [wire protocol](../reference/http.md#external-connections). The optional incoming-message event callback remains independent of authorization.
 
 ## Server configuration
 
@@ -323,12 +306,6 @@ Idle time before an unused cloud host may stop. Valid range: 1–86400000.
 **Default:** Bundled provider executable.
 
 Override the cloud provider executable when supplying a custom runtime distribution.
-
-### `DURABLE_OBJECT_SOCKET_AUTH_URL`
-
-**Default:** Disabled.
-
-HTTP(S) callback for authorizing external WebSocket connections.
 
 ### `DURABLE_OBJECT_SOCKET_EVENT_URL`
 

@@ -7,7 +7,6 @@
         "dev": "cargo run --release",
         "format": "cargo fmt --all && pnpm --dir sdk format && prettier --write \"scripts/*.mjs\"",
         "format:check": "cargo fmt --all -- --check && pnpm --dir sdk format:check && prettier --check \"scripts/*.mjs\"",
-        "lab:websocket": "node scripts/websocket-streaming-lab.mjs",
         "release:prepare": "node scripts/release.mjs prepare",
         "release:verify": "node scripts/release.mjs verify",
         "test": "node --test scripts/*.test.mjs && cargo test --locked --no-fail-fast && pnpm --dir sdk test"

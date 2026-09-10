@@ -4,7 +4,8 @@ import ts from "typescript"
 
 import { ActorDefinitionError } from "../errors.js"
 
-import { readPersistence, validatePersistence } from "./features/persistence.js"
+import { readEmission, readPersistence, validatePersistence } from "./features/persistence.js"
+import { socketContract } from "./socket-contract.js"
 import { Persistence } from "./types.js"
 import type {
     ActorAnalysis,
@@ -21,11 +22,30 @@ class ActorCompiler {
     constructor(private readonly system: ts.System = ts.sys) {}
 
     check(entrypoint: string, options: CompilerOptions = {}) {
+        return this.analyze(entrypoint, options).schemas
+    }
+
+    compile(entrypoint: string, options: CompilerOptions = {}) {
+        const { program, source, sdk, schemas } = this.analyze(entrypoint, options)
+        const checker = program.getTypeChecker()
+        const actors = discoverActors(source, checker, sdk).actors
+        return schemas.map(schema => ({
+            ...schema,
+            contract: socketContract(
+                checker,
+                actors.find(actor => actor.name!.text === schema.actorType)!,
+                schema
+            )
+        }))
+    }
+
+    private analyze(entrypoint: string, options: CompilerOptions) {
         const project = this.open(path.resolve(entrypoint), options)
         const program = ts.createProgram(project.files, project.options, project.host)
         const source = program.getSourceFile(project.entrypoint)!
         const sdkSource = program.getSourceFile(project.sdkEntrypoint)!
-        const analysis = analyzeActors(program, source, resolveSdkSymbols(program.getTypeChecker(), sdkSource))
+        const sdk = resolveSdkSymbols(program.getTypeChecker(), sdkSource)
+        const analysis = analyzeActors(program, source, sdk)
         this.throwIfThereAreAnyErrors([
             ...program.getOptionsDiagnostics(),
             ...program.getGlobalDiagnostics(),
@@ -33,7 +53,7 @@ class ActorCompiler {
             ...program.getSemanticDiagnostics(),
             ...analysis.diagnostics
         ])
-        return analysis.schemas
+        return { schemas: analysis.schemas, program, source, sdk }
     }
 
     private open(entrypoint: string, settings: CompilerOptions) {
@@ -212,6 +232,8 @@ function readDecorator(symbol: ts.Symbol | undefined, use: DecoratorUse, sdk: Sd
             return readPersistence(use, Persistence.Persisted)
         case sdk.Ephemeral:
             return readPersistence(use, Persistence.Ephemeral)
+        case sdk.Emittable:
+            return readEmission(use)
         default:
             return { annotations: [], diagnostics: [] }
     }
@@ -237,7 +259,12 @@ function resolveSdkSymbols(checker: ts.TypeChecker, source: ts.SourceFile): SdkS
         if (symbol === undefined) throw new ActorDefinitionError(`cannot resolve SDK export ${name}`)
         return canonicalSymbol(checker, symbol)
     }
-    return { Actor: resolve("Actor"), Persisted: resolve("Persisted"), Ephemeral: resolve("Ephemeral") }
+    return {
+        Actor: resolve("Actor"),
+        Persisted: resolve("Persisted"),
+        Ephemeral: resolve("Ephemeral"),
+        Emittable: resolve("Emittable")
+    }
 }
 
 function canonicalSymbol(checker: ts.TypeChecker, symbol: ts.Symbol): ts.Symbol {

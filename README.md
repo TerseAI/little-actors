@@ -1,147 +1,136 @@
 # little-actors
 
-Coordinating state across machines adds latency. Traditional protocols such as as [two-phase commit (2PC)](https://arxiv.org/abs/cs/0408036) and [Paxos](https://lamport.azurewebsites.net/pubs/paxos-simple.pdf) introduce a lot of overhead. Actors simplify application updates by giving each piece of state one owner.
+little-actors is a lightweight framework for durable actors, powered by Rust.
 
-Previously published as `little-durable-objects`. Existing versions remain available; future releases use `little-actors`. Update npm imports and use matching `little-actors` runtime images when upgrading. The `DURABLE_OBJECT_*` environment variables remain unchanged. To reuse local state, pass `--data-dir .little-durable-objects` to `dev`, `run`, and `token`.
+Write TypeScript classes that keep their state.
 
-## Build a chat room in your terminal
+## Browser chat demo
 
-Run two chat clients in separate terminals. Both receive every message, and the room remembers the conversation when you reconnect or restart the server.
+### 1. Install
 
-Requires **Node.js 20+ and npm**. The CLI downloads the runtime, with SQLite included.
-
-Use version `0.1.27` or later for this guide. To run a source checkout, follow [Local development](docs/guides/local-development.md).
-
-### 1. Create a project
+Install the package in both your backend and web app:
 
 ```sh
-mkdir chat-example
-cd chat-example
-npm init -y
-npm pkg set type=module
 npm install little-actors
-mkdir src
 ```
 
-This installs the SDK, CLI, and TypeScript support.
+The package installs the `lac` CLI. Run the commands below from the backend project unless stated otherwise.
 
-### 2. Create the room
+### 2. Define the backend actor
 
-Create `src/durable-objects.ts`:
+Create `src/durable-objects.ts` in your backend:
 
 ```ts
-import { Actor, Persisted } from "little-actors"
+import { Actor, Emittable, Persisted } from "little-actors"
 import type { ActorMessageOf, ActorSocketOf } from "little-actors"
 
-type Message = { type: "chat"; text: string }
+type Post = { type: "post"; text: string }
+type ChatMessage = { name: string; text: string }
 
-export class ChatRoom extends Actor<{ name: string }, Message> {
-    @Persisted history: string[] = []
+export class ChatRoom extends Actor<{ name: string }, Post, never> {
+    @Persisted @Emittable history: ChatMessage[] = []
 
     async onMessage(socket: ActorSocketOf<ChatRoom>, message: ActorMessageOf<ChatRoom>): Promise<void> {
-        const text = `${socket.metadata.name}: ${message.text}`
-        this.history.push(text)
-        this.broadcast({ type: "chat", text })
+        this.history.push({ name: socket.metadata.name, text: message.text })
     }
 }
 ```
 
-`@Persisted` makes `history` saved actor state. Every instance field requires `@Persisted` or `@Ephemeral`; use `@Ephemeral` for temporary caches. Each incoming message appends to it and broadcasts to everyone in the room, including the sender. When a client connects, the runtime automatically sends the saved state, including the full history.
+### 3. Start the actor server
 
-The SDK encodes and decodes JSON automatically. The actor's generic parameters type connection metadata and messages; optional [Zod schemas](docs/reference/api.md#generics-and-wire-validation) validate their application-specific shapes at runtime.
+```sh
+npx lac dev
+```
 
-### 3. Create the terminal client
+Wait for `Local actors ready at http://127.0.0.1:7100`. The server saves state in `.little-actors/` and writes local connection settings to `.little-actors/runtime.json`.
 
-Create `src/chat.ts`:
+### 4. Generate the client and proxy
+
+Assuming your web app is in the sibling `web/` directory:
+
+```sh
+npx lac generate src/durable-objects.ts --out-dir src/generated/actors
+npx lac generate src/durable-objects.ts --out-dir ../web/src/generated/actors
+```
+
+### 5. Authorize connections in your application
+
+Mount this handler at `POST /api/rooms/lobby/socket` in your application backend:
 
 ```ts
-import { createInterface as readLines } from "node:readline"
+import { canJoinRoom, getUser } from "./auth.js"
+import { ActorProxy } from "./generated/actors/proxy.js"
 
-import { ChatRoom } from "./durable-objects.js"
+export async function POST(request: Request): Promise<Response> {
+    const user = await getUser(request)
+    if (!user) return new Response("Sign in first", { status: 401 })
+    if (!(await canJoinRoom(user, "lobby"))) return new Response("Access denied", { status: 403 })
 
-const name = process.argv[2] ?? "Anonymous"
-const socket = await ChatRoom.get("lobby").connect({ name })
-const terminal = readLines({ input: process.stdin, output: process.stdout })
-
-socket.addEventListener("message", ({ data }) => {
-    console.log(data.type === "state" ? JSON.stringify(data) : data.text)
-})
-socket.addEventListener("close", () => terminal.close())
-
-for await (const line of terminal) {
-    socket.send({ type: "chat", text: line })
+    return ActorProxy.handle(request, {
+        actorType: "ChatRoom",
+        actorId: "lobby",
+        metadata: { name: user.name }
+    })
 }
-socket.close()
 ```
 
-Both clients use `ChatRoom.get("lobby")`, so they share one actor. A different room name creates a separate conversation with its own history.
+### 6. Connect the web page
 
-### 4. Start the server
+Add this markup to a signed-in page in your web app:
 
-In terminal 1, from the project directory:
-
-```sh
-npx little-actors dev
+```html
+<p id="status" role="status">Connecting…</p>
+<ul id="messages" aria-live="polite"></ul>
+<form id="chat">
+    <label for="text">Message</label>
+    <input id="text" name="text" autocomplete="off" maxlength="500" required />
+    <button id="send" disabled>Send</button>
+</form>
 ```
 
-Leave this running. It starts the local server and registers your actor file. SQLite metadata and snapshots go in `.little-actors/`.
+Load this TypeScript module through your frontend bundler:
 
-Wait for this line before connecting:
+```ts
+import { ActorClient } from "./generated/actors/index.js"
 
-```text
-Local actors ready at http://127.0.0.1:7100
+const client = ActorClient({ endpoint: "/api/rooms/lobby/socket" })
+const room = client.ChatRoom.get("lobby")
+const messages = document.querySelector<HTMLUListElement>("#messages")!
+const status = document.querySelector<HTMLParagraphElement>("#status")!
+const input = document.querySelector<HTMLInputElement>("#text")!
+const send = document.querySelector<HTMLButtonElement>("#send")!
+
+room.subscribe("history", history => {
+    messages.replaceChildren(
+        ...history.map(message => {
+            const item = document.createElement("li")
+            item.textContent = `${message.name}: ${message.text}`
+            return item
+        })
+    )
+})
+room.on("status", value => {
+    status.textContent = value
+    send.disabled = value !== "open"
+})
+room.on("error", error => {
+    status.textContent = error.message
+})
+
+document.querySelector<HTMLFormElement>("#chat")!.addEventListener("submit", event => {
+    event.preventDefault()
+    try {
+        room.send({ type: "post", text: input.value })
+        input.value = ""
+    } catch (error) {
+        status.textContent = error instanceof Error ? error.message : String(error)
+    }
+})
+window.addEventListener("pagehide", () => room.close(), { once: true })
+await room.connect().catch(error => {
+    status.textContent = error.message
+})
 ```
-
-### 5. Open two listeners and chat
-
-In terminal 2, from the same project directory, join as Alice:
-
-```sh
-npx little-actors run src/chat.ts Alice
-```
-
-In terminal 3, join as Bob:
-
-```sh
-npx little-actors run src/chat.ts Bob
-```
-
-`run` supplies local credentials automatically. Wait for both clients to print the initial state:
-
-```json
-{ "type": "state", "state": { "history": [] } }
-```
-
-Leave both running: each listens for messages and lets you send your own. The client formats saved history as JSON and prints the text from live messages.
-
-Once both have joined, type `Hello, Bob!` in Alice's terminal and press Enter. Then type `Hey, Alice!` in Bob's terminal and press Enter. Both clients receive:
-
-```text
-Alice: Hello, Bob!
-Bob: Hey, Alice!
-```
-
-### 6. See history after you close your terminal
-
-Press Ctrl-C in Bob's terminal, then run his command again:
-
-```sh
-npx little-actors run src/chat.ts Bob
-```
-
-Before Bob types anything, his client shows the saved conversation:
-
-```json
-{ "type": "state", "state": { "history": ["Alice: Hello, Bob!", "Bob: Hey, Alice!"] } }
-```
-
-To try a full restart, stop both clients and the server with Ctrl-C. Start the server again in terminal 1:
-
-```sh
-npx little-actors dev
-```
-
-Wait for the ready line, then rerun Alice's and Bob's commands. Both receive the same history and can keep chatting. The messages live in `.little-actors/`, so keep that directory between runs.
 
 ## Host it yourself
 
@@ -149,7 +138,7 @@ Follow the [self-hosting guide](docs/guides/self-hosting.md) to connect your bac
 
 ## Reference
 
-- [CLI reference](docs/reference/cli.md): running actors and clients, command options, and environment variables.
+- [CLI reference](docs/reference/cli.md): running actors, generating SDKs, command options, and environment variables.
 - [TypeScript API reference](docs/reference/api.md): actor classes, methods, connections, types, and errors.
 - [HTTP and WebSocket reference](docs/reference/http.md): deployments, backend access, WebSockets, and callbacks.
 - [Advanced access configuration](docs/guides/advanced-access.md).

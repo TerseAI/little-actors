@@ -271,9 +271,9 @@ async function exerciseSocketHibernation(entrypoint: string): Promise<void> {
             state: { count: 1 },
             effects: [
                 {
-                    type: "send",
+                    type: "state_snapshot",
                     connection_id: "socket-1",
-                    message: { type: "text", data: '{"type":"state","state":{"count":1}}' }
+                    state: { count: 1 }
                 }
             ]
         }

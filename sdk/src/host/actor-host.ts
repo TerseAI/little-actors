@@ -110,7 +110,7 @@ class ActorSessionConnection {
             throw new ActorSessionError("the actor entrypoint does not export any actor classes")
         const socket = await connectSocket(socketPath)
         const connection = new ActorSessionConnection(socket, commandHandler)
-        connection.send({ type: "attach", protocol: 14, actor_types: actorTypes })
+        connection.send({ type: "attach", protocol: 15, actor_types: actorTypes })
         await connection.waitUntilAttached(timeoutMs)
         return connection
     }
@@ -321,7 +321,7 @@ async function resolveActorEntrypoint(configured: string | undefined): Promise<s
 
 async function prepareActorEntrypoint(moduleUrl: string): Promise<readonly ActorSchema[]> {
     const { ActorCompiler } = await import("../compiler/actor-compiler.js")
-    return new ActorCompiler().check(fileURLToPath(moduleUrl))
+    return new ActorCompiler().compile(fileURLToPath(moduleUrl))
 }
 
 function requireTypeScriptSource(filePath: string): void {

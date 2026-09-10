@@ -6,35 +6,28 @@ Named actors with serial method calls and saved state. Requires Node.js 20+.
 npm install little-actors
 ```
 
-Start with the [terminal chat tutorial](https://github.com/TerseAI/little-actors#build-a-chat-room-in-your-terminal): two listeners, live messages, and history that survives restarts. It includes complete files and expected output.
+Start with the [browser chat tutorial](https://github.com/TerseAI/little-actors#browser-chat-demo): an authenticated proxy, typed WebSocket subscriptions, and history that survives restarts. It includes complete files and expected output.
 
 ## Local CLI
 
 Export actors from `src/durable-objects.ts`. Annotate every instance field with `@Persisted` or `@Ephemeral`, imported from `little-actors`. Persisted values survive restarts; ephemeral caches last only while the actor instance remains resident. In your project directory:
 
 ```sh
-npx little-actors dev
+npx lac dev
 ```
 
-Wait for `Local actors ready at http://127.0.0.1:7100`. In another terminal:
+Wait for `Local actors ready at http://127.0.0.1:7100`. Generate source for your backend and web app:
 
 ```sh
-npx little-actors run src/chat.ts Alice
+npx lac generate src/durable-objects.ts --out-dir src/generated/actors
+npx lac generate src/durable-objects.ts --out-dir ../web/src/generated/actors
 ```
 
-Run a second listener in a third terminal:
+The package installs the `lac` CLI. Configure your application proxy with the `controlPlaneUrl` and `apiKey` from `.little-actors/runtime.json`, then start your frontend and application backend with their usual tooling. State survives restarts in `.little-actors/`; refresh the proxy credentials after restarting `dev`.
 
-```sh
-npx little-actors run src/chat.ts Bob
-```
+`lac dev --help` lists options. There is no CLI client runner; browser applications use the generated WebSocket SDK below.
 
-Once both clients have joined, type a message and press Enter. Both receive it. Reconnect either client to see the saved conversation. The CLI supplies credentials and stores SQLite metadata and snapshots in `.little-actors/`. State survives restarts; losing that directory loses the actors. Startup validates actor definitions and field annotations. Restart `dev` after actor code changes.
-
-`dev --help` lists options.
-
-These examples use version `0.1.27` or later.
-
-## Hosted clients
+## Hosted backends
 
 Set these before the first actor call:
 
@@ -49,7 +42,7 @@ See [self-hosting](https://github.com/TerseAI/little-actors/blob/main/docs/guide
 
 ## WebSocket API
 
-The gateway keeps connections while actors hibernate. Each accepted connection receives `{"type":"state","state":{...}}` automatically.
+The gateway keeps connections while actors hibernate. Each accepted connection receives the public persisted fields automatically. Private and protected fields stay in durable storage and are excluded from socket state.
 
 Send JSON values directly with `socket.send({ type: "chat", text: "Hello" })`. The SDK encodes outgoing messages and parses incoming messages, including the initial state.
 
@@ -68,6 +61,76 @@ Send JSON values directly with `socket.send({ type: "chat", text: "Hello" })`. T
 `this.connections` lists connections during an invocation. From application code, `Actor.get(id).broadcast(message)` sends transient output without invoking the actor or saving state.
 
 WebSockets use the control-plane URL unless `DURABLE_OBJECT_SOCKET_GATEWAY_URL` is set.
+
+## Browser clients
+
+Generate a browser client and backend proxy from your actor entrypoint:
+
+```sh
+npx lac generate src/durable-objects.ts --out-dir src/generated/actors
+npx lac generate src/durable-objects.ts --out-dir web/src/generated/actors
+```
+
+This writes TypeScript source, standalone runtime validators, and `contracts.json` for future language generators. The frontend imports `ActorClient` from the generated `index.ts`, which uses `little-actors/browser`. The backend imports `ActorProxy` from the generated `proxy.ts`, which uses `little-actors/proxy`. Neither entrypoint imports the actor implementation, and the browser entrypoint excludes the proxy. Install `little-actors` in both projects and regenerate both copies when the actor contract changes. Compatible added fields are accepted at runtime.
+
+Stack `@Emittable` with `@Persisted` to publish a field's final value after each successful operation commits:
+
+```ts
+import { Actor, type ActorMessageOf, Emittable, Persisted } from "little-actors"
+
+export class ChatRoom extends Actor<{ userId: string }, { type: "post"; text: string }> {
+    @Persisted @Emittable messages: string[] = []
+    @Persisted private moderationNotes: string[] = []
+
+    async onMessage(_socket: unknown, message: ActorMessageOf<ChatRoom>) {
+        this.messages.push(message.text)
+    }
+}
+```
+
+`@Emittable` supplements persistence; it requires a public persisted field. Nested mutations are detected. Repeated assignments within one method produce one final update; unchanged values and failed methods produce none. Socket payloads, metadata, and public persisted state must use JSON-compatible types. Generation rejects unsupported types such as `any`, `Date`, functions, and `bigint`; optional properties are supported.
+
+Your backend authenticates the user and checks access before calling the proxy helper:
+
+```ts
+import { ActorProxy } from "./generated/actors/proxy.js"
+
+export async function POST(request: Request) {
+    const user = await requireUser(request) // Your application's authentication.
+    const roomId = "lobby"
+    await requireRoomAccess(user, roomId) // Runs on every connection and renewal.
+    return ActorProxy.handle(request, {
+        actorType: "ChatRoom",
+        actorId: roomId,
+        metadata: { userId: user.id }
+    })
+}
+```
+
+The generated proxy restricts `actorType` to your actors and types `metadata` for the selected actor. Invalid metadata fails at runtime before ticket issuance, too. `ActorProxy.handle(request, authorization)` reads backend settings from `DURABLE_OBJECT_CONTROL_PLANE_URL`, `DURABLE_OBJECT_API_KEY`, and optional `DURABLE_OBJECT_NAMESPACE_ID`. Pass an optional third argument with `controlPlaneUrl`, `apiKey`, and `namespaceId` to override them. For a configured instance or an injected transport, use `new ActorProxy(options, { fetch })`; its `handle()` method has the same actor-specific types.
+
+The frontend only knows your endpoint:
+
+```ts
+import { ActorClient } from "./generated/actors/index.js"
+
+const client = ActorClient({ endpoint: "/api/socket" })
+const room = client.ChatRoom.get("lobby")
+const unsubscribe = room.subscribe("messages", messages => renderMessages(messages))
+room.on("error", error => console.error(error.message))
+await room.connect()
+room.send({ type: "post", text: "Hello" })
+
+// When this view is finished:
+unsubscribe()
+room.close()
+```
+
+Use `room.on("message", handler)` for explicit actor messages. `room.state` holds the latest snapshot; `subscribe` immediately supplies a cached field value to late listeners. Reconnect supplies a fresh snapshot. `room.on("status", handler)` observes `idle`, `connecting`, `open`, `reconnecting`, `closed`, and `error`.
+
+The SDK obtains and renews credentials automatically through your endpoint, normally every 12 minutes of a 15-minute authorization. Set `authorizationLifetimeMs` in the proxy authorization to change that duration; the server's issuer maximum still applies. Unchanged authorization renews over the existing socket and preserves actor-modified metadata and tags. Changed authorized metadata reconnects through `onConnect`.
+
+Network failures use bounded exponential backoff with jitter. HTTP 401/403, protocol errors, and explicit close stop retries. Live events are not replayed, and `send` throws immediately while disconnected; messages are never queued or resent. Use the optional `fetch` client option to integrate your application's request authentication.
 
 ## Reference
 

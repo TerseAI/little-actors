@@ -12,7 +12,8 @@ use crate::{
     actor::{
         ActorExecutionResult, ActorExecutor, ActorInvocation, ActorInvocationFailure,
         ActorMethodEviction, ActorMethodInvocation, ActorMethodOutcome, ActorSocketEffect,
-        ActorSocketInvocation, ActorSocketOutcome, ActorSocketSource, validate_socket_effects,
+        ActorSocketInvocation, ActorSocketOutcome, ActorSocketPublisher, ActorSocketSource,
+        validate_socket_effects,
     },
     control_plane::ControlPlaneClient,
     state_log::StateSnapshot,
@@ -97,6 +98,7 @@ pub(super) struct ActorRuntime {
     commits: Arc<dyn StateCommitAuthority>,
     state: Arc<dyn StateTransport>,
     sockets: Arc<dyn ActorSocketSource>,
+    publisher: Arc<dyn ActorSocketPublisher>,
     cached_state: Option<CachedActorState>,
 }
 
@@ -107,6 +109,7 @@ impl ActorRuntime {
         commits: Arc<dyn StateCommitAuthority>,
         state: Arc<dyn StateTransport>,
         sockets: Arc<dyn ActorSocketSource>,
+        publisher: Arc<dyn ActorSocketPublisher>,
     ) -> Self {
         Self {
             endpoint,
@@ -114,6 +117,7 @@ impl ActorRuntime {
             commits,
             state,
             sockets,
+            publisher,
             cached_state: None,
         }
     }
@@ -205,11 +209,11 @@ impl ActorRuntime {
             }
         };
         if cached.state.as_deref() == Some(&next_state) {
+            let version = cached.state_version;
             self.cached_state = Some(cached);
-            return Ok(ActorExecutionResult::Completed {
-                result: Value::Null,
-                effects,
-            });
+            return self
+                .complete_with_state(&persistence.actor, version, Value::Null, effects)
+                .await;
         }
         let published = self
             .publish_result(
@@ -224,12 +228,13 @@ impl ActorRuntime {
         if published.is_err() {
             self.evict(&persistence.actor).await;
         }
+        let version = cached.state_version;
         self.cached_state = Some(cached);
         match published {
-            Ok(ActorExecutionResult::Completed { .. }) => Ok(ActorExecutionResult::Completed {
-                result: Value::Null,
-                effects,
-            }),
+            Ok(ActorExecutionResult::Completed { .. }) => {
+                self.complete_with_state(&persistence.actor, version, Value::Null, effects)
+                    .await
+            }
             Ok(result) => Ok(result),
             Err(_) => Ok(ActorExecutionResult::Failed {
                 failure: ActorInvocationFailure::outcome_unknown_after_execution(),
@@ -279,8 +284,11 @@ impl ActorRuntime {
             }
         };
         if cached.state.as_deref() == Some(&next_state) {
+            let version = cached.state_version;
             self.cached_state = Some(cached);
-            return Ok(ActorExecutionResult::Completed { result, effects });
+            return self
+                .complete_with_state(&invocation.actor, version, result, effects)
+                .await;
         }
 
         let published = self
@@ -290,10 +298,12 @@ impl ActorRuntime {
         if published.is_err() {
             self.evict(&invocation.actor).await;
         }
+        let version = cached.state_version;
         self.cached_state = Some(cached);
         match published {
             Ok(ActorExecutionResult::Completed { result, .. }) => {
-                Ok(ActorExecutionResult::Completed { result, effects })
+                self.complete_with_state(&invocation.actor, version, result, effects)
+                    .await
             }
             Ok(result) => Ok(result),
             Err(error) => {
@@ -307,6 +317,37 @@ impl ActorRuntime {
                 })
             }
         }
+    }
+
+    async fn complete_with_state(
+        &self,
+        actor: &crate::actor::ActorKey,
+        state_version: u64,
+        result: Value,
+        effects: Vec<ActorSocketEffect>,
+    ) -> Result<ActorExecutionResult> {
+        let (mut automatic, effects): (Vec<_>, Vec<_>) = effects.into_iter().partition(|effect| {
+            matches!(
+                effect,
+                ActorSocketEffect::StateSnapshot { .. } | ActorSocketEffect::StateUpdate { .. }
+            )
+        });
+        for effect in &mut automatic {
+            match effect {
+                ActorSocketEffect::StateSnapshot { version, .. }
+                | ActorSocketEffect::StateUpdate { version, .. } => *version = Some(state_version),
+                _ => unreachable!(),
+            }
+        }
+        if !automatic.is_empty() {
+            if let Err(error) = self.publisher.publish(actor, automatic).await {
+                warn!(actor = %actor.storage_key(), error = %error, "committed state notification failed");
+                return Ok(ActorExecutionResult::Failed {
+                    failure: ActorInvocationFailure::outcome_unknown_after_execution(),
+                });
+            }
+        }
+        Ok(ActorExecutionResult::Completed { result, effects })
     }
 
     async fn take_or_load_state(

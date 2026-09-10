@@ -25,7 +25,7 @@ use tracing::{debug, info};
 
 use super::{ActorInvocationFailure, ActorKey};
 
-const ACTOR_EXECUTOR_PROTOCOL_VERSION: u32 = 14;
+const ACTOR_EXECUTOR_PROTOCOL_VERSION: u32 = 15;
 const MAX_PENDING_EXECUTOR_COMMANDS: usize = 64;
 pub(crate) const MAX_ACTOR_EXECUTOR_MESSAGE_BYTES: usize = 32 * 1024 * 1024;
 
@@ -86,6 +86,20 @@ pub struct ActorSocketInvocation {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ActorSocketEffect {
+    StateSnapshot {
+        connection_id: String,
+        state: Value,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        version: Option<u64>,
+    },
+    StateUpdate {
+        changes: Value,
+        removed: Vec<String>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        except_connection_ids: Vec<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        version: Option<u64>,
+    },
     Send {
         connection_id: String,
         message: ActorSocketMessage,
@@ -949,7 +963,7 @@ mod tests {
             let mut stream = BufReader::new(stream);
             write_json_line(
                 &mut stream,
-                &json!({"type":"attach", "protocol":14, "actor_types":["counter"]}),
+                &json!({"type":"attach", "protocol":15, "actor_types":["counter"]}),
             )
             .await?;
             let _ = read_json_line(&mut stream).await?;
@@ -1191,10 +1205,10 @@ mod tests {
         let (reader, mut writer) = stream.into_split();
         let mut reader = BufReader::new(reader);
         writer
-            .write_all(b"{\"type\":\"attach\",\"protocol\":14,\"actor_types\":[\"counter\"]}\n")
+            .write_all(b"{\"type\":\"attach\",\"protocol\":15,\"actor_types\":[\"counter\"]}\n")
             .await?;
         ensure!(
-            read_json_line(&mut reader).await? == json!({ "type": "attached", "protocol": 14 })
+            read_json_line(&mut reader).await? == json!({ "type": "attached", "protocol": 15 })
         );
 
         let invocation = read_json_line(&mut reader).await?;
@@ -1254,10 +1268,10 @@ mod tests {
         let (reader, mut writer) = stream.into_split();
         let mut reader = BufReader::new(reader);
         writer
-            .write_all(b"{\"type\":\"attach\",\"protocol\":14,\"actor_types\":[\"counter\"]}\n")
+            .write_all(b"{\"type\":\"attach\",\"protocol\":15,\"actor_types\":[\"counter\"]}\n")
             .await?;
         ensure!(
-            read_json_line(&mut reader).await? == json!({ "type": "attached", "protocol": 14 })
+            read_json_line(&mut reader).await? == json!({ "type": "attached", "protocol": 15 })
         );
         let mut trailing = String::new();
         ensure!(

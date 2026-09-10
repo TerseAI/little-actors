@@ -2,7 +2,7 @@ import { z } from "zod"
 
 import { ActorProtocolError } from "../errors.js"
 import { jsonValueSchema } from "../json.js"
-import type { JsonValue } from "../json.js"
+import type { JsonObject, JsonValue } from "../json.js"
 
 import { actorComponentSchema } from "./identity.js"
 
@@ -55,6 +55,19 @@ const socketMessageSchema = z.discriminatedUnion("type", [
 ])
 
 const socketEffectSchema = z.discriminatedUnion("type", [
+    z.object({
+        type: z.literal("state_snapshot"),
+        connection_id: socketConnectionIdSchema,
+        state: z.record(z.string(), jsonValueSchema),
+        version: z.number().int().nonnegative().safe().optional()
+    }),
+    z.object({
+        type: z.literal("state_update"),
+        changes: z.record(z.string(), jsonValueSchema),
+        removed: z.array(z.string()),
+        except_connection_ids: z.array(socketConnectionIdSchema).optional(),
+        version: z.number().int().nonnegative().safe().optional()
+    }),
     z.object({ type: z.literal("send"), connection_id: socketConnectionIdSchema, message: socketMessageSchema }),
     z.object({
         type: z.literal("broadcast"),
@@ -100,6 +113,19 @@ type SocketConnection = z.infer<typeof socketConnectionSchema>
 type SocketMessage = z.infer<typeof socketMessageSchema>
 type SocketEvent = z.infer<typeof socketEventSchema>
 type SocketEffect =
+    | {
+          readonly type: "state_snapshot"
+          readonly connection_id: string
+          readonly state: JsonObject
+          readonly version?: number
+      }
+    | {
+          readonly type: "state_update"
+          readonly changes: JsonObject
+          readonly removed: readonly string[]
+          readonly except_connection_ids?: readonly string[]
+          readonly version?: number
+      }
     | { readonly type: "send"; readonly connection_id: string; readonly message: SocketMessage }
     | {
           readonly type: "broadcast"

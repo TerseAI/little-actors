@@ -95,7 +95,7 @@ const counterDefinition = registerActorClass(Counter, {
 const forwarderDefinition = registerActorClass(Forwarder)
 const chatDefinition = registerActorClass(ChatRoom, {
     actorType: "ChatRoom",
-    fields: [{ name: "events", persistence: Persistence.Persisted }]
+    fields: [{ name: "events", persistence: Persistence.Persisted, visibility: "private" }]
 })
 const rejectingDefinition = registerActorClass(RejectingRoom)
 
@@ -443,9 +443,9 @@ test("sends durable actor properties when a connection has no onConnect hook", a
             state: { count: 0 },
             effects: [
                 {
-                    type: "send",
+                    type: "state_snapshot",
                     connection_id: "connection-1",
-                    message: { type: "text", data: '{"type":"state","state":{"count":0}}' }
+                    state: { count: 0 }
                 }
             ]
         }
@@ -500,9 +500,9 @@ test("runs the full socket lifecycle and exposes live actor connections", async 
                     message: { type: "text", data: JSON.stringify({ text: "ready" }) }
                 },
                 {
-                    type: "send",
+                    type: "state_snapshot",
                     connection_id: "connection-1",
-                    message: { type: "text", data: '{"type":"state","state":{"events":["connect:user-1:1"]}}' }
+                    state: {}
                 }
             ]
         }

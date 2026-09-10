@@ -46,6 +46,24 @@ function readPersistence(use: DecoratorUse, mode: Persistence): DecoratorResult 
     return { annotations: [{ kind: AnnotationKind.Persistence, mode, node: use.node }], diagnostics: [] }
 }
 
+function readEmission(use: DecoratorUse): DecoratorResult {
+    const node = use.target
+    if (
+        !ts.isPropertyDeclaration(node) ||
+        hasModifier(node, ts.SyntaxKind.StaticKeyword) ||
+        hasModifier(node, ts.SyntaxKind.AccessorKeyword)
+    )
+        return invalid(use, "@Emittable requires an instance field")
+    if (use.called) return invalid(use, "use @Emittable without parentheses or arguments")
+    if (
+        ts.isPrivateIdentifier(node.name) ||
+        hasModifier(node, ts.SyntaxKind.PrivateKeyword) ||
+        hasModifier(node, ts.SyntaxKind.ProtectedKeyword)
+    )
+        return invalid(use, "@Emittable requires a public persisted field")
+    return { annotations: [{ kind: AnnotationKind.Emission, node: use.node }], diagnostics: [] }
+}
+
 function validateField(
     actorName: string,
     member: ParsedMember
@@ -53,6 +71,7 @@ function validateField(
     const node = member.node as ts.PropertyDeclaration
     if (member.diagnostics.length > 0) return { diagnostics: [] }
     const annotations = member.annotations.filter(annotation => annotation.kind === AnnotationKind.Persistence)
+    const emission = member.annotations.filter(annotation => annotation.kind === AnnotationKind.Emission)
     if (annotations.length !== 1)
         return {
             diagnostics: [
@@ -63,11 +82,23 @@ function validateField(
                 )
             ]
         }
+    if (emission.length > 1 || (emission.length === 1 && annotations[0]!.mode !== Persistence.Persisted))
+        return {
+            diagnostics: [
+                definitionDiagnostic(node, "@Emittable requires a public @Persisted field and cannot be repeated")
+            ]
+        }
     return {
         field: {
             name: fieldName(node.name)!,
             persistence: annotations[0]!.mode,
-            ...(ts.isPrivateIdentifier(node.name) ? { private: true } : {})
+            ...(ts.isPrivateIdentifier(node.name) ? { private: true } : {}),
+            ...(hasModifier(node, ts.SyntaxKind.PrivateKeyword)
+                ? { visibility: "private" as const }
+                : hasModifier(node, ts.SyntaxKind.ProtectedKeyword)
+                  ? { visibility: "protected" as const }
+                  : {}),
+            ...(emission.length === 1 ? { emittable: true } : {})
         },
         diagnostics: []
     }
@@ -91,4 +122,4 @@ function invalid(use: DecoratorUse, message: string): DecoratorResult {
     return { annotations: [], diagnostics: [definitionDiagnostic(use.node, message)] }
 }
 
-export { readPersistence, validatePersistence }
+export { readEmission, readPersistence, validatePersistence }

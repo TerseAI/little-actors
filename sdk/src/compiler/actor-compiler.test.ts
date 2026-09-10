@@ -8,6 +8,36 @@ import ts from "typescript"
 
 import { ActorCompiler, Persistence, analyzeActors, resolveSdkSymbols } from "./actor-compiler.js"
 
+test("retains state visibility and stacked emission annotations", () => {
+    const result = analyze(`import { Actor, Persisted, Emittable } from "./sdk.js"
+        export class Room extends Actor {
+            @Persisted @Emittable messages: string[] = []
+            @Persisted private secret = "secret"
+            @Persisted protected internal = 1
+        }`)
+    assert.deepEqual(result.diagnostics, [])
+    assert.deepEqual(result.schemas[0]?.fields, [
+        { name: "messages", persistence: Persistence.Persisted, emittable: true },
+        { name: "secret", persistence: Persistence.Persisted, visibility: "private" },
+        { name: "internal", persistence: Persistence.Persisted, visibility: "protected" }
+    ])
+})
+
+test("emittable fields must be public persisted fields with one emission annotation", () => {
+    for (const field of [
+        "@Emittable value = 0",
+        "@Persisted @Emittable private value = 0",
+        "@Persisted @Emittable protected value = 0",
+        "@Ephemeral @Emittable value = 0",
+        "@Persisted @Emittable @Emittable value = 0",
+        "@Persisted @Emittable() value = 0"
+    ]) {
+        const result = analyze(`import { Actor, Persisted, Ephemeral, Emittable } from "./sdk.js"
+            export class Room extends Actor { ${field} }`)
+        assert.ok(result.diagnostics.length > 0, field)
+    }
+})
+
 test("validates actors without writing files", async () => {
     const root = await createProject()
     try {
@@ -17,6 +47,65 @@ test("validates actors without writing files", async () => {
         })
         const schemas = compiler.check(path.join(root, "src/actors.ts"))
         assert.equal(schemas[0]?.actorType, "Counter")
+    } finally {
+        await rm(root, { recursive: true, force: true })
+    }
+})
+
+test("compiles a portable socket contract without importing actor implementation", async () => {
+    const root = await createProject()
+    try {
+        const entrypoint = path.join(root, "src/actors.ts")
+        await writeFile(
+            entrypoint,
+            `import { Actor, Persisted, Emittable } from "little-actors"
+            type Incoming = { type: "post"; text: string }
+            type Outgoing = { type: "posted"; text: string }
+            export class Room extends Actor<{ userId: string }, Incoming, Outgoing> {
+                @Persisted @Emittable messages: string[] = []
+                @Persisted private secret = "hidden"
+                @Persisted label?: string
+            }
+            throw new Error("must not execute during generation")`
+        )
+        const [actor] = new ActorCompiler().compile(entrypoint)
+        assert.equal(actor.contract.actorType, "Room")
+        assert.deepEqual(actor.contract.emittable, ["messages"])
+        const state = actor.contract.schema.definitions?.State
+        assert.ok(state && typeof state === "object")
+        assert.deepEqual(Object.keys(state.properties ?? {}), ["messages", "label"])
+        assert.deepEqual(state.required, ["messages"])
+        assert.equal(JSON.stringify(actor.contract).includes("hidden"), false)
+    } finally {
+        await rm(root, { recursive: true, force: true })
+    }
+})
+
+test("rejects non-JSON socket types and public state with useful actor diagnostics", async () => {
+    const root = await createProject()
+    try {
+        const entrypoint = path.join(root, "src/actors.ts")
+        for (const type of [
+            "Date",
+            "bigint",
+            "() => void",
+            "Map<string, number>",
+            "any",
+            "{ first?: string; required: string | undefined }"
+        ]) {
+            await writeFile(
+                entrypoint,
+                `import { Actor } from "little-actors"
+                export class Room extends Actor<{}, { value: ${type} }, never> {}`
+            )
+            assert.throws(() => new ActorCompiler().compile(entrypoint), /Room.*JSON/)
+        }
+        await writeFile(
+            entrypoint,
+            `import { Actor, Persisted } from "little-actors"
+            export class Room extends Actor { @Persisted value: string | undefined = "initial" }`
+        )
+        assert.throws(() => new ActorCompiler().compile(entrypoint), /Room.*JSON/)
     } finally {
         await rm(root, { recursive: true, force: true })
     }
@@ -32,7 +121,7 @@ test("checks source actors and returns persistence schemas without generating fi
             {
                 actorType: "Counter",
                 fields: [
-                    { name: "count", persistence: Persistence.Persisted },
+                    { name: "count", persistence: Persistence.Persisted, visibility: "private" },
                     { name: "cache", persistence: Persistence.Ephemeral },
                     { name: "callback", persistence: Persistence.Ephemeral }
                 ]
@@ -137,7 +226,7 @@ test("checks private and optional computed fields on re-exported actors", async 
             {
                 actorType: "Counter",
                 fields: [
-                    { name: "count", persistence: Persistence.Persisted },
+                    { name: "count", persistence: Persistence.Persisted, visibility: "private" },
                     { name: "label", persistence: Persistence.Persisted },
                     { name: "cache", persistence: Persistence.Ephemeral }
                 ]
@@ -170,7 +259,7 @@ test("resolves actor and decorator aliases through re-exports and namespaces", (
         {
             actorType: "Counter",
             fields: [
-                { name: "count", persistence: Persistence.Persisted },
+                { name: "count", persistence: Persistence.Persisted, visibility: "private" },
                 { name: "cache", persistence: Persistence.Ephemeral },
                 { name: "#resource", persistence: Persistence.Ephemeral, private: true }
             ]
@@ -323,6 +412,7 @@ function analyze(source: string, extra: Record<string, string> = {}) {
             "actors.ts": source,
             "sdk.ts": `export abstract class Actor { protected constructor() {} }
             export function Persisted(...args: unknown[]) {}
+            export function Emittable(...args: unknown[]) {}
             export function Ephemeral(...args: unknown[]) {}`,
             ...extra
         }).map(([name, content]) => [`/virtual/${name}`, content])

@@ -3,10 +3,13 @@ import { z } from "zod"
 import { ActorProtocolError, ActorSerializationError, ActorValidationError } from "../errors.js"
 import { jsonValueSchema } from "../json.js"
 import type { JsonObject, JsonValue } from "../json.js"
+import type { SocketContract } from "../wire/contract.js"
+import { validateContract } from "../wire/validation.js"
 
 import { socketTagsSchema } from "./socketProtocol.js"
 
 interface ActorSchemas<Metadata = unknown, Incoming = unknown, Outgoing = Incoming, Tag extends string = string> {
+    readonly contract?: SocketContract
     readonly metadata?: z.ZodType<Metadata, Metadata>
     readonly incoming?: z.ZodType<Incoming, Incoming>
     readonly outgoing?: z.ZodType<Outgoing, Outgoing>
@@ -16,22 +19,45 @@ interface ActorSchemas<Metadata = unknown, Incoming = unknown, Outgoing = Incomi
 interface ActorStateMessage<State = JsonObject> {
     readonly type: "state"
     readonly state: State
+    readonly version?: number
 }
 
-const stateMessageSchema = z.object({ type: z.literal("state"), state: z.record(z.string(), jsonValueSchema) }).strict()
+interface ActorStateUpdate<State = JsonObject> {
+    readonly type: "state_update"
+    readonly changes: Partial<State>
+    readonly removed: readonly string[]
+    readonly version: number
+}
+
+const stateMessageSchema = z.discriminatedUnion("type", [
+    z.object({
+        type: z.literal("state"),
+        state: z.record(z.string(), jsonValueSchema),
+        version: z.number().int().nonnegative().safe().optional()
+    }),
+    z.object({
+        type: z.literal("state_update"),
+        changes: z.record(z.string(), jsonValueSchema),
+        removed: z.array(z.string()),
+        version: z.number().int().nonnegative().safe()
+    })
+])
 
 function socketMetadata(value: unknown, schemas: ActorSchemas = {}): JsonValue {
+    validateContract(value, "Metadata", schemas.contract)
     return validateValue(value, "socket metadata", schemas.metadata, 64 * 1024)
 }
 
 function incomingMessage(value: unknown, schemas: ActorSchemas = {}): JsonValue {
+    validateContract(value, "Incoming", schemas.contract)
     return validateValue(value, "incoming socket message", schemas.incoming)
 }
 
 function outgoingMessage(value: unknown, schemas: ActorSchemas = {}): JsonValue {
+    validateContract(value, "Outgoing", schemas.contract)
     const message = validateValue(value, "outgoing socket message", schemas.outgoing)
     if (isStateMessage(message))
-        throw new ActorProtocolError('socket message type "state" is reserved for the initial actor state')
+        throw new ActorProtocolError('socket message types "state" and "state_update" are reserved for actor state')
     return message
 }
 
@@ -69,8 +95,13 @@ function validateValue(value: unknown, label: string, schema?: z.ZodType, maximu
 }
 
 function isStateMessage(value: unknown): boolean {
-    return typeof value === "object" && value !== null && "type" in value && value.type === "state"
+    return (
+        typeof value === "object" &&
+        value !== null &&
+        "type" in value &&
+        (value.type === "state" || value.type === "state_update")
+    )
 }
 
 export { socketMetadata, incomingMessage, outgoingMessage, receivedMessage, socketTags }
-export type { ActorSchemas, ActorStateMessage }
+export type { ActorSchemas, ActorStateMessage, ActorStateUpdate }

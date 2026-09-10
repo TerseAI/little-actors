@@ -4,6 +4,19 @@ import { test } from "node:test"
 import { ActorProtocolError } from "../errors.js"
 
 import { parseSocketEffects } from "./socketProtocol.js"
+import { receivedMessage } from "./socketValidation.js"
+
+test("retains committed state versions and accepts backend state control messages", () => {
+    const effects = [{ type: "state_snapshot", connection_id: "socket", state: { count: 1 }, version: 3 }]
+    assert.deepEqual(parseSocketEffects(effects), effects)
+    assert.deepEqual(receivedMessage({ type: "state", state: { count: 1 }, version: 3 }), {
+        type: "state",
+        state: { count: 1 },
+        version: 3
+    })
+    const update = { type: "state_update", changes: { count: 2 }, removed: [], version: 4 }
+    assert.deepEqual(receivedMessage(update), update)
+})
 
 test("rejects malformed socket effects", () => {
     assert.throws(

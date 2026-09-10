@@ -39,6 +39,14 @@ pub(super) fn router(invocations: ControlPlaneService, admin: AdminService) -> R
         )
         .route("/v1/session-scoped-token", post(issue_workflow_token))
         .route(
+            "/v1/actors/{actor_type}/{actor_id}/socket-ticket",
+            post(issue_socket_ticket),
+        )
+        .route(
+            "/v1/namespaces/{namespace_id}/actors/{actor_type}/{actor_id}/socket-ticket",
+            post(issue_socket_ticket),
+        )
+        .route(
             "/v1/actors/{actor_type}/{actor_id}/target",
             post(resolve_actor_target),
         )
@@ -59,6 +67,53 @@ pub(super) fn router(invocations: ControlPlaneService, admin: AdminService) -> R
         .layer(DefaultBodyLimit::max(MAX_CONTROL_PLANE_MESSAGE_BYTES))
         .with_state(PublicApiState { invocations, admin })
         .merge(sockets)
+}
+
+async fn issue_socket_ticket(
+    State(state): State<PublicApiState>,
+    Path(path): Path<ActorPath>,
+    headers: HeaderMap,
+    Json(request): Json<IssueSocketTicketRequest>,
+) -> Result<Response, ApiError> {
+    authorized_admin(&state.admin, &headers)?;
+    let principal = state
+        .invocations
+        .authenticate_application(
+            &state.admin,
+            headers[header::AUTHORIZATION]
+                .to_str()
+                .map_err(ApiError::bad_request)?,
+            path.namespace_id.as_deref(),
+        )
+        .map_err(ApiError::bad_request)?;
+    let grant = super::socket_ticket::SocketGrant {
+        actor: path.into_actor(&principal.scope.namespace_id),
+        region: principal.region,
+        metadata: request.metadata,
+        authorization_lifetime_ms: request.authorization_lifetime_ms,
+        connection_id: request.connection_id,
+    };
+    grant.validate().map_err(ApiError::bad_request)?;
+    let issued = state
+        .admin
+        .issue_socket(grant)
+        .await
+        .map_err(ApiError::bad_request)?;
+    Ok(([(header::CACHE_CONTROL, "no-store")], Json(issued)).into_response())
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct IssueSocketTicketRequest {
+    metadata: Value,
+    #[serde(default = "socket_authorization_lifetime")]
+    authorization_lifetime_ms: i64,
+    #[serde(default)]
+    connection_id: Option<String>,
+}
+
+fn socket_authorization_lifetime() -> i64 {
+    900_000
 }
 
 async fn get_deployment(

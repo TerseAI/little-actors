@@ -11,10 +11,12 @@ interface SdkSymbols {
     readonly Actor: ts.Symbol
     readonly Persisted: ts.Symbol
     readonly Ephemeral: ts.Symbol
+    readonly Emittable: ts.Symbol
 }
 
 enum AnnotationKind {
-    Persistence = "persistence"
+    Persistence = "persistence",
+    Emission = "emission"
 }
 
 interface PersistenceAnnotation {
@@ -23,7 +25,7 @@ interface PersistenceAnnotation {
     readonly node: ts.Decorator
 }
 
-type Annotation = PersistenceAnnotation
+type Annotation = PersistenceAnnotation | { readonly kind: AnnotationKind.Emission; readonly node: ts.Decorator }
 
 interface DecoratorUse {
     readonly node: ts.Decorator

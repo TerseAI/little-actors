@@ -1,6 +1,6 @@
 # Advanced access configuration
 
-The [local demo](../../README.md#build-a-chat-room-in-your-terminal) configures access automatically. A [hosted backend](self-hosting.md) needs an API key and server URL. Use the options below when an integration needs separate actor groups or delegated access.
+The [browser demo](../../README.md#browser-chat-demo) uses an authenticated application proxy. A [hosted backend](self-hosting.md) needs an API key and server URL. Use the options below when an integration needs separate actor groups or delegated access.
 
 ## Explicit namespaces
 
@@ -60,7 +60,7 @@ Pass the response's `token` and the server URL to the worker:
 export DURABLE_OBJECT_TOKEN='<the-token-from-the-response>'
 export DURABLE_OBJECT_CONTROL_PLANE_URL='https://objects.example.com'
 unset DURABLE_OBJECT_API_KEY DURABLE_OBJECT_NAMESPACE_ID
-node --import tsx src/chat.ts Alice
+node --import tsx src/worker.ts
 ```
 
 The server derives the namespace from the token. The SDK rejects configuration containing both an API key and a session token. Terse supplies session credentials to its workflows.
@@ -74,18 +74,18 @@ The SDK does not renew session tokens. Use the response's `expiresAtMs` and star
 With `dev` running, request a session token:
 
 ```sh
-npx little-actors token
+npx lac token
 ```
 
-Copy the printed token into a separate terminal and launch the tutorial's client:
+For a trusted backend script, configure its credentials and launch it with your application tooling:
 
 ```sh
 export DURABLE_OBJECT_TOKEN='<the-token-from-the-command>'
 export DURABLE_OBJECT_CONTROL_PLANE_URL='http://127.0.0.1:7100'
 unset DURABLE_OBJECT_API_KEY DURABLE_OBJECT_NAMESPACE_ID DURABLE_OBJECT_SOCKET_GATEWAY_URL
-node --import tsx src/chat.ts Alice
+node --import tsx src/worker.ts
 ```
 
 Use the server's actual port and pass `--data-dir` to `token` if you changed the defaults. Request a fresh token after expiration or a server restart. This token can access every actor in the local namespace, including rooms other than `lobby`.
 
-For an untrusted worker, issue the token in a trusted process and pass only its client credentials into the sandbox. The local `run` command uses the local API key and is intended for trusted development scripts.
+For an untrusted worker, issue the token in a trusted process and pass only its client credentials into the sandbox. Browser applications use the generated SDK and their authenticated proxy route; they do not receive these backend session tokens.

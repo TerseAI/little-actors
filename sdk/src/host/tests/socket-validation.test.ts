@@ -59,6 +59,68 @@ const definition = registerActorClass(ValidatedRoom)
 const actor = { namespace_id: "project", actor_type: "ValidatedRoom", actor_id: "one" }
 const connection: SocketConnection = { id: "socket-1", metadata: { userId: "one" }, tags: [] }
 
+test("generated contracts validate messages without requiring application Zod schemas", async () => {
+    let handled = 0
+    class ContractRoom extends Actor<{}, { count: number }> {
+        async onMessage() {
+            handled++
+        }
+        async invalidOutput() {
+            this.broadcast({ count: "invalid" } as never)
+        }
+    }
+    const definition = registerActorClass(ContractRoom, {
+        actorType: "ContractRoom",
+        fields: [],
+        contract: {
+            version: 1,
+            actorType: "ContractRoom",
+            emittable: [],
+            schema: {
+                definitions: {
+                    Metadata: { type: "object" },
+                    State: { type: "object" },
+                    Incoming: { type: "object", properties: { count: { type: "number" } }, required: ["count"] },
+                    Outgoing: { type: "object", properties: { count: { type: "number" } }, required: ["count"] }
+                }
+            }
+        }
+    })
+    const runtime = new ActorRuntime(definition)
+    const request = event({
+        type: "message",
+        connection_id: connection.id,
+        message: { type: "text", data: '{"count":"wrong"}' }
+    })
+    const identity = { ...actor, actor_type: "ContractRoom" }
+    assert.equal((await runtime.handle({ ...request, actor: identity })).type, "failed")
+    assert.equal(handled, 0)
+    assert.equal(
+        (
+            await runtime.handle({
+                type: "invoke",
+                request_id: "invalid",
+                actor: identity,
+                state: null,
+                method: "invalidOutput",
+                args: []
+            })
+        ).type,
+        "failed"
+    )
+    const valid = {
+        ...request,
+        actor: identity,
+        event: {
+            type: "message" as const,
+            connection_id: connection.id,
+            message: { type: "text" as const, data: '{"count":1,"newField":true}' }
+        }
+    }
+    assert.equal((await runtime.handle(valid)).type, "websocket_handled")
+    assert.equal(handled, 1)
+})
+
 test("connection metadata is validated before actor hooks run", async () => {
     calls.length = 0
     const runtime = new ActorRuntime(definition)

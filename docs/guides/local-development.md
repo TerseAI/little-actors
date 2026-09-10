@@ -1,6 +1,6 @@
 # Local development
 
-Run the [chat tutorial](../../README.md#build-a-chat-room-in-your-terminal) from a source checkout without installing a published package or deploying a server. The SDK and runtime come from the same checkout.
+Run the [chat tutorial](../../README.md#browser-chat-demo) from a source checkout without installing a published package or deploying a server. The SDK and runtime come from the same checkout.
 
 ## Build the SDK and runtime
 
@@ -27,28 +27,27 @@ mkdir src
 
 Link the repository's `sdk/` directory, which contains the package and CLI. The repository root is a private workspace, not the installable SDK. `npm link` creates a local package link; it does not publish anything.
 
-## Run the chat tutorial
+## Connect the browser demo
 
-Create the actor and client files from the [chat tutorial](../../README.md#build-a-chat-room-in-your-terminal), then start the server from the demo directory:
+Create the backend actor and web application code from the [chat tutorial](../../README.md#browser-chat-demo), then start the server from the demo directory:
 
 ```sh
 DURABLE_OBJECT_BINARY=/absolute/path/to/little-actors/target/debug/little-actors \
-  npx --no-install little-actors dev
+  npx --no-install lac dev
 ```
 
 The binary override is needed for `dev`: linking the JavaScript package alone does not select a locally built runtime. `--no-install` keeps `npx` from installing a package if the link is missing.
 
-After the ready message, open two more terminals in the demo directory. Run one command per terminal:
+After the ready message, generate the client and proxy into their projects:
 
 ```sh
-npx --no-install little-actors run src/chat.ts Alice
+npx --no-install lac generate src/durable-objects.ts --out-dir src/generated/actors
+npx --no-install lac generate src/durable-objects.ts --out-dir ../web/src/generated/actors
 ```
 
-```sh
-npx --no-install little-actors run src/chat.ts Bob
-```
+Configure the application proxy using the backend URL and API key from `.little-actors/runtime.json`. Add the authenticated proxy route and browser UI from the [main-page demo](../../README.md#browser-chat-demo), then start the web app with its normal development server. Open two signed-in browser sessions to try chat.
 
-`run` and `token` use the running server, so they do not need `DURABLE_OBJECT_BINARY`.
+The frontend never imports the actor implementation. Generated SDK requests go to your proxy for credentials, and socket messages go directly to the actor gateway. `generate` and `token` do not need `DURABLE_OBJECT_BINARY`.
 
 ## Rebuild after changes
 

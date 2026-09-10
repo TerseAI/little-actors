@@ -1,6 +1,6 @@
 # TypeScript API reference
 
-This page documents the public exports of `little-actors`. Requires Node.js 20+ and an ES module project. For a working application, see the [chat tutorial](../../README.md#build-a-chat-room-in-your-terminal).
+This page documents the public exports of `little-actors`. Requires Node.js 20+ and an ES module project. For a working application, see the [chat tutorial](../../README.md#browser-chat-demo).
 
 - [Actor](#actor)
 - [Actor references](#actor-references)
@@ -93,7 +93,7 @@ Each schema is optional. JSON shape and size checks always run. When supplied, `
 
 Schemas are synchronous validators. Their input and output types must agree with the corresponding generic. Parsed schema output is not substituted: defaults, coercion, transformations, and unknown-key stripping do not rewrite wire data. Use refinements or strict objects to reject unwanted values. Static schemas are not saved actor state.
 
-The message type `"state"` is reserved for automatic initial state delivery. This message uses the runtime's state envelope validation and bypasses the application outgoing schema. Generic types alone do not validate application-specific shapes at runtime.
+The message type `"state"` is reserved for automatic initial state delivery. This message uses the runtime's state envelope validation and bypasses the application outgoing schema. Actor startup and client generation derive runtime validators from the actor generics. Optional Zod schemas may add stricter server-side checks.
 
 ### Actor.get
 
@@ -176,13 +176,13 @@ Optional lifecycle hook called when a connection is initialized. The socket is `
 
 **Returns:** `Promise<void>`. Successful state changes are saved.
 
-After acceptance, the connection receives the actor's saved properties, including changes made by this hook:
+After acceptance and commit, the connection receives the actor's public persisted properties, including changes made by this hook. Private and protected fields stay in storage:
 
 ```json
-{ "type": "state", "state": { "history": [] } }
+{ "type": "state", "state": { "history": [] }, "version": 1 }
 ```
 
-Messages sent with `socket.send()` during the hook precede that state message. Existing connections can receive broadcasts during the hook, but the joining connection is not yet a broadcast recipient. Use `socket.send()` to address it directly.
+Messages sent with `socket.send()` during the hook may arrive before readiness; do not depend on their ordering relative to automatic state. Existing connections can receive broadcasts during the hook, but the joining connection is not yet a broadcast recipient. Use `socket.send()` to address it directly.
 
 ### Actor.onMessage
 
@@ -199,7 +199,7 @@ Optional lifecycle hook called for incoming application messages. The runtime pa
 
 **Returns:** `Promise<void>`. Successful state changes are saved.
 
-The [chat tutorial](../../README.md#2-create-the-room) shows a complete implementation that saves and broadcasts each message.
+The [chat tutorial](../../README.md#2-define-the-backend-actor) shows a complete implementation that saves and broadcasts each message.
 
 ### Actor.onDisconnect
 
@@ -235,10 +235,12 @@ Each component must be nonempty and contain only ASCII letters, digits, `.`, `_`
 
 ### Saved state and serialization
 
+Stack `@Emittable` with `@Persisted` on a public field to publish its final value after each successful operation commits. Nested mutations are detected and coalesced once per operation. Private and protected fields are never included in automatic socket state. See [generated browser clients](../../sdk/README.md#browser-clients) for typed subscriptions.
+
 Every instance field must declare exactly one of `@Persisted` or `@Ephemeral`, imported from `little-actors`. Actor startup checks the TypeScript declarations, including aliased imports and re-exports. Missing, duplicate, or conflicting annotations fail before the actor module executes.
 
 ```ts
-import { Actor, Persisted, Ephemeral } from "little-actors"
+import { Actor, Ephemeral, Persisted } from "little-actors"
 
 export class Counter extends Actor {
     @Persisted count = 0
@@ -625,17 +627,17 @@ readonly code: string
 
 Server-reported error category. This is an open string, not a closed enum; additional codes can occur.
 
-| Code                 | Meaning                                                                                                    |
-| -------------------- | ---------------------------------------------------------------------------------------------------------- |
-| `unauthenticated`    | Session token rejected or access not permitted. HTTP `401` and `403` during method calls map to this code. |
-| `actor_error`        | Actor execution failed, including user exceptions or invalid output.                                       |
-| `resource_exhausted` | Execution resource limit reached.                                                                          |
-| `socket_gateway_unavailable` | The host could not load connections from the gateway. The actor method did not run. |
-| `unavailable`        | Actor could not be reached or made available.                                                              |
-| `outcome_unknown`    | Caller could not confirm the result; the operation may have run and saved state.                           |
-| `invalid_request`    | Invalid request reported by the server.                                                                    |
-| `conflict`           | Deployment conflict reported by the server.                                                                |
-| `internal`           | Server failure.                                                                                            |
+| Code                         | Meaning                                                                                                    |
+| ---------------------------- | ---------------------------------------------------------------------------------------------------------- |
+| `unauthenticated`            | Session token rejected or access not permitted. HTTP `401` and `403` during method calls map to this code. |
+| `actor_error`                | Actor execution failed, including user exceptions or invalid output.                                       |
+| `resource_exhausted`         | Execution resource limit reached.                                                                          |
+| `socket_gateway_unavailable` | The host could not load connections from the gateway. The actor method did not run.                        |
+| `unavailable`                | Actor could not be reached or made available.                                                              |
+| `outcome_unknown`            | Caller could not confirm the result; the operation may have run and saved state.                           |
+| `invalid_request`            | Invalid request reported by the server.                                                                    |
+| `conflict`                   | Deployment conflict reported by the server.                                                                |
+| `internal`                   | Server failure.                                                                                            |
 
 ### ActorInvocationError.requestId
 
@@ -740,7 +742,7 @@ export DURABLE_OBJECT_API_KEY='<your-api-key>'
 export DURABLE_OBJECT_CONTROL_PLANE_URL='https://objects.example.com'
 ```
 
-Local [`run`](cli.md#run-a-client) supplies these values automatically. Keep the API key in trusted backend processes. Mobile and browser clients use the [external WebSocket API](http.md#external-connections).
+For local development, use `controlPlaneUrl` and `apiKey` from the running actor server's `.little-actors/runtime.json`. Keep these settings in trusted backend processes. Browser applications use a generated SDK and an authenticated proxy; see the [browser demo](../../README.md#browser-chat-demo).
 
 ### DURABLE_OBJECT_API_KEY
 

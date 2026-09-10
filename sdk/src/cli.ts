@@ -18,11 +18,28 @@ interface DevOptions {
 
 try {
     const program = new Command()
-        .name("little-actors")
+        .name("lac")
         .description("Run durable TypeScript actors locally or in the cloud")
         .version(await version())
         .enablePositionalOptions()
+        .addHelpCommand(false)
         .showHelpAfterError()
+    program
+        .command("generate [entrypoint]")
+        .description("Generate typed browser clients, backend proxies, and a portable socket contract")
+        .option("--out-dir <directory>", "generated source directory", "generated/actors")
+        .option("--config <file>", "TypeScript configuration file")
+        .action(async (entrypoint: string | undefined, options: { outDir: string; config?: string }) => {
+            const { ActorCompiler } = await import("./compiler/actor-compiler.js")
+            const { generateClient } = await import("./compiler/client-generator.js")
+            const actors = new ActorCompiler().compile(entrypoint ?? "src/durable-objects.ts", {
+                configFile: options.config
+            })
+            await generateClient(
+                actors.map(actor => actor.contract),
+                path.resolve(options.outDir)
+            )
+        })
     program
         .command("dev")
         .description("Start local actors with automatic SQLite and file storage")
@@ -39,14 +56,6 @@ try {
             process.exitCode = await runRuntime(devArguments(options))
         })
     program
-        .command("run <script> [args...]")
-        .description("Run a TypeScript client with credentials from the local runtime")
-        .option("--data-dir <directory>", "runtime state directory", ".little-actors")
-        .passThroughOptions()
-        .action(async (script, args, options) => {
-            process.exitCode = await runClient(script, args, options.dataDir)
-        })
-    program
         .command("token")
         .description("Print a one-hour local session token for tools such as wscat")
         .option("--data-dir <directory>", "runtime state directory", ".little-actors")
@@ -60,7 +69,7 @@ try {
         .action(async () => {
             process.exitCode = await runRuntime([])
         })
-    program.action(() => program.help())
+    if (process.argv.length === 2) program.help()
     await program.parseAsync(process.argv)
 } catch (error) {
     console.error(error instanceof Error ? error.message : String(error))
@@ -112,19 +121,6 @@ async function runRuntime(args: string[]): Promise<number> {
     )
 }
 
-async function runClient(script: string, args: string[], directory: string): Promise<number> {
-    const connection = await localConnection(directory)
-    const environment: NodeJS.ProcessEnv = {
-        ...process.env,
-        DURABLE_OBJECT_API_KEY: connection.apiKey,
-        DURABLE_OBJECT_CONTROL_PLANE_URL: connection.controlPlaneUrl
-    }
-    delete environment.DURABLE_OBJECT_TOKEN
-    delete environment.DURABLE_OBJECT_NAMESPACE_ID
-    delete environment.DURABLE_OBJECT_SOCKET_GATEWAY_URL
-    return runProcess(process.execPath, ["--import", import.meta.resolve("tsx"), script, ...args], environment)
-}
-
 async function localSession(directory: string) {
     const connection = await localConnection(directory)
     const response = await fetch(
@@ -140,7 +136,7 @@ async function localSession(directory: string) {
             signal: AbortSignal.timeout(10_000)
         }
     ).catch(() => {
-        throw new Error("Cannot reach the local runtime. Start `npx little-actors dev` again.")
+        throw new Error("Cannot reach the local runtime. Start `npx lac dev` again.")
     })
     if (!response.ok)
         throw new Error(
@@ -155,7 +151,7 @@ async function localConnection(directory: string) {
         .then(JSON.parse)
         .catch(() => {
             throw new Error(
-                "No local runtime found. Start `npx little-actors dev` in this project first; use the same --data-dir for both commands."
+                "No local runtime found. Start `npx lac dev` in this project first; use the same --data-dir for both commands."
             )
         })
 }

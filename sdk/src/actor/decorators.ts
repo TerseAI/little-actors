@@ -9,9 +9,14 @@ function Ephemeral(_value: undefined, context: ClassFieldDecoratorContext): void
     validateField("Ephemeral", context)
 }
 
+function Emittable(_value: undefined, context: ClassFieldDecoratorContext): void {
+    validateField("Emittable", context)
+    if (context.private) throw new ActorDefinitionError("@Emittable requires a public field")
+}
+
 function validateField(name: string, context: ClassFieldDecoratorContext): void {
     if (context.kind !== "field" || context.static || typeof context.name !== "string")
         throw new ActorDefinitionError(`@${name} requires an instance field with a string name`)
 }
 
-export { Ephemeral, Persisted }
+export { Emittable, Ephemeral, Persisted }

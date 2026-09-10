@@ -3,7 +3,7 @@ import type { JsonValue } from "../json.js"
 
 import type { SocketConnection, SocketEffect, SocketMessage } from "./socketProtocol.js"
 import { incomingMessage, outgoingMessage, socketMetadata, socketTags } from "./socketValidation.js"
-import type { ActorSchemas, ActorStateMessage } from "./socketValidation.js"
+import type { ActorSchemas, ActorStateMessage, ActorStateUpdate } from "./socketValidation.js"
 
 type ActorSocketState = "connecting" | "open" | "closed"
 type ActorSocketMessage = JsonValue
@@ -40,7 +40,10 @@ interface ActorConnection<Send = JsonValue, Receive = Send, State = JsonValue> {
 
 interface ActorConnectionEventMap<Receive = JsonValue, State = JsonValue> {
     readonly open: { readonly type: "open" }
-    readonly message: { readonly type: "message"; readonly data: Receive | ActorStateMessage<State> }
+    readonly message: {
+        readonly type: "message"
+        readonly data: Receive | ActorStateMessage<State> | ActorStateUpdate<State>
+    }
     readonly close: {
         readonly type: "close"
         readonly code: number

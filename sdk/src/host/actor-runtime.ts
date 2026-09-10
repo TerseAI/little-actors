@@ -1,3 +1,5 @@
+import { isDeepStrictEqual } from "node:util"
+
 import type { ActorDefinition, AnyActor } from "../actor/actor.js"
 import { Actor, bindActorIdentity } from "../actor/actor.js"
 import { actorKey } from "../actor/identity.js"
@@ -8,9 +10,11 @@ import type { ActorSchema } from "../actor/schema.js"
 import type { ActorSocketScope } from "../actor/socket.js"
 import { decodeSocketMessage, runWithActorSockets } from "../actor/socket.js"
 import type { SocketEffect } from "../actor/socketProtocol.js"
+import type { ActorSchemas } from "../actor/socketValidation.js"
 import { ActorDefinitionError, ActorProtocolError, ActorSerializationError, errorMessage } from "../errors.js"
 import { cloneJson, cloneJsonObject, isJsonObject } from "../json.js"
 import type { JsonObject, JsonValue } from "../json.js"
+import { validateContract } from "../wire/validation.js"
 
 import { failedReply } from "./protocol.js"
 import type { ActorExecutorReply, InvokeCommand, WebSocketEventCommand } from "./protocol.js"
@@ -19,11 +23,14 @@ import type { SocketPublisher } from "./types.js"
 class ActorRuntime {
     private instance: AnyActor | undefined
     private identity: ActorIdentity | undefined
+    private readonly schemas: ActorSchemas
 
     constructor(
         private readonly definition: ActorDefinition,
         private readonly publish?: SocketPublisher
-    ) {}
+    ) {
+        this.schemas = { ...definition.schemas, contract: definition.state.contract }
+    }
 
     async handle(command: InvokeCommand | WebSocketEventCommand): Promise<ActorExecutorReply> {
         try {
@@ -53,20 +60,24 @@ class ActorRuntime {
         }
 
         try {
+            const before = snapshotActorState(instance, this.definition.state)
             const operation = await runWithActorSockets(
                 instance,
                 command.connections ?? [],
                 async () =>
                     runInActorInvocation(async () => Reflect.apply(method, instance, command.args) as Promise<unknown>),
                 this.publish,
-                this.definition.schemas
+                this.schemas
             )
             const result: JsonValue = operation.value === undefined ? null : cloneJson(operation.value, "actor result")
+            const state = snapshotActorState(instance, this.definition.state)
+            validateContract(publicState(state, this.definition.state), "State", this.schemas.contract)
+            const effects = [...operation.effects, ...stateUpdates(before, state, this.definition.state)]
             return {
                 type: "invoked",
                 result,
-                state: snapshotActorState(instance, this.definition.state),
-                ...(operation.effects.length === 0 ? {} : { effects: operation.effects })
+                state,
+                ...(effects.length === 0 ? {} : { effects })
             }
         } catch (error) {
             this.reset()
@@ -81,11 +92,12 @@ class ActorRuntime {
         const methodName = lifecycleMethod(command)
         const method: unknown = Reflect.get(instance, methodName)
         try {
+            const before = snapshotActorState(instance, this.definition.state)
             const operation = await runWithActorSockets(
                 instance,
                 command.connections,
                 async scope => {
-                    const args = lifecycleArguments(command, scope, this.definition.schemas)
+                    const args = lifecycleArguments(command, scope, this.schemas)
                     if (method === undefined) return
                     if (typeof method !== "function")
                         throw new ActorProtocolError(
@@ -94,10 +106,24 @@ class ActorRuntime {
                     await runInActorInvocation(async () => Reflect.apply(method, instance, args) as Promise<unknown>)
                 },
                 command.event.type === "connect" ? undefined : this.publish,
-                this.definition.schemas
+                this.schemas
             )
             const state = snapshotActorState(instance, this.definition.state)
-            return { type: "websocket_handled", state, effects: socketEffects(command, state, operation.effects) }
+            validateContract(publicState(state, this.definition.state), "State", this.schemas.contract)
+            const effects = [
+                ...operation.effects,
+                ...stateUpdates(
+                    before,
+                    state,
+                    this.definition.state,
+                    command.event.type === "connect" ? command.event.connection.id : undefined
+                )
+            ]
+            return {
+                type: "websocket_handled",
+                state,
+                effects: socketEffects(command, publicState(state, this.definition.state), effects)
+            }
         } catch (error) {
             this.reset()
             return failedReply("actor_socket_failed", errorMessage(error))
@@ -150,9 +176,46 @@ function socketEffects(
     return [
         ...effects,
         {
-            type: "send",
+            type: "state_snapshot",
             connection_id: command.event.connection.id,
-            message: { type: "text", data: JSON.stringify({ type: "state", state }) }
+            state
+        }
+    ]
+}
+
+function publicState(state: JsonObject, schema: ActorSchema): JsonObject {
+    return Object.fromEntries(
+        schema.fields
+            .filter(
+                field =>
+                    field.persistence === Persistence.Persisted &&
+                    !field.private &&
+                    !field.visibility &&
+                    Object.hasOwn(state, field.name)
+            )
+            .map(field => [field.name, state[field.name]])
+    )
+}
+
+function stateUpdates(before: JsonObject, after: JsonObject, schema: ActorSchema, except?: string): SocketEffect[] {
+    const changed = schema.fields.filter(
+        field =>
+            field.emittable &&
+            !field.visibility &&
+            !field.private &&
+            field.persistence === Persistence.Persisted &&
+            (Object.hasOwn(before, field.name) !== Object.hasOwn(after, field.name) ||
+                !isDeepStrictEqual(before[field.name], after[field.name]))
+    )
+    if (changed.length === 0) return []
+    return [
+        {
+            type: "state_update",
+            changes: Object.fromEntries(
+                changed.filter(field => Object.hasOwn(after, field.name)).map(field => [field.name, after[field.name]])
+            ),
+            removed: changed.filter(field => !Object.hasOwn(after, field.name)).map(field => field.name),
+            ...(except === undefined ? {} : { except_connection_ids: [except] })
         }
     ]
 }

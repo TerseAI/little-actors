@@ -1,0 +1,314 @@
+import { build } from "esbuild"
+import assert from "node:assert/strict"
+import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises"
+import os from "node:os"
+import path from "node:path"
+import { test } from "node:test"
+import { fileURLToPath, pathToFileURL } from "node:url"
+import ts from "typescript"
+
+import { ActorCompiler } from "./actor-compiler.js"
+
+test("generates an actor-specific proxy from backend metadata types", async t => {
+    const directory = await mkdtemp(path.join(os.tmpdir(), "actor-proxy-"))
+    t.after(() => rm(directory, { recursive: true, force: true }))
+    await mkdir(path.join(directory, "node_modules"))
+    await symlink(
+        fileURLToPath(new URL("../../../", import.meta.url)),
+        path.join(directory, "node_modules/little-actors")
+    )
+    await writeFile(path.join(directory, "package.json"), JSON.stringify({ type: "module" }))
+    const entrypoint = path.join(directory, "actors.ts")
+    await writeFile(
+        entrypoint,
+        `import { Actor } from "little-actors"
+        interface Member { userId: string; profile?: { displayName: string } }
+        export class Room extends Actor<Member, { type: "post"; text: string }, never> {}
+        export class Counter extends Actor<{ tenantId: number; role: "viewer" | "editor" }, number, never> {}
+        throw new Error("generation must not execute backend code")`
+    )
+    const { generateClient } = await import("./client-generator.js")
+    await generateClient(
+        new ActorCompiler().compile(entrypoint).map(actor => actor.contract),
+        directory
+    )
+    const consumer = path.join(directory, "consumer.ts")
+    await writeFile(
+        consumer,
+        `import { ActorProxy } from "./proxy.js"
+        import type { ActorAuthorization } from "./proxy.js"
+        import { ActorClient } from "./index.js"
+        const request = new Request("https://app.example.com/socket")
+        ActorProxy.handle(request, { actorType: "Room", actorId: "lobby", metadata: { userId: "alice" } })
+        ActorProxy.handle(request, { actorType: "Counter", actorId: "one", metadata: { tenantId: 1, role: "viewer" } })
+        const proxy = new ActorProxy({ controlPlaneUrl: "https://actors.example.com", apiKey: "secret" })
+        proxy.handle(request, { actorType: "Room", actorId: "lobby", metadata: { userId: "alice", profile: { displayName: "Alice" } } })
+        // @ts-expect-error unknown actor
+        ActorProxy.handle(request, { actorType: "Missing", actorId: "one", metadata: {} })
+        // @ts-expect-error metadata belongs to another actor
+        ActorProxy.handle(request, { actorType: "Room", actorId: "one", metadata: { tenantId: 1, role: "viewer" } })
+        // @ts-expect-error required metadata is missing
+        ActorProxy.handle(request, { actorType: "Room", actorId: "one", metadata: {} })
+        // @ts-expect-error nested metadata is typed
+        ActorProxy.handle(request, { actorType: "Room", actorId: "one", metadata: { userId: "alice", profile: { displayName: 1 } } })
+        // @ts-expect-error metadata literals are preserved
+        proxy.handle(request, { actorType: "Counter", actorId: "one", metadata: { tenantId: 1, role: "admin" } })
+        function authorize(value: ActorAuthorization) {
+            if (value.actorType === "Room") value.metadata.userId.toUpperCase()
+            else value.metadata.tenantId.toFixed()
+        }
+        const client = ActorClient({ endpoint: "/api/socket" })
+        client.Room.get("lobby").send({ type: "post", text: "hello" })
+        client.Counter.get("one").send(1)
+        // @ts-expect-error unknown actor
+        client.Missing.get("one")
+        // @ts-expect-error payload belongs to another actor
+        client.Room.get("lobby").send(1)`
+    )
+    checkTypes(consumer)
+    const proxyFile = path.join(directory, "proxy.mjs")
+    await build({
+        entryPoints: [path.join(directory, "proxy.ts")],
+        bundle: true,
+        platform: "node",
+        format: "esm",
+        external: ["little-actors/proxy"],
+        outfile: proxyFile,
+        logLevel: "silent"
+    })
+    const { ActorProxy } = await import(pathToFileURL(proxyFile).href)
+    const requests: { url: string; metadata: unknown }[] = []
+    const fetch = async (url: unknown, init?: RequestInit) => {
+        requests.push({ url: String(url), metadata: JSON.parse(init!.body as string).metadata })
+        return Response.json({ websocketUrl: "wss://actors.example.com/v1/socket", key: "ticket" })
+    }
+    const options = { controlPlaneUrl: "https://actors.example.com", apiKey: "secret" }
+    const proxy = new ActorProxy(options, { fetch })
+    const request = (actorType: string) =>
+        new Request("https://app.example.com/socket", {
+            method: "POST",
+            body: JSON.stringify({ actorType, actorId: "one" })
+        })
+    for (const authorization of [
+        { actorType: "Room", actorId: "one", metadata: { userId: "alice" } },
+        { actorType: "Counter", actorId: "one", metadata: { tenantId: 1, role: "editor" } }
+    ])
+        assert.equal((await proxy.handle(request(authorization.actorType), authorization)).status, 200)
+    assert.deepEqual(
+        requests.map(request => request.metadata),
+        [{ userId: "alice" }, { tenantId: 1, role: "editor" }]
+    )
+    assert.match(requests[1]!.url, /actors\/Counter\/one\/socket-ticket$/)
+    for (const authorization of [
+        { actorType: "Room", actorId: "one", metadata: {} },
+        { actorType: "Room", actorId: "one", metadata: { userId: 1 } },
+        { actorType: "Room", actorId: "one", metadata: { userId: "alice", profile: { displayName: 1 } } },
+        { actorType: "Counter", actorId: "one", metadata: { tenantId: 1, role: "admin" } },
+        { actorType: "Missing", actorId: "one", metadata: {} },
+        { actorType: "toString", actorId: "one", metadata: {} }
+    ])
+        await assert.rejects(proxy.handle(request(authorization.actorType), authorization), /metadata|actor type/i)
+    assert.equal(requests.length, 2, "invalid authorization must fail before issuing a ticket")
+    t.mock.method(globalThis, "fetch", fetch)
+    const original = { url: process.env.DURABLE_OBJECT_CONTROL_PLANE_URL, key: process.env.DURABLE_OBJECT_API_KEY }
+    t.after(() => {
+        for (const [key, value] of Object.entries({
+            DURABLE_OBJECT_CONTROL_PLANE_URL: original.url,
+            DURABLE_OBJECT_API_KEY: original.key
+        })) {
+            if (value === undefined) delete process.env[key]
+            else process.env[key] = value
+        }
+    })
+    process.env.DURABLE_OBJECT_CONTROL_PLANE_URL = options.controlPlaneUrl
+    process.env.DURABLE_OBJECT_API_KEY = options.apiKey
+    assert.equal(
+        (await ActorProxy.handle(request("Room"), { actorType: "Room", actorId: "one", metadata: { userId: "alice" } }))
+            .status,
+        200
+    )
+})
+
+test("generates subscription-only clients whose actor has no outgoing application messages", async () => {
+    const directory = await mkdtemp(path.join(os.tmpdir(), "actor-never-"))
+    try {
+        const { generateClient } = await import("./client-generator.js")
+        await generateClient(
+            [
+                {
+                    version: 1,
+                    actorType: "Counter",
+                    emittable: [],
+                    schema: {
+                        definitions: {
+                            Metadata: { type: "object" },
+                            Incoming: { type: "string" },
+                            Outgoing: false,
+                            State: { type: "object" }
+                        }
+                    }
+                }
+            ],
+            directory
+        )
+        assert.match(await readFile(path.join(directory, "Counter.actor.ts"), "utf8"), /outgoing: never/)
+    } finally {
+        await rm(directory, { recursive: true, force: true })
+    }
+})
+
+test("actor names cannot collide with generated entrypoint or helper bindings", async () => {
+    const directory = await mkdtemp(path.join(os.tmpdir(), "actor-names-"))
+    try {
+        const { generateClient } = await import("./client-generator.js")
+        const names = [
+            "index",
+            "proxy",
+            "ActorClient",
+            "ActorProxy",
+            "SocketProxy",
+            "ActorAuthorization",
+            "createClient",
+            "createBrowserClient",
+            "validators",
+            "ActorDescriptor"
+        ]
+        await generateClient(
+            names.map(actorType => ({
+                version: 1,
+                actorType,
+                emittable: [],
+                schema: {
+                    definitions: {
+                        Metadata: { type: "object" },
+                        Incoming: { type: "string" },
+                        Outgoing: { type: "string" },
+                        State: { type: "object" }
+                    }
+                }
+            })),
+            directory
+        )
+        await build({
+            entryPoints: [path.join(directory, "index.ts")],
+            bundle: true,
+            platform: "browser",
+            format: "esm",
+            write: false,
+            alias: { "little-actors/browser": fileURLToPath(new URL("../../../src/browser.ts", import.meta.url)) },
+            logLevel: "silent"
+        })
+        await build({
+            entryPoints: [path.join(directory, "proxy.ts")],
+            bundle: true,
+            platform: "node",
+            format: "esm",
+            write: false,
+            external: ["little-actors/proxy"],
+            logLevel: "silent"
+        })
+    } finally {
+        await rm(directory, { recursive: true, force: true })
+    }
+})
+
+test("generates loose browser source and standalone validators without server imports", async () => {
+    const directory = await mkdtemp(path.join(os.tmpdir(), "actor-client-"))
+    try {
+        const { generateClient } = await import("./client-generator.js")
+        await generateClient(
+            [
+                {
+                    version: 1,
+                    actorType: "Room",
+                    emittable: ["count"],
+                    schema: {
+                        definitions: {
+                            Metadata: { type: "object" },
+                            Incoming: {
+                                type: "object",
+                                properties: { amount: { type: "number" } },
+                                required: ["amount"]
+                            },
+                            Outgoing: { type: "string" },
+                            State: { type: "object", properties: { count: { type: "number" } }, required: ["count"] }
+                        }
+                    }
+                }
+            ],
+            directory
+        )
+        const source = await readFile(path.join(directory, "Room.actor.ts"), "utf8")
+        assert.match(source, /little-actors\/browser/)
+        assert.match(source, /amount: number/)
+        assert.doesNotMatch(source, /node:|\/host|actor-compiler|durable-objects/)
+        const validators = await readFile(path.join(directory, "Room.validators.js"), "utf8")
+        assert.doesNotMatch(validators, /new Function|require\(/)
+        const module = await import(`data:text/javascript,${encodeURIComponent(validators)}`)
+        assert.equal(module.incoming({ amount: 1, futureField: true }), true)
+        assert.equal(module.incoming({ amount: "wrong" }), false)
+        assert.equal(module.state({}), false)
+        assert.equal(module.outgoing("hello"), true)
+        const manifest = JSON.parse(await readFile(path.join(directory, "contracts.json"), "utf8"))
+        assert.equal(manifest.actors[0].actorType, "Room")
+        assert.match(await readFile(path.join(directory, "index.ts"), "utf8"), /ActorClient/)
+        const consumer = path.join(directory, "consumer.ts")
+        await writeFile(
+            consumer,
+            `import { ActorClient } from "./index.js"
+            const room = ActorClient({endpoint:"/api/socket"}).Room.get("lobby")
+            room.send({amount: 1})
+            room.subscribe("count", value => value.toFixed())
+            room.on("message", value => value.toUpperCase())
+            // @ts-expect-error wrong payload
+            room.send({amount: "invalid"})
+            // @ts-expect-error private field is absent
+            room.state?.secret
+            // @ts-expect-error only emittable fields are subscribable
+            room.subscribe("secret", () => {})
+            // @ts-expect-error backend methods are absent
+            room.increment()`
+        )
+        const browser = fileURLToPath(new URL("../../../src/browser.ts", import.meta.url))
+        checkTypes(consumer)
+        const bundle = await build({
+            entryPoints: [path.join(directory, "index.ts")],
+            bundle: true,
+            platform: "browser",
+            format: "esm",
+            write: false,
+            alias: { "little-actors/browser": browser },
+            metafile: true
+        })
+        assert.equal(
+            Object.keys(bundle.metafile!.inputs).some(file =>
+                /\/host\/|\/compiler\/|\/client\/|proxy|node:/.test(file)
+            ),
+            false
+        )
+    } finally {
+        await rm(directory, { recursive: true, force: true })
+    }
+})
+
+function checkTypes(consumer: string): void {
+    const options: ts.CompilerOptions = {
+        strict: true,
+        noEmit: true,
+        skipLibCheck: true,
+        target: ts.ScriptTarget.ES2022,
+        module: ts.ModuleKind.ESNext,
+        moduleResolution: ts.ModuleResolutionKind.Bundler,
+        paths: {
+            "little-actors/browser": [fileURLToPath(new URL("../../../src/browser.ts", import.meta.url))],
+            "little-actors/proxy": [fileURLToPath(new URL("../../../src/proxy.ts", import.meta.url))]
+        }
+    }
+    const program = ts.createProgram([consumer], options)
+    assert.deepEqual(
+        ts
+            .getPreEmitDiagnostics(program)
+            .map(diagnostic => ts.flattenDiagnosticMessageText(diagnostic.messageText, "\n")),
+        []
+    )
+}
