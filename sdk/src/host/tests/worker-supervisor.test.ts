@@ -5,10 +5,9 @@ import path from "node:path"
 import { test } from "node:test"
 import { fileURLToPath, pathToFileURL } from "node:url"
 
-import type { SocketEffect } from "../actor/socketProtocol.js"
-
-import { loadActorEntrypoint } from "./actorModule.js"
-import { ActorWorkerSupervisor } from "./workers.js"
+import type { SocketEffect } from "../../actor/socketProtocol.js"
+import { prepareActorEntrypoint } from "../actor-host.js"
+import { ActorWorkerSupervisor } from "../worker-supervisor.js"
 
 const actorIdentity = {
     namespace_id: "namespace-1",
@@ -33,9 +32,9 @@ test("starts one speculative Worker and gives it to the first actor", async () =
     const entrypoint = pathToFileURL(path.join(consumerRoot, "src/durable-objects.ts")).href
     const created: number[] = []
     try {
-        await loadActorEntrypoint(entrypoint)
         const runtime = new ActorWorkerSupervisor({
             actorEntrypointUrl: entrypoint,
+            actorSchemas: await prepareActorEntrypoint(entrypoint),
             createWorker: () => {
                 created.push(created.length + 1)
                 return {
@@ -73,6 +72,7 @@ test("expires an unused speculative Worker without replenishing it", async () =>
     })
     const supervisor = new ActorWorkerSupervisor({
         actorEntrypointUrl: "file:///unused.ts",
+        actorSchemas: [],
         actorIdleTimeoutMs: 50,
         createWorker: () => {
             created += 1
@@ -100,8 +100,10 @@ test("eviction during Worker startup settles the invocation and allows recovery"
     const entrypoint = pathToFileURL(path.join(root, "src/durable-objects.ts")).href
     const command = invokeCommand("counter-1", "CancelledCounter")
     try {
-        await loadActorEntrypoint(entrypoint)
-        const runtime = new ActorWorkerSupervisor({ actorEntrypointUrl: entrypoint })
+        const runtime = new ActorWorkerSupervisor({
+            actorEntrypointUrl: entrypoint,
+            actorSchemas: await prepareActorEntrypoint(entrypoint)
+        })
         await runtime.ready()
         const pending = runtime.handle(command)
         await runtime.handle({ type: "evict", actor: command.actor })
@@ -125,9 +127,9 @@ test("discards a failed preload before accepting the first actor", async () => {
     let created = 0
     let terminated = 0
     try {
-        await loadActorEntrypoint(entrypoint)
         const runtime = new ActorWorkerSupervisor({
             actorEntrypointUrl: entrypoint,
+            actorSchemas: await prepareActorEntrypoint(entrypoint),
             createWorker: () => {
                 const failed = created++ === 0
                 return {
@@ -161,6 +163,7 @@ test("closing the supervisor terminates an unused Worker and rejects new work", 
     let terminated = 0
     const runtime = new ActorWorkerSupervisor({
         actorEntrypointUrl: "file:///unused.ts",
+        actorSchemas: [],
         createWorker: () => ({
             async ready() {
                 return ["UnusedCounter"]
@@ -188,8 +191,10 @@ test("an actor module that fails inside a Worker returns a failure without hangi
     )
     const entrypoint = pathToFileURL(path.join(root, "src/durable-objects.ts")).href
     try {
-        await loadActorEntrypoint(entrypoint)
-        const runtime = new ActorWorkerSupervisor({ actorEntrypointUrl: entrypoint })
+        const runtime = new ActorWorkerSupervisor({
+            actorEntrypointUrl: entrypoint,
+            actorSchemas: await prepareActorEntrypoint(entrypoint)
+        })
         try {
             const reply = await runtime.handle(invokeCommand("counter-1", "FailedImportCounter"))
             assert.equal(reply.type, "failed")
@@ -203,8 +208,11 @@ test("an actor module that fails inside a Worker returns a failure without hangi
 })
 
 async function exerciseResidency(entrypoint: string): Promise<void> {
-    assert.deepEqual(await loadActorEntrypoint(entrypoint), ["SessionCounter"])
-    const runtime = new ActorWorkerSupervisor({ actorEntrypointUrl: entrypoint })
+    const runtime = new ActorWorkerSupervisor({
+        actorEntrypointUrl: entrypoint,
+        actorSchemas: await prepareActorEntrypoint(entrypoint)
+    })
+    assert.deepEqual(await runtime.ready(), ["SessionCounter"])
 
     assert.deepEqual(
         await runtime.handle({
@@ -243,7 +251,11 @@ async function exerciseResidency(entrypoint: string): Promise<void> {
 }
 
 async function exerciseSocketHibernation(entrypoint: string): Promise<void> {
-    const runtime = new ActorWorkerSupervisor({ actorEntrypointUrl: entrypoint, actorIdleTimeoutMs: 10 })
+    const runtime = new ActorWorkerSupervisor({
+        actorEntrypointUrl: entrypoint,
+        actorSchemas: await prepareActorEntrypoint(entrypoint),
+        actorIdleTimeoutMs: 10
+    })
     const connection = { id: "socket-1", metadata: { userId: "user-1" }, tags: [] }
     assert.deepEqual(
         await runtime.handle({
@@ -303,7 +315,11 @@ async function exerciseSocketHibernation(entrypoint: string): Promise<void> {
 }
 
 async function exerciseIdleRecycling(entrypoint: string): Promise<void> {
-    const runtime = new ActorWorkerSupervisor({ actorEntrypointUrl: entrypoint, actorIdleTimeoutMs: 10 })
+    const runtime = new ActorWorkerSupervisor({
+        actorEntrypointUrl: entrypoint,
+        actorSchemas: await prepareActorEntrypoint(entrypoint),
+        actorIdleTimeoutMs: 10
+    })
     assert.deepEqual(
         await runtime.handle({
             type: "invoke",
@@ -333,15 +349,16 @@ async function createTypeScriptConsumer(actorType = "SessionCounter", preamble =
     const root = await mkdtemp(path.join(os.tmpdir(), "durable-object-worker-"))
     const source = path.join(root, "src")
     await mkdir(source)
-    const compiledSdkRoot = fileURLToPath(new URL("../", import.meta.url))
+    const compiledSdkRoot = fileURLToPath(new URL("../../", import.meta.url))
     await writeFile(path.join(root, "package.json"), JSON.stringify({ type: "module" }))
     await writeFile(
         path.join(source, "durable-objects.ts"),
-        `import { Actor } from ${JSON.stringify(pathToFileURL(path.join(compiledSdkRoot, "index.js")).href)}
+        `import { Actor, Persisted, Ephemeral } from ${JSON.stringify(path.join(compiledSdkRoot, "index.js"))}
 ${preamble}
 
-export class ${actorType} extends Actor {
-    count = 0
+export class ${actorType} extends Actor<{ userId: string }, { text: string }> {
+    @Persisted count = 0
+    @Ephemeral cache = new Map<string, number>()
 
     async increment(amount = 1): Promise<number> {
         this.count += amount

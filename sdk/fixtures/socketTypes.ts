@@ -1,7 +1,8 @@
 import { z } from "zod"
 
-import { Actor } from "../src/index.js"
+import { Actor, Ephemeral, Persisted } from "../src/index.js"
 import type { ActorMessageOf, ActorSocket, ActorSocketOf } from "../src/index.js"
+import type { JsonObject } from "../src/json.js"
 
 interface ChatroomMetadata {
     userId: string
@@ -21,7 +22,8 @@ class MetadataRoom extends Actor<ChatroomMetadata> {
 
 class TypedRoom extends Actor<ChatroomMetadata, Incoming, Outgoing, z.infer<typeof tag>> {
     static schemas = { metadata: z.object({ userId: z.string() }), incoming, outgoing, tag }
-    history: string[] = []
+    @Persisted history: string[] = []
+    @Ephemeral cache = new Map<string, number>()
 
     async onMessage(socket: ActorSocketOf<TypedRoom>, message: ActorMessageOf<TypedRoom>): Promise<void> {
         const response = { type: "posted" as const, text: message.text, userId: socket.metadata.userId }
@@ -60,8 +62,10 @@ async function checkReferences(): Promise<void> {
     await TypedRoom.get("room").broadcast({ type: "post", text: "hello" })
     connection.addEventListener("message", event => {
         if (event.data.type === "state") {
-            const history: string[] = event.data.state.history
-            void history
+            const state: JsonObject = event.data.state
+            // @ts-expect-error Snapshot fields require narrowing from JSON values.
+            const history: string[] = state.history
+            void [state, history]
         } else {
             const userId: string = event.data.userId
             // @ts-expect-error Received payload fields retain their declared types.

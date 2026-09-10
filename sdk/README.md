@@ -10,7 +10,7 @@ Start with the [terminal chat tutorial](https://github.com/TerseAI/little-actors
 
 ## Local CLI
 
-Export actors from `src/durable-objects.ts`. In your project directory:
+Export actors from `src/durable-objects.ts`. Annotate every instance field with `@Persisted` or `@Ephemeral`, imported from `little-actors`. Persisted values survive restarts; ephemeral caches last only while the actor instance remains resident. In your project directory:
 
 ```sh
 npx little-actors dev
@@ -28,7 +28,7 @@ Run a second listener in a third terminal:
 npx little-actors run src/chat.ts Bob
 ```
 
-Once both clients have joined, type a message and press Enter. Both receive it. Reconnect either client to see the saved conversation. The CLI supplies credentials and stores SQLite metadata and snapshots in `.little-actors/`. State survives restarts; losing that directory loses the actors. Restart `dev` after actor code changes.
+Once both clients have joined, type a message and press Enter. Both receive it. Reconnect either client to see the saved conversation. The CLI supplies credentials and stores SQLite metadata and snapshots in `.little-actors/`. State survives restarts; losing that directory loses the actors. Startup validates actor definitions and field annotations. Restart `dev` after actor code changes.
 
 `dev --help` lists options.
 

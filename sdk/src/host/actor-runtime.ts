@@ -3,16 +3,18 @@ import { Actor, bindActorIdentity } from "../actor/actor.js"
 import { actorKey } from "../actor/identity.js"
 import type { ActorIdentity } from "../actor/identity.js"
 import { runInActorInvocation } from "../actor/invocationContext.js"
+import { Persistence } from "../actor/schema.js"
+import type { ActorSchema } from "../actor/schema.js"
 import type { ActorSocketScope } from "../actor/socket.js"
 import { decodeSocketMessage, runWithActorSockets } from "../actor/socket.js"
 import type { SocketEffect } from "../actor/socketProtocol.js"
-import { ActorProtocolError, errorMessage } from "../errors.js"
-import { cloneJson, isJsonObject } from "../json.js"
+import { ActorDefinitionError, ActorProtocolError, ActorSerializationError, errorMessage } from "../errors.js"
+import { cloneJson, cloneJsonObject, isJsonObject } from "../json.js"
 import type { JsonObject, JsonValue } from "../json.js"
 
 import { failedReply } from "./protocol.js"
 import type { ActorExecutorReply, InvokeCommand, WebSocketEventCommand } from "./protocol.js"
-import { hydrateActorState, snapshotActorState } from "./state.js"
+import type { SocketPublisher } from "./types.js"
 
 class ActorRuntime {
     private instance: AnyActor | undefined
@@ -20,11 +22,16 @@ class ActorRuntime {
 
     constructor(
         private readonly definition: ActorDefinition,
-        private readonly publish?: (effects: readonly SocketEffect[]) => Promise<void>
+        private readonly publish?: SocketPublisher
     ) {}
 
     async handle(command: InvokeCommand | WebSocketEventCommand): Promise<ActorExecutorReply> {
-        return command.type === "invoke" ? this.invoke(command) : this.handleSocketEvent(command)
+        try {
+            return await (command.type === "invoke" ? this.invoke(command) : this.handleSocketEvent(command))
+        } catch (error) {
+            this.reset()
+            return failedReply("invalid_actor_state", errorMessage(error))
+        }
     }
 
     private async invoke(command: InvokeCommand): Promise<ActorExecutorReply> {
@@ -58,7 +65,7 @@ class ActorRuntime {
             return {
                 type: "invoked",
                 result,
-                state: snapshotActorState(instance),
+                state: snapshotActorState(instance, this.definition.state),
                 ...(operation.effects.length === 0 ? {} : { effects: operation.effects })
             }
         } catch (error) {
@@ -89,7 +96,7 @@ class ActorRuntime {
                 command.event.type === "connect" ? undefined : this.publish,
                 this.definition.schemas
             )
-            const state = snapshotActorState(instance)
+            const state = snapshotActorState(instance, this.definition.state)
             return { type: "websocket_handled", state, effects: socketEffects(command, state, operation.effects) }
         } catch (error) {
             this.reset()
@@ -126,7 +133,8 @@ class ActorRuntime {
     private createInstance(identity: ActorIdentity, state: JsonValue | null): AnyActor {
         const instance = Reflect.construct(this.definition.actorClass, []) as AnyActor
         bindActorIdentity(instance, identity.actor_id)
-        if (state !== null) hydrateActorState(instance, persistedState(state))
+        validateActorState(instance, this.definition.state)
+        if (state !== null) hydrateActorState(instance, persistedState(state), this.definition.state)
         this.identity = { ...identity }
         this.instance = instance
         return instance
@@ -191,4 +199,43 @@ function persistedState(value: JsonValue): JsonObject {
     return value
 }
 
-export { ActorRuntime }
+function snapshotActorState(instance: object, schema: ActorSchema): JsonObject {
+    validateActorState(instance, schema)
+    const state = Object.fromEntries(
+        schema.fields
+            .filter(field => field.persistence === Persistence.Persisted && Object.hasOwn(instance, field.name))
+            .map(field => [field.name, Reflect.get(instance, field.name)])
+    )
+    return cloneJsonObject(state, "actor state")
+}
+
+function hydrateActorState(instance: object, state: JsonObject, schema: ActorSchema): void {
+    validateActorState(instance, schema)
+    const restored = cloneJsonObject(
+        Object.fromEntries(
+            schema.fields
+                .filter(field => field.persistence === Persistence.Persisted && Object.hasOwn(state, field.name))
+                .map(field => [field.name, state[field.name]])
+        ),
+        "actor state"
+    )
+    for (const [key, value] of Object.entries(restored)) {
+        if (!Reflect.defineProperty(instance, key, { configurable: true, enumerable: true, writable: true, value }))
+            throw new ActorSerializationError(`actor field ${key} cannot be restored`)
+    }
+}
+
+function validateActorState(instance: object, schema: ActorSchema): void {
+    const fields = new Set(schema.fields.filter(field => !field.private).map(field => field.name))
+    for (const key of Reflect.ownKeys(instance)) {
+        if (typeof key !== "string" || !fields.has(key))
+            throw new ActorDefinitionError(
+                `actor field ${schema.actorType}.${String(key)} must declare @Persisted or @Ephemeral`
+            )
+        const descriptor = Object.getOwnPropertyDescriptor(instance, key)!
+        if (!("value" in descriptor))
+            throw new ActorDefinitionError(`actor field ${schema.actorType}.${key} must be a data property`)
+    }
+}
+
+export { ActorRuntime, hydrateActorState, snapshotActorState }

@@ -1,16 +1,18 @@
 import { stringifyChunked } from "@discoveryjs/json-ext"
-import { writeFile } from "node:fs/promises"
+import { stat, writeFile } from "node:fs/promises"
 import { type Socket, createConnection } from "node:net"
+import path from "node:path"
+import { fileURLToPath, pathToFileURL } from "node:url"
+import { z } from "zod"
 
+import type { ActorSchema } from "../actor/schema.js"
 import type { SocketEffect } from "../actor/socketProtocol.js"
-import { ActorProtocolError, ActorSessionError } from "../errors.js"
+import { ActorConfigurationError, ActorProtocolError, ActorSessionError } from "../errors.js"
 
-import { resolveActorEntrypoint } from "./actorModule.js"
 import { failedReply, parseActorSessionServerMessage } from "./protocol.js"
 import type { ActorExecutorCommand, ActorExecutorReply, ActorSessionClientMessage } from "./protocol.js"
-import { parseHostSettings } from "./settings.js"
-import { ActorWorkerSupervisor } from "./workers.js"
-import type { ActorWorkerSupervisorOptions } from "./workers.js"
+import type { ActorCommandHandler, ActorHostSettings, ActorWorkerSupervisorFactory } from "./types.js"
+import { ActorWorkerSupervisor, DEFAULT_ACTOR_IDLE_TIMEOUT_MS } from "./worker-supervisor.js"
 
 const MAX_MESSAGE_BYTES = 32 * 1024 * 1024
 
@@ -30,10 +32,8 @@ class ActorSession {
     private connection: ActorSessionConnection | undefined
 
     constructor(
-        private readonly settings = parseHostSettings(process.env),
-        private readonly createSupervisor: (
-            options: ActorWorkerSupervisorOptions
-        ) => Pick<ActorWorkerSupervisor, "ready" | "handle" | "close"> = options => new ActorWorkerSupervisor(options)
+        private readonly settings: ActorHostSettings = parseHostSettings(process.env),
+        private readonly createSupervisor: ActorWorkerSupervisorFactory = options => new ActorWorkerSupervisor(options)
     ) {}
 
     start(): Promise<void> {
@@ -48,8 +48,10 @@ class ActorSession {
 
     private async initialize(): Promise<void> {
         const actorEntrypointUrl = await resolveActorEntrypoint(this.settings.actorEntrypoint)
+        const actorSchemas = await prepareActorEntrypoint(actorEntrypointUrl)
         const supervisor = this.createSupervisor({
             actorEntrypointUrl,
+            actorSchemas,
             actorIdleTimeoutMs: this.settings.actorIdleTimeoutMs
         })
         const commandHandler: ActorCommandHandler = (command, publish) => supervisor.handle(command, publish)
@@ -305,9 +307,86 @@ function sessionError(error: unknown): Error {
     return error instanceof Error ? error : new ActorSessionError(String(error))
 }
 
-type ActorCommandHandler = (
-    command: ActorExecutorCommand,
-    publish?: (effects: readonly SocketEffect[]) => Promise<void>
-) => Promise<ActorExecutorReply>
+async function resolveActorEntrypoint(configured: string | undefined): Promise<string> {
+    const entrypointPath = path.resolve(configured ?? DEFAULT_ACTOR_ENTRYPOINT)
+    requireTypeScriptSource(entrypointPath)
+    await requireFile(
+        entrypointPath,
+        configured === undefined
+            ? `default actor entrypoint ${DEFAULT_ACTOR_ENTRYPOINT}`
+            : `configured actor entrypoint ${configured}`
+    )
+    return pathToFileURL(entrypointPath).href
+}
 
-export { ActorSession, serializeWithinBytes, runActorHost }
+async function prepareActorEntrypoint(moduleUrl: string): Promise<readonly ActorSchema[]> {
+    const { ActorCompiler } = await import("../compiler/actor-compiler.js")
+    return new ActorCompiler().check(fileURLToPath(moduleUrl))
+}
+
+function requireTypeScriptSource(filePath: string): void {
+    if (!/\.(?:ts|tsx|mts|cts)$/u.test(filePath) || /\.d\.[cm]?ts$/u.test(filePath))
+        throw new ActorConfigurationError("actor entrypoint must be a TypeScript source file")
+}
+
+async function requireFile(filePath: string, label: string): Promise<void> {
+    if (!(await isFile(filePath))) throw new ActorConfigurationError(`${label} is not a file`)
+}
+
+async function isFile(filePath: string): Promise<boolean> {
+    try {
+        return (await stat(filePath)).isFile()
+    } catch {
+        return false
+    }
+}
+
+function parseHostSettings(environment: NodeJS.ProcessEnv): ActorHostSettings {
+    const result = actorSessionSettingsSchema.safeParse(environment)
+    if (!result.success)
+        throw new ActorConfigurationError(`actor-host session settings are invalid: ${result.error.message}`)
+    return {
+        socketPath: result.data.DURABLE_OBJECT_EXECUTOR_SOCKET,
+        actorEntrypoint: result.data.DURABLE_OBJECT_ENTRYPOINT,
+        startupTimeoutMs: parseStartupTimeout(environment.DURABLE_OBJECT_HOST_STARTUP_MS),
+        actorIdleTimeoutMs: parseActorIdleTimeout(environment.DURABLE_OBJECT_ACTOR_IDLE_TIMEOUT_MS)
+    }
+}
+
+function parseStartupTimeout(value: string | undefined): number {
+    if (value === undefined) return DEFAULT_ACTOR_STARTUP_TIMEOUT_MS
+    const parsed = Number(value)
+    if (!Number.isInteger(parsed) || parsed <= 0)
+        throw new ActorConfigurationError("DURABLE_OBJECT_HOST_STARTUP_MS must be a positive integer")
+    return parsed
+}
+
+function parseActorIdleTimeout(value: string | undefined): number {
+    if (value === undefined) return DEFAULT_ACTOR_IDLE_TIMEOUT_MS
+    const parsed = Number(value)
+    if (!Number.isInteger(parsed) || parsed <= 0 || parsed > MAX_IDLE_TIMEOUT_MS) {
+        throw new ActorConfigurationError(
+            `DURABLE_OBJECT_ACTOR_IDLE_TIMEOUT_MS must be an integer between 1 and ${MAX_IDLE_TIMEOUT_MS}`
+        )
+    }
+    return parsed
+}
+
+const DEFAULT_ACTOR_STARTUP_TIMEOUT_MS = 10_000
+const MAX_IDLE_TIMEOUT_MS = 86_400_000
+
+const actorSessionSettingsSchema = z.object({
+    DURABLE_OBJECT_EXECUTOR_SOCKET: z.string().trim().min(1),
+    DURABLE_OBJECT_ENTRYPOINT: z.string().trim().min(1).optional()
+})
+
+const DEFAULT_ACTOR_ENTRYPOINT = "src/durable-objects.ts"
+
+export {
+    ActorSession,
+    parseHostSettings,
+    prepareActorEntrypoint,
+    resolveActorEntrypoint,
+    runActorHost,
+    serializeWithinBytes
+}

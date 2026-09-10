@@ -1,15 +1,16 @@
 import assert from "node:assert/strict"
 import { test } from "node:test"
 
-import { runWithActorClientForTests } from "../../fixtures/actorClient.js"
-import { Actor, registerActorClass } from "../actor/actor.js"
-import type { ActorConnection, ActorSocket } from "../actor/socket.js"
-import type { SocketEffect } from "../actor/socketProtocol.js"
-
-import { ActorRuntime } from "./runtime.js"
+import { runWithActorClientForTests } from "../../../fixtures/actorClient.js"
+import { Actor, registerActorClass } from "../../actor/actor.js"
+import { Ephemeral, Persisted } from "../../actor/decorators.js"
+import { Persistence } from "../../actor/schema.js"
+import type { ActorConnection, ActorSocket } from "../../actor/socket.js"
+import type { SocketEffect } from "../../actor/socketProtocol.js"
+import { ActorRuntime } from "../actor-runtime.js"
 
 export class Counter extends Actor {
-    private count = 0
+    @Persisted private count = 0
 
     async increment(amount = 1): Promise<number> {
         this.count += amount
@@ -42,7 +43,7 @@ interface ChatSession {
 }
 
 export class ChatRoom extends Actor<ChatSession, { text: string }> {
-    private events: string[] = []
+    @Persisted private events: string[] = []
 
     async onConnect(socket: ActorSocket<ChatSession>): Promise<void> {
         this.events.push(`connect:${socket.metadata.userId}:${this.connections.length}`)
@@ -87,10 +88,65 @@ const forwarderIdentity = {
     actor_id: "forwarder-1"
 }
 
-const counterDefinition = registerActorClass(Counter)
+const counterDefinition = registerActorClass(Counter, {
+    actorType: "Counter",
+    fields: [{ name: "count", persistence: Persistence.Persisted }]
+})
 const forwarderDefinition = registerActorClass(Forwarder)
-const chatDefinition = registerActorClass(ChatRoom)
+const chatDefinition = registerActorClass(ChatRoom, {
+    actorType: "ChatRoom",
+    fields: [{ name: "events", persistence: Persistence.Persisted }]
+})
 const rejectingDefinition = registerActorClass(RejectingRoom)
+
+test("ephemeral caches survive resident calls and reset after failure or reconstruction", async () => {
+    class CachingCounter extends Actor {
+        @Persisted count = 0
+        @Ephemeral cache = new Map<string, number>()
+
+        async increment() {
+            this.cache.set("calls", (this.cache.get("calls") ?? 0) + 1)
+            return { count: ++this.count, calls: this.cache.get("calls") }
+        }
+
+        async fail() {
+            this.count = 999
+            this.cache.set("calls", 999)
+            throw new Error("failed")
+        }
+    }
+    const definition = registerActorClass(CachingCounter, {
+        actorType: "CachingCounter",
+        fields: [
+            { name: "count", persistence: Persistence.Persisted },
+            { name: "cache", persistence: Persistence.Ephemeral }
+        ]
+    })
+    const runtime = new ActorRuntime(definition)
+    const command = {
+        type: "invoke" as const,
+        request_id: "cache",
+        actor: { ...actorIdentity, actor_type: "CachingCounter" },
+        method: "increment",
+        args: [],
+        state: null
+    }
+    assert.deepEqual(await runtime.handle(command), {
+        type: "invoked",
+        result: { count: 1, calls: 1 },
+        state: { count: 1 }
+    })
+    assert.deepEqual(await runtime.handle(command), {
+        type: "invoked",
+        result: { count: 2, calls: 2 },
+        state: { count: 2 }
+    })
+    assert.equal((await runtime.handle({ ...command, method: "fail" })).type, "failed")
+    const restored = { ...command, state: { count: 2, cache: "stale" } }
+    const expected = { type: "invoked", result: { count: 3, calls: 1 }, state: { count: 3 } }
+    assert.deepEqual(await runtime.handle(restored), expected)
+    assert.deepEqual(await new ActorRuntime(definition).handle(restored), expected)
+})
 
 test("streams actor output before execution finishes without replaying it in the final reply", async () => {
     let release!: () => void

@@ -1,8 +1,9 @@
 import { actorClient } from "../client/client.js"
 import { ActorDefinitionError } from "../errors.js"
-import type { JsonValue } from "../json.js"
+import type { JsonObject, JsonValue } from "../json.js"
 
 import { validateActorComponent } from "./identity.js"
+import type { ActorSchema } from "./schema.js"
 import { actorConnections, broadcastActor } from "./socket.js"
 import type { ActorBroadcastOptions, ActorConnection, ActorSocket, ActorSocketMessage } from "./socket.js"
 import { outgoingMessage, socketMetadata } from "./socketValidation.js"
@@ -51,11 +52,15 @@ abstract class Actor<Metadata = JsonValue, Incoming = JsonValue, Outgoing = Inco
     }
 }
 
-function registerActorClass<Instance extends AnyActor>(actorClass: ActorClass<Instance>): ActorDefinition {
+function registerActorClass<Instance extends AnyActor>(
+    actorClass: ActorClass<Instance>,
+    state?: ActorSchema
+): ActorDefinition {
     const actorType = actorName(actorClass)
     const existing = actorDefinitions.get(actorType)
     if (existing !== undefined) {
         if (existing.actorClass !== actorClass) throw new ActorDefinitionError(`duplicate actor type ${actorType}`)
+        if (state !== undefined) existing.state = state
         return existing
     }
 
@@ -63,6 +68,7 @@ function registerActorClass<Instance extends AnyActor>(actorClass: ActorClass<In
     const definition = {
         actorType: validateActorComponent("actor type", actorType),
         actorClass,
+        state: state ?? { actorType, fields: [] },
         schemas: actorClass.schemas ?? {},
         methods: new Set(discoverMethods(actorClass, actorType))
     }
@@ -181,6 +187,7 @@ function actorName(actorClass: ActorClass): string {
 interface ActorDefinition {
     readonly actorType: string
     readonly actorClass: ActorClass
+    state: ActorSchema
     readonly schemas: ActorSchemas
     readonly methods: ReadonlySet<string>
 }
@@ -231,7 +238,7 @@ type ActorReference<Instance extends AnyActor> = {
 } & {
     connect(
         metadata: SocketMetadata<Instance>
-    ): Promise<ActorConnection<SocketIncoming<Instance>, SocketOutgoing<Instance>, ActorState<Instance>>>
+    ): Promise<ActorConnection<SocketIncoming<Instance>, SocketOutgoing<Instance>, JsonObject>>
     broadcast(message: SocketOutgoing<Instance>): Promise<void>
 }
 type SocketLifecycleMethod = "onConnect" | "onMessage" | "onDisconnect"
@@ -245,15 +252,6 @@ type ActorSocketOf<Instance extends AnyActor> = ActorSocket<
     SocketTag<Instance>
 >
 type ActorMessageOf<Instance extends AnyActor> = SocketIncoming<Instance>
-type ActorState<Instance> = {
-    [
-        Key in keyof Instance as Key extends symbol
-            ? never
-            : NonNullable<Instance[Key]> extends (...args: never[]) => unknown
-              ? never
-              : Key
-    ]: Instance[Key]
-}
 
 export { Actor, bindActorIdentity, findActorDefinition, registerActorClass }
 export type { ActorClass, ActorDefinition, ActorMessageOf, ActorReference, ActorSocketOf, AnyActor }

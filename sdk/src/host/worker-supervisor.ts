@@ -1,6 +1,7 @@
 import { Worker } from "node:worker_threads"
 
 import { actorKey } from "../actor/identity.js"
+import type { ActorSchema } from "../actor/schema.js"
 import type { SocketEffect } from "../actor/socketProtocol.js"
 import { errorMessage } from "../errors.js"
 
@@ -15,14 +16,21 @@ import type {
     InvokeCommand,
     WebSocketEventCommand
 } from "./protocol.js"
-import { DEFAULT_ACTOR_IDLE_TIMEOUT_MS } from "./settings.js"
+import type {
+    ActorWorkerFactory,
+    ActorWorkerHandle,
+    ActorWorkerSupervisorOptions,
+    ResidentActorWorkerOptions,
+    SocketPublisher
+} from "./types.js"
 
-type SocketPublisher = (effects: readonly SocketEffect[]) => Promise<void>
+const DEFAULT_ACTOR_IDLE_TIMEOUT_MS = 60_000
 
 const MAX_RESIDENT_ACTORS = 32
 
 class ActorWorkerSupervisor {
     private readonly actorEntrypointUrl: string
+    private readonly actorSchemas: readonly ActorSchema[]
     private readonly actorIdleTimeoutMs: number
     private readonly createWorker: ActorWorkerFactory
     private readonly actors = new Map<string, ResidentActorWorker>()
@@ -33,6 +41,7 @@ class ActorWorkerSupervisor {
 
     constructor(options: ActorWorkerSupervisorOptions) {
         this.actorEntrypointUrl = options.actorEntrypointUrl
+        this.actorSchemas = options.actorSchemas
         this.actorIdleTimeoutMs = options.actorIdleTimeoutMs ?? DEFAULT_ACTOR_IDLE_TIMEOUT_MS
         this.createWorker = options.createWorker ?? (data => new ActorWorker(data))
         if (!Number.isInteger(this.actorIdleTimeoutMs) || this.actorIdleTimeoutMs <= 0) {
@@ -80,7 +89,7 @@ class ActorWorkerSupervisor {
     }
 
     private preload(): ActorWorkerHandle {
-        const worker = this.createWorker({ moduleUrl: this.actorEntrypointUrl })
+        const worker = this.createWorker({ moduleUrl: this.actorEntrypointUrl, schemas: this.actorSchemas })
         this.speculativeWorker = worker
         this.speculativeTimer = setTimeout(() => this.discardPreload(worker), this.actorIdleTimeoutMs)
         this.speculativeTimer.unref()
@@ -119,6 +128,7 @@ class ActorWorkerSupervisor {
             }
             actor = new ResidentActorWorker({
                 moduleUrl: this.actorEntrypointUrl,
+                schemas: this.actorSchemas,
                 idleTimeoutMs: this.actorIdleTimeoutMs,
                 worker: this.takeSpeculativeWorker(),
                 createWorker: this.createWorker,
@@ -167,6 +177,7 @@ class ActorWorkerSupervisor {
 
 class ResidentActorWorker {
     readonly moduleUrl: string
+    readonly schemas: readonly ActorSchema[]
     readonly idleTimeoutMs: number
     readonly createWorker: ActorWorkerFactory
     readonly onIdle: (actor: ResidentActorWorker) => void
@@ -176,6 +187,7 @@ class ResidentActorWorker {
 
     constructor(options: ResidentActorWorkerOptions) {
         this.moduleUrl = options.moduleUrl
+        this.schemas = options.schemas
         this.idleTimeoutMs = options.idleTimeoutMs
         this.createWorker = options.createWorker
         this.onIdle = options.onIdle
@@ -189,7 +201,7 @@ class ResidentActorWorker {
         if (this.worker === undefined && command.resident_only) return { type: "state_required" }
         if (this.idleTimer !== undefined) clearTimeout(this.idleTimer)
         this.idleTimer = undefined
-        this.worker ??= this.createWorker({ moduleUrl: this.moduleUrl })
+        this.worker ??= this.createWorker({ moduleUrl: this.moduleUrl, schemas: this.schemas })
         const worker = this.worker
         let reply: ActorExecutorReply
         try {
@@ -241,7 +253,7 @@ class ActorWorker implements ActorWorkerHandle {
             this.readyReject = reject
         })
         void this.readyPromise.catch(() => undefined)
-        this.worker = new Worker(new URL("./worker.js", import.meta.url), { workerData: data })
+        this.worker = new Worker(new URL("./actor-worker.js", import.meta.url), { workerData: data })
         this.worker.on("message", (message: ActorWorkerMessage) => this.receive(message))
         this.worker.once("error", error => this.fail(error))
         this.worker.once("exit", code => this.fail(new Error(`actor Worker exited with code ${code}`)))
@@ -349,27 +361,5 @@ class ActorWorkerTerminatedError extends Error {
     }
 }
 
-interface ActorWorkerSupervisorOptions {
-    readonly actorEntrypointUrl: string
-    readonly actorIdleTimeoutMs?: number
-    readonly createWorker?: ActorWorkerFactory
-}
-
-interface ResidentActorWorkerOptions {
-    readonly moduleUrl: string
-    readonly idleTimeoutMs: number
-    readonly worker?: ActorWorkerHandle
-    readonly createWorker: ActorWorkerFactory
-    readonly onIdle: (actor: ResidentActorWorker) => void
-}
-
-interface ActorWorkerHandle {
-    ready(): Promise<readonly string[]>
-    execute(command: InvokeCommand | WebSocketEventCommand, publish?: SocketPublisher): Promise<ActorExecutorReply>
-    terminate(reason: string): void
-}
-
-type ActorWorkerFactory = (data: ActorWorkerData) => ActorWorkerHandle
-
-export { ActorWorkerSupervisor, MAX_RESIDENT_ACTORS }
-export type { ActorWorkerSupervisorOptions }
+export { ActorWorkerSupervisor, DEFAULT_ACTOR_IDLE_TIMEOUT_MS, MAX_RESIDENT_ACTORS }
+export type { ResidentActorWorker }

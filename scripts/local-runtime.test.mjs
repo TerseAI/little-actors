@@ -78,6 +78,8 @@ test("the local CLI runs actors and restores acknowledged state after shutdown",
             const token = await execute(process.execPath, [cli, "token"], { cwd: project, env, timeout: 10_000 })
             assert.equal(token.stdout.trim().split(".").length, 3)
             assert.equal((await client()).stdout.trim(), String(count))
+        } catch (error) {
+            throw new Error([error.message, error.stdout, error.stderr, output].filter(Boolean).join("\n"), { cause: error })
         } finally {
             server.stdin.end()
             const timer = setTimeout(() => server.kill("SIGKILL"), 15_000)
@@ -102,9 +104,9 @@ async function prepareProject(project) {
     await mkdir(path.join(project, "src"))
     await writeFile(
         path.join(project, "src/durable-objects.ts"),
-        `import { Actor } from "little-actors"
+        `import { Actor, Persisted } from "little-actors"
 export class Counter extends Actor {
-    count = 0
+    @Persisted count = 0
     async increment() { return ++this.count }
     async clients() { return this.connections.map(socket => ({ id: socket.id, metadata: socket.metadata })) }
     async notifyClient(id: string) { this.connections.find(socket => socket.id === id)!.send({ text: "from method" }) }

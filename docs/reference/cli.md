@@ -25,7 +25,7 @@ Select a different project or actor file with `--project` and `--entrypoint`:
 npx little-actors dev --project ./chat-example --entrypoint src/actors.ts
 ```
 
-The entrypoint resolves relative to the project. In this example, the server loads `chat-example/src/actors.ts`. The project must have the SDK installed or linked.
+The entrypoint resolves relative to the project. In this example, the server loads `chat-example/src/actors.ts`. The project must have the SDK installed or linked. Source loading validates field annotations automatically; see [explicit persistence](api.md#saved-state-and-serialization).
 
 ## Run the development server
 
@@ -48,7 +48,7 @@ little-actors dev [options]
 ```
 
 - `--project <directory>` — Project containing the actor code and installed SDK. Defaults to `.`.
-- `--entrypoint <file>` — Actor file relative to the project. Defaults to `src/durable-objects.ts`.
+- `--entrypoint <file>` — TypeScript actor source file relative to the project. Defaults to `src/durable-objects.ts`.
 - `--port <number>` — Loopback port, an integer from `0` through `65535`. Defaults to `7100`; `0` selects an available port.
 - `--data-dir <directory>` — Persistent state and connection settings. Defaults to `<project>/.little-actors`. An explicit relative path resolves from the shell's working directory.
 - `--storage <backend>` — Snapshot storage, either `local` (default) or `gcs`. Local metadata stays in the data directory for both backends.

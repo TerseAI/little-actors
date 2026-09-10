@@ -30,13 +30,13 @@ This installs the SDK, CLI, and TypeScript support.
 Create `src/durable-objects.ts`:
 
 ```ts
-import { Actor } from "little-actors"
+import { Actor, Persisted } from "little-actors"
 import type { ActorMessageOf, ActorSocketOf } from "little-actors"
 
 type Message = { type: "chat"; text: string }
 
 export class ChatRoom extends Actor<{ name: string }, Message> {
-    history: string[] = []
+    @Persisted history: string[] = []
 
     async onMessage(socket: ActorSocketOf<ChatRoom>, message: ActorMessageOf<ChatRoom>): Promise<void> {
         const text = `${socket.metadata.name}: ${message.text}`
@@ -46,7 +46,7 @@ export class ChatRoom extends Actor<{ name: string }, Message> {
 }
 ```
 
-`history` is saved actor state. Each incoming message appends to it and broadcasts to everyone in the room, including the sender. When a client connects, the runtime automatically sends the saved state, including the full history.
+`@Persisted` makes `history` saved actor state. Every instance field requires `@Persisted` or `@Ephemeral`; use `@Ephemeral` for temporary caches. Each incoming message appends to it and broadcasts to everyone in the room, including the sender. When a client connects, the runtime automatically sends the saved state, including the full history.
 
 The SDK encodes and decodes JSON automatically. The actor's generic parameters type connection metadata and messages; optional [Zod schemas](docs/reference/api.md#generics-and-wire-validation) validate their application-specific shapes at runtime.
 

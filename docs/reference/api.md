@@ -15,16 +15,16 @@ Deployment management and direct WebSocket connections are documented in the [HT
 ## Actor
 
 ```ts
-import { Actor } from "little-actors"
+import { Actor, Persisted } from "little-actors"
 ```
 
 Base class for actors with saved state. Export a named subclass from your actor entrypoint, normally `src/durable-objects.ts`:
 
 ```ts
-import { Actor } from "little-actors"
+import { Actor, Persisted } from "little-actors"
 
 export class ChatRoom extends Actor {
-    history: string[] = []
+    @Persisted history: string[] = []
 
     async post(message: string): Promise<number> {
         this.history.push(message)
@@ -36,7 +36,7 @@ export class ChatRoom extends Actor {
 
 Classes must extend `Actor` directly and have no required constructor arguments. The base constructor is protected; a custom constructor must also remain protected for the typed `get()` API. Application code addresses actors with [`get()`](#actorget).
 
-The entrypoint's runtime exports must all be actor classes, exported under their class names. Default exports and aliases are rejected. Type-only exports are permitted; shared constants and utilities belong in other modules.
+The entrypoint must export at least one actor class under its class name. It may also export constants, utilities, unrelated classes, and types; actor discovery ignores those exports. Actor classes must directly extend `Actor` and use named exports without renaming. A default export is allowed when it is not an actor class.
 
 Remote methods must be `async` prototype methods. Getters, setters, symbol methods, synchronous prototype methods, and the reserved names `then`, `connect`, and `broadcast` are rejected. Class-field arrow functions are not discovered as remote methods.
 
@@ -53,7 +53,7 @@ Declare socket types once on the base class: `class ChatRoom extends Actor<Chatr
 For runtime validation, install `zod@^4` and declare static schemas. Derive types with `z.infer` so schemas and TypeScript share one definition:
 
 ```ts
-import { Actor } from "little-actors"
+import { Actor, Persisted } from "little-actors"
 import type { ActorMessageOf, ActorSocketOf } from "little-actors"
 import { z } from "zod"
 
@@ -64,7 +64,7 @@ const tag = z.enum(["member", "moderator"])
 
 export class ChatRoom extends Actor<z.infer<typeof metadata>, z.infer<typeof incoming>, z.infer<typeof outgoing>, z.infer<typeof tag>> {
     static schemas = { metadata, incoming, outgoing, tag }
-    history: string[] = []
+    @Persisted history: string[] = []
 
     async onMessage(socket: ActorSocketOf<ChatRoom>, message: ActorMessageOf<ChatRoom>): Promise<void> {
         this.history.push(message.text)
@@ -87,7 +87,7 @@ connection.addEventListener("message", ({ data }) => {
 })
 ```
 
-`ActorSocketOf<ChatRoom>` and `ActorMessageOf<ChatRoom>` reuse the actor's types in hooks. Tags constrain `setTags()`, `socket.tags`, and broadcast filters. References infer client send and receive types, initial state from public fields, and remote method arguments and results from their signatures.
+`ActorSocketOf<ChatRoom>` and `ActorMessageOf<ChatRoom>` reuse the actor's types in hooks. Tags constrain `setTags()`, `socket.tags`, and broadcast filters. References infer client send and receive types, and remote method arguments and results from their signatures. Initial state has the `JsonObject` type.
 
 Each schema is optional. JSON shape and size checks always run. When supplied, `metadata` validates connection initialization, assignment, and restoration; `incoming` validates client sends and actor receipt; `outgoing` validates actor sends, broadcasts, and client receipt; `tag` validates individual tags on assignment, restoration, and broadcast filters. Validation runs before a hook receives input or an SDK operation publishes invalid output. Direct HTTP broadcasts are validated by SDK receivers; application schemas are not installed in the gateway.
 
@@ -235,9 +235,26 @@ Each component must be nonempty and contain only ASCII letters, digits, `.`, `_`
 
 ### Saved state and serialization
 
-The runtime saves an actor's own enumerable string-keyed properties after successful invocations and lifecycle events. Constructors and field initializers create initial state for new actors. Ordinary TypeScript `private` fields are saved; JavaScript `#private` fields, symbols, and non-enumerable properties are not.
+Every instance field must declare exactly one of `@Persisted` or `@Ephemeral`, imported from `little-actors`. Actor startup checks the TypeScript declarations, including aliased imports and re-exports. Missing, duplicate, or conflicting annotations fail before the actor module executes.
 
-On restoration, saved fields replace initialized enumerable fields. New field initializers are **not merged into existing saved state**. After adding a field to an existing actor, an application can initialize it in a method with `this.history ??= []`.
+```ts
+import { Actor, Persisted, Ephemeral } from "little-actors"
+
+export class Counter extends Actor {
+    @Persisted count = 0
+    @Ephemeral private cache = new Map<string, number>()
+
+    async increment(): Promise<number> {
+        return ++this.count
+    }
+}
+```
+
+Only `@Persisted` fields are saved after successful invocations and lifecycle events. Restoration constructs a fresh instance and overlays saved values for its declared persisted fields. Missing persisted fields keep their initializer defaults. Unknown saved keys are ignored. Ephemeral fields retain their fresh initial values even if a snapshot contains a key with the same name.
+
+Ephemeral values survive calls while the instance remains resident. Eviction, restart, or reconstruction after a failed call resets them. They can hold caches, connections, and values that cannot be serialized. Static fields are outside actor state. TypeScript `private` and `protected` fields follow their annotation; JavaScript `#private` fields require `@Ephemeral`.
+
+Use standard TypeScript decorators without parentheses. Persistence decorators cannot target methods, accessors, static fields, symbol keys, or `declare` fields. Constructor parameter properties must become decorated class fields. Adding undeclared own properties dynamically fails at construction or when saving state.
 
 Remote method arguments, results, and saved state use JSON serialization:
 
@@ -255,9 +272,24 @@ A method returning `undefined` produces `null` at runtime. TypeScript return ann
 
 When an actor method throws, its state changes are not saved. External effects, including HTTP requests and already sent WebSocket messages, cannot be rolled back. Socket output can arrive before state is committed; receiving a broadcast does not confirm persistence.
 
-Every accepted connection automatically receives the actor's saved properties. Those fields must not contain secrets that its connected clients are not authorized to read.
+Every accepted connection automatically receives only the actor's persisted properties, including TypeScript private fields. Those fields must not contain secrets that its connected clients are not authorized to read.
 
 Saved state is limited to 16 MiB of JSON. Method requests and responses must fit 32 MiB, including encoded state, arguments or results, and message overhead. Individual limits do not guarantee that a near-limit combination fits in one request.
+
+### Actor validation
+
+The host validates actor definitions at startup. To validate actors without starting the host:
+
+```ts
+import { ActorCompiler } from "little-actors/compiler"
+
+const compiler = new ActorCompiler()
+compiler.check("src/durable-objects.ts")
+```
+
+Actor entrypoints must be TypeScript source files. `compiler.check(entrypoint)` reads `tsconfig.json`, checks TypeScript and actor definitions, and returns persistence schemas. Pass `{ configFile: "path/to/tsconfig.json" }` as the second argument to select another configuration. Compiler tooling is loaded separately from the normal actor API.
+
+Returned field schemas use `Persistence.Persisted` or `Persistence.Ephemeral`. Import the `Persistence` enum from `little-actors/compiler` when inspecting those schemas.
 
 ## Actor references
 
@@ -278,7 +310,7 @@ Actor-to-actor remote calls, connections, and broadcasts are not supported insid
 ### reference.connect
 
 ```text
-connect(metadata: Metadata): Promise<ActorConnection<Incoming, Outgoing, ActorState>>
+connect(metadata: Metadata): Promise<ActorConnection<Incoming, Outgoing, JsonObject>>
 ```
 
 Opens a WebSocket connection to the actor. The SDK handles bearer authentication and initialization.
@@ -466,7 +498,7 @@ Sending and broadcasting do not acknowledge persistence or recipient delivery. A
 import type { ActorConnection } from "little-actors"
 ```
 
-Client-side connection returned by [`reference.connect()`](#referenceconnect). The SDK handles authentication, initialization, JSON encoding and decoding, and declared schema validation. `ActorConnection<Send, Receive, State>` types sent messages, received application messages, and initial state. `connect()` infers all three from the actor. Application code handles display and replay beyond the initial saved state. Import it as a type; it is not a constructor.
+Connection returned by the server SDK's [`reference.connect()`](#referenceconnect). The SDK handles authentication, initialization, JSON encoding and decoding, and declared schema validation. `ActorConnection<Send, Receive, State>` types sent messages, received application messages, and initial state. `connect()` infers send and receive types from the actor and uses `JsonObject` for initial state. Application code handles display and replay beyond the initial saved state. Import it as a type; it is not a constructor.
 
 ### ActorConnection.readyState
 
@@ -550,7 +582,7 @@ Removes an event listener.
 | `close`   | `type: "close"`, `code: number`, `reason: string`, `wasClean: boolean` | Connection closed.                                                            |
 | `error`   | `type: "error"`                                                        | Connection error. The public event type has no message field.                 |
 
-The initial state arrives as a parsed object with shape `{"type":"state","state":{...}}`. Its state type is inferred from the actor's public data fields. Application messages are parsed and checked against the outgoing schema. Malformed JSON or invalid messages cause an `error` event and closure with code `1007`; binary frames close with `1003`. See [close behavior](http.md#close-behavior) for common server codes.
+The initial state arrives as a parsed object with shape `{"type":"state","state":{...}}`. Its state contains the actor's persisted fields and has the `JsonObject` type; narrow field values before using them. Application messages are parsed and checked against the outgoing schema. Malformed JSON or invalid messages cause an `error` event and closure with code `1007`; binary frames close with `1003`. See [close behavior](http.md#close-behavior) for common server codes.
 
 ## ActorInvocationError
 

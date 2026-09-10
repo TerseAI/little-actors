@@ -7,14 +7,14 @@ import { createInterface } from "node:readline"
 import { test } from "node:test"
 import { fileURLToPath } from "node:url"
 
-import { ActorSession, serializeWithinBytes } from "./session.js"
-import { parseHostSettings } from "./settings.js"
-import { ActorWorkerSupervisor } from "./workers.js"
+import { ActorSession, parseHostSettings, serializeWithinBytes } from "../actor-host.js"
+import { ActorWorkerSupervisor } from "../worker-supervisor.js"
 
 test("discovers actors only inside the first execution Worker", { timeout: 5_000 }, async () => {
     const root = await mkdtemp("/tmp/actor-discovery-")
-    const entrypoint = `${root}/actors.mjs`
-    const fixture = new URL("../../fixtures/actorSession.js", import.meta.url).href
+    const entrypoint = `${root}/actors.ts`
+    const fixture = fileURLToPath(new URL("../../../fixtures/actorSession.js", import.meta.url))
+    await writeFile(`${root}/package.json`, JSON.stringify({ type: "module" }))
     await writeFile(
         entrypoint,
         `import { isMainThread } from "node:worker_threads"; if (isMainThread) throw new Error("customer code loaded in supervisor"); export { SessionCounter } from ${JSON.stringify(fixture)};`
@@ -49,7 +49,7 @@ test("a stalled actor import times out and closes the Worker", { timeout: 1_000 
     const session = new ActorSession(
         parseHostSettings({
             DURABLE_OBJECT_EXECUTOR_SOCKET: `/tmp/ta-unused-${process.pid}.sock`,
-            DURABLE_OBJECT_ENTRYPOINT: fileURLToPath(new URL("../../fixtures/actorSession.js", import.meta.url)),
+            DURABLE_OBJECT_ENTRYPOINT: fileURLToPath(new URL("../../../fixtures/actorSession.ts", import.meta.url)),
             DURABLE_OBJECT_HOST_STARTUP_MS: "20"
         }),
         () => ({
@@ -119,7 +119,7 @@ test("the actor session carries only owned execution commands", async t => {
     const session = new ActorSession(
         parseHostSettings({
             DURABLE_OBJECT_EXECUTOR_SOCKET: socketPath,
-            DURABLE_OBJECT_ENTRYPOINT: fileURLToPath(new URL("../../fixtures/actorSession.js", import.meta.url))
+            DURABLE_OBJECT_ENTRYPOINT: fileURLToPath(new URL("../../../fixtures/actorSession.ts", import.meta.url))
         }),
         options => {
             const supervisor = new ActorWorkerSupervisor(options)
@@ -134,7 +134,7 @@ test("the actor session carries only owned execution commands", async t => {
     const startup = session.start()
 
     try {
-        const customerSocket = await customerSocketPromise
+        const customerSocket = await Promise.race([customerSocketPromise, startup.then(() => customerSocketPromise)])
         const lines = createInterface({ input: customerSocket, crlfDelay: Infinity })
         const iterator = lines[Symbol.asyncIterator]()
 
@@ -282,7 +282,7 @@ test("a failed session connection cleans up the speculative Worker", async () =>
     const session = new ActorSession(
         parseHostSettings({
             DURABLE_OBJECT_EXECUTOR_SOCKET: `/tmp/ta-missing-${process.pid}.sock`,
-            DURABLE_OBJECT_ENTRYPOINT: fileURLToPath(new URL("../../fixtures/actorSession.js", import.meta.url))
+            DURABLE_OBJECT_ENTRYPOINT: fileURLToPath(new URL("../../../fixtures/actorSession.ts", import.meta.url))
         }),
         () => ({
             async ready() {

@@ -1,7 +1,8 @@
 import { Actor } from "../src/actor/actor.js"
+import { Persisted } from "../src/actor/decorators.js"
 
 class SessionCounter extends Actor {
-    private count = 0
+    @Persisted private count = 0
 
     async increment(amount = 1): Promise<number> {
         this.count += amount

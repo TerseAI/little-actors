@@ -2,7 +2,7 @@
     "extends": "./tsconfig.build.json",
     "compilerOptions": {
         "outDir": ".test-dist",
-        "declaration": false,
+        "declaration": true,
         "declarationMap": false,
         "sourceMap": false,
         "rootDir": "."

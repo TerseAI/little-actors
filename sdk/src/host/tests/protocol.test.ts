@@ -1,9 +1,8 @@
 import assert from "node:assert/strict"
 import { test } from "node:test"
 
-import { ActorProtocolError } from "../errors.js"
-
-import { parseActorSessionServerMessage } from "./protocol.js"
+import { ActorProtocolError } from "../../errors.js"
+import { parseActorSessionServerMessage } from "../protocol.js"
 
 test("rejects malformed actor session messages", () => {
     assert.throws(

@@ -1,1 +1,1 @@
-export { runActorHost as runDurableObjectHost } from "./host/session.js"
+export { runActorHost as runDurableObjectHost } from "./host/actor-host.js"

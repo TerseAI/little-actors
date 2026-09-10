@@ -2,12 +2,11 @@ import assert from "node:assert/strict"
 import { test } from "node:test"
 import { z } from "zod"
 
-import { Actor, registerActorClass } from "../actor/actor.js"
-import type { ActorMessageOf, ActorSocketOf } from "../actor/actor.js"
-import type { SocketConnection } from "../actor/socketProtocol.js"
-
-import type { WebSocketEventCommand } from "./protocol.js"
-import { ActorRuntime } from "./runtime.js"
+import { Actor, registerActorClass } from "../../actor/actor.js"
+import type { ActorMessageOf, ActorSocketOf } from "../../actor/actor.js"
+import type { SocketConnection } from "../../actor/socketProtocol.js"
+import { ActorRuntime } from "../actor-runtime.js"
+import type { WebSocketEventCommand } from "../protocol.js"
 
 const metadata = z.object({ userId: z.string().min(1) })
 const incoming = z.object({ type: z.literal("post"), text: z.string().min(1) })

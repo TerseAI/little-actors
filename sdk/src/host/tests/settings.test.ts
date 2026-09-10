@@ -1,9 +1,8 @@
 import assert from "node:assert/strict"
 import { test } from "node:test"
 
-import { ActorConfigurationError } from "../errors.js"
-
-import { parseHostSettings } from "./settings.js"
+import { ActorConfigurationError } from "../../errors.js"
+import { parseHostSettings } from "../actor-host.js"
 
 test("a managed socket needs no local actor credentials", () => {
     const settings = parseHostSettings({

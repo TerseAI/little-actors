@@ -41,6 +41,10 @@
         "./host": {
             "types": "./dist/host.d.ts",
             "import": "./dist/host.js"
+        },
+        "./compiler": {
+            "types": "./dist/compiler/actor-compiler.d.ts",
+            "import": "./dist/compiler/actor-compiler.js"
         }
     },
     "files": [
@@ -55,7 +59,7 @@
         "clean": "rm -rf dist .test-dist",
         "package:check": "node scripts/check-package.mjs",
         "prepack": "pnpm run clean && pnpm run build && pnpm run package:check",
-        "test": "pnpm run clean && pnpm run build && tsc -p tsconfig.test.json && cp dist/generated/durable_object.proto .test-dist/src/generated/durable_object.proto && cd .test-dist && node --test --test-concurrency=1",
+        "test": "pnpm run clean && pnpm run build && node scripts/prepare-test-fixtures.mjs && tsc -p tsconfig.test.json && cp dist/generated/durable_object.proto .test-dist/src/generated/durable_object.proto && cd .test-dist && node --test --test-concurrency=1",
         "format": "prettier --config ../.prettierrc --write \"src/**/*.ts\" \"fixtures/**/*.ts\" \"scripts/*.mjs\"",
         "format:check": "prettier --config ../.prettierrc --check \"src/**/*.ts\" \"fixtures/**/*.ts\" \"scripts/*.mjs\""
     },
@@ -66,12 +70,12 @@
         "commander": "^14.0.3",
         "tar": "^7.5.22",
         "tsx": "^4.0.0",
+        "typescript": "~5.9.3",
         "ws": "^8.18.3",
         "zod": "^4.3.6"
     },
     "devDependencies": {
         "@types/node": "^22.0.0",
-        "@types/ws": "^8.18.1",
-        "typescript": "^5.0.0"
+        "@types/ws": "^8.18.1"
     }
 }
