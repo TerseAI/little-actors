@@ -1,0 +1,77 @@
+{
+    "name": "little-actors",
+    "version": "0.1.28",
+    "description": "Provider-neutral actors for sandbox compute",
+    "type": "module",
+    "license": "MIT",
+    "sideEffects": false,
+    "engines": {
+        "node": ">=20"
+    },
+    "packageManager": "pnpm@10.17.1",
+    "keywords": [
+        "actors",
+        "distributed-systems",
+        "durable-objects",
+        "modal",
+        "serverless"
+    ],
+    "repository": {
+        "type": "git",
+        "url": "git+https://github.com/TerseAI/little-actors.git",
+        "directory": "sdk"
+    },
+    "homepage": "https://github.com/TerseAI/little-actors#readme",
+    "bugs": {
+        "url": "https://github.com/TerseAI/little-actors/issues"
+    },
+    "publishConfig": {
+        "access": "public"
+    },
+    "main": "dist/index.js",
+    "types": "dist/index.d.ts",
+    "bin": {
+        "little-actors": "dist/cli.js"
+    },
+    "exports": {
+        ".": {
+            "types": "./dist/index.d.ts",
+            "import": "./dist/index.js"
+        },
+        "./host": {
+            "types": "./dist/host.d.ts",
+            "import": "./dist/host.js"
+        }
+    },
+    "files": [
+        "dist",
+        "README.md",
+        "LICENSE.md"
+    ],
+    "scripts": {
+        "build": "pnpm run generate:proto && tsc -p tsconfig.build.json && cp ../proto/durable_object.proto dist/generated/durable_object.proto",
+        "generate:proto": "proto-loader-gen-types --longs=Number --defaults --oneofs --grpcLib=@grpc/grpc-js --importFileExtension=.js --outDir=src/generated ../proto/durable_object.proto",
+        "check": "pnpm run format:check && pnpm run test && pnpm run package:check",
+        "clean": "rm -rf dist .test-dist",
+        "package:check": "node scripts/check-package.mjs",
+        "prepack": "pnpm run clean && pnpm run build && pnpm run package:check",
+        "test": "pnpm run clean && pnpm run build && tsc -p tsconfig.test.json && cp dist/generated/durable_object.proto .test-dist/src/generated/durable_object.proto && cd .test-dist && node --test --test-concurrency=1",
+        "format": "prettier --config ../.prettierrc --write \"src/**/*.ts\" \"fixtures/**/*.ts\" \"scripts/*.mjs\"",
+        "format:check": "prettier --config ../.prettierrc --check \"src/**/*.ts\" \"fixtures/**/*.ts\" \"scripts/*.mjs\""
+    },
+    "dependencies": {
+        "@discoveryjs/json-ext": "^1.1.0",
+        "@grpc/grpc-js": "^1.14.4",
+        "@grpc/proto-loader": "^0.8.1",
+        "commander": "^14.0.3",
+        "tar": "^7.5.22",
+        "tsx": "^4.0.0",
+        "ws": "^8.18.3",
+        "zod": "^4.3.6"
+    },
+    "devDependencies": {
+        "@types/node": "^22.0.0",
+        "@types/ws": "^8.18.1",
+        "typescript": "^5.0.0"
+    }
+}

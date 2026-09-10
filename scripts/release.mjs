@@ -7,7 +7,7 @@ const root = join(dirname(fileURLToPath(import.meta.url)), "..")
 const manifestFiles = {
     cargoLock: "Cargo.lock",
     cargoToml: "Cargo.toml",
-    npmPackage: "npm/package.json"
+    npmPackage: "sdk/package.json"
 }
 
 export const releaseManifestPaths = Object.values(manifestFiles)
@@ -47,7 +47,7 @@ export function stampReleaseVersion(manifests, version) {
     return {
         cargoLock: replaceOne(manifests.cargoLock, /^(\[\[package\]\]\nname = "little-actors"\nversion = ")[^"]+(")/mu, `$1${version}$2`, "Cargo.lock"),
         cargoToml: replaceOne(manifests.cargoToml, /^(version = ")[^"]+(")/mu, `$1${version}$2`, "Cargo.toml"),
-        npmPackage: replaceOne(manifests.npmPackage, /^( {4}"version": ")[^"]+(",?)/mu, `$1${version}$2`, "npm/package.json")
+        npmPackage: replaceOne(manifests.npmPackage, /^( {4}"version": ")[^"]+(",?)/mu, `$1${version}$2`, "sdk/package.json")
     }
 }
 

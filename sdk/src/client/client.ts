@@ -1,0 +1,33 @@
+import { AsyncLocalStorage } from "node:async_hooks"
+
+import type { ActorConnection, ActorSocketMessage } from "../actor/socket.js"
+import type { ActorSchemas } from "../actor/socketValidation.js"
+
+interface ActorClientTransport {
+    invoke(actorType: string, actorId: string, method: string, args: readonly unknown[]): Promise<unknown>
+    connect(actorType: string, actorId: string, metadata: unknown, schemas?: ActorSchemas): Promise<ActorConnection>
+    broadcast(actorType: string, actorId: string, message: ActorSocketMessage): Promise<void>
+}
+
+const scopedClients = new AsyncLocalStorage<ActorClientTransport>()
+
+let defaultClient: Promise<ActorClientTransport> | undefined
+
+async function actorClient(): Promise<ActorClientTransport> {
+    const scopedClient = scopedClients.getStore()
+    if (scopedClient !== undefined) return scopedClient
+    defaultClient ??= import("./remoteClient.js")
+        .then(({ RemoteActorClient }) => new RemoteActorClient())
+        .catch(error => {
+            defaultClient = undefined
+            throw error
+        })
+    return defaultClient
+}
+
+function runWithActorClient<T>(client: ActorClientTransport, operation: () => T): T {
+    return scopedClients.run(client, operation)
+}
+
+export { actorClient, runWithActorClient }
+export type { ActorClientTransport }

@@ -1,0 +1,143 @@
+import { z } from "zod"
+
+import { actorComponentSchema, actorIdentitySchema } from "../actor/identity.js"
+import { socketConnectionSchema, socketEventSchema } from "../actor/socketProtocol.js"
+import type { SocketEffect } from "../actor/socketProtocol.js"
+import { ActorProtocolError } from "../errors.js"
+import { jsonValueSchema } from "../json.js"
+import type { JsonObject, JsonValue } from "../json.js"
+
+function parseActorSessionServerMessage(document: string): ActorSessionServerMessage {
+    let value: unknown
+    try {
+        value = JSON.parse(document)
+    } catch (error) {
+        throw new ActorProtocolError("actor session message is not valid JSON", { cause: error })
+    }
+    const result = actorSessionServerMessageSchema.safeParse(value)
+    if (!result.success) throw new ActorProtocolError(`actor session message is invalid: ${result.error.message}`)
+    return result.data
+}
+
+function failedReply(code: string, message: string): FailedReply {
+    return { type: "failed", code, message }
+}
+
+const invokeCommandSchema = z.object({
+    type: z.literal("invoke"),
+    request_id: actorComponentSchema,
+    actor: actorIdentitySchema,
+    method: actorComponentSchema,
+    args: z.array(jsonValueSchema),
+    state: jsonValueSchema.nullable().optional(),
+    resident_only: z.boolean().optional(),
+    connections: z.array(socketConnectionSchema).optional()
+})
+
+const websocketEventCommandSchema = z.object({
+    type: z.literal("websocket_event"),
+    request_id: actorComponentSchema,
+    actor: actorIdentitySchema,
+    event: socketEventSchema,
+    connections: z.array(socketConnectionSchema),
+    state: jsonValueSchema.nullable().optional(),
+    resident_only: z.boolean().optional()
+})
+
+const evictCommandSchema = z.object({
+    type: z.literal("evict"),
+    actor: actorIdentitySchema
+})
+
+const executorCommandSchema = z.discriminatedUnion("type", [
+    invokeCommandSchema,
+    websocketEventCommandSchema,
+    evictCommandSchema
+])
+
+const actorSessionServerMessageSchema = z.discriminatedUnion("type", [
+    z.object({ type: z.literal("attached"), protocol: z.literal(14) }),
+    z.object({
+        type: z.literal("socket_effects_published"),
+        message_id: z.number().int().nonnegative(),
+        error: z.string().optional()
+    }),
+    z.object({
+        type: z.literal("command"),
+        message_id: z.number().int().nonnegative(),
+        command: executorCommandSchema
+    })
+])
+
+type InvokeCommand = z.infer<typeof invokeCommandSchema>
+type EvictCommand = z.infer<typeof evictCommandSchema>
+type ActorExecutorCommand = z.infer<typeof executorCommandSchema>
+type ActorSessionServerMessage = z.infer<typeof actorSessionServerMessageSchema>
+type ActorExecutorReply =
+    InvokedReply | WebSocketHandledReply | FailedReply | EvictedReply | { readonly type: "state_required" }
+type ActorSessionClientMessage =
+    | AttachMessage
+    | ReplyMessage
+    | { readonly type: "socket_effects"; readonly message_id: number; readonly effects: readonly SocketEffect[] }
+
+interface AttachMessage {
+    readonly type: "attach"
+    readonly protocol: 14
+    readonly actor_types: readonly string[]
+}
+
+interface ReplyMessage {
+    readonly type: "reply"
+    readonly message_id: number
+    readonly reply: ActorExecutorReply
+}
+
+interface InvokedReply {
+    readonly type: "invoked"
+    readonly result: JsonValue
+    readonly state: JsonObject
+    readonly effects?: readonly SocketEffect[]
+}
+
+interface WebSocketHandledReply {
+    readonly type: "websocket_handled"
+    readonly state: JsonObject
+    readonly effects: readonly SocketEffect[]
+}
+
+interface FailedReply {
+    readonly type: "failed"
+    readonly code: string
+    readonly message: string
+}
+
+interface EvictedReply {
+    readonly type: "evicted"
+}
+
+interface ActorWorkerData {
+    readonly moduleUrl: string
+}
+
+type ActorWorkerRequest =
+    | { readonly type: "execute"; readonly command: InvokeCommand | WebSocketEventCommand }
+    | { readonly type: "socket_effects_published"; readonly error?: string }
+type ActorWorkerMessage =
+    | { readonly type: "ready"; readonly actorTypes: readonly string[] }
+    | ActorExecutorReply
+    | { readonly type: "socket_effects"; readonly effects: readonly SocketEffect[] }
+
+type WebSocketEventCommand = z.infer<typeof websocketEventCommandSchema>
+export { failedReply, parseActorSessionServerMessage }
+export type {
+    ActorExecutorCommand,
+    ActorExecutorReply,
+    ActorSessionClientMessage,
+    ActorSessionServerMessage,
+    ActorWorkerData,
+    ActorWorkerMessage,
+    ActorWorkerRequest,
+    EvictCommand,
+    InvokeCommand,
+    WebSocketEventCommand
+}

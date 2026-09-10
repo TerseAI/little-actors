@@ -21,7 +21,7 @@ use tokio_tungstenite::{
 type Socket = WebSocketStream<MaybeTlsStream<tokio::net::TcpStream>>;
 
 #[tokio::test]
-#[ignore = "requires pnpm --dir npm build"]
+#[ignore = "requires pnpm --dir sdk build"]
 async fn ordinary_methods_list_and_address_gateway_connections() -> Result<()> {
     let mut stack = Stack::start().await?;
     assert_eq!(
@@ -84,7 +84,7 @@ async fn ordinary_methods_list_and_address_gateway_connections() -> Result<()> {
 }
 
 #[tokio::test]
-#[ignore = "requires pnpm --dir npm build; exercises a handler longer than 30 seconds"]
+#[ignore = "requires pnpm --dir sdk build; exercises a handler longer than 30 seconds"]
 async fn streams_through_real_worker_host_and_gateway_then_catches_up_reconnect() -> Result<()> {
     let _ = tracing_subscriber::fmt()
         .with_max_level(tracing::Level::WARN)
@@ -353,10 +353,10 @@ async fn serve_gateway(
 async fn start_worker(
     directory: &std::path::Path,
 ) -> Result<(tokio::process::Child, crate::actor::ActorExecutorConnection)> {
-    let npm = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("npm/dist");
+    let sdk = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("sdk/dist");
     ensure!(
-        npm.join("host.js").exists(),
-        "run pnpm --dir npm build before this test"
+        sdk.join("host.js").exists(),
+        "run pnpm --dir sdk build before this test"
     );
     let entrypoint = directory.join("actors.mjs");
     std::fs::write(
@@ -390,7 +390,7 @@ export class Counter extends Actor {{
     }}
 }}
 "#,
-            serde_json::to_string(&format!("file://{}", npm.join("index.js").display()))?,
+            serde_json::to_string(&format!("file://{}", sdk.join("index.js").display()))?,
             serde_json::to_string(&directory.join("release"))?
         ),
     )?;
@@ -401,7 +401,7 @@ export class Counter extends Actor {{
         &bootstrap,
         format!(
             "import {{ runDurableObjectHost }} from {}; await runDurableObjectHost();",
-            serde_json::to_string(&format!("file://{}", npm.join("host.js").display()))?
+            serde_json::to_string(&format!("file://{}", sdk.join("host.js").display()))?
         ),
     )?;
     let child = tokio::process::Command::new("node")

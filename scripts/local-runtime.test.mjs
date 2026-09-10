@@ -37,7 +37,7 @@ assert.equal(process.env.DURABLE_OBJECT_NAMESPACE_ID, undefined)
 assert.equal(process.env.DURABLE_OBJECT_SOCKET_GATEWAY_URL, undefined)
 `
     )
-    await execute(process.execPath, [path.join(root, "npm/dist/cli.js"), "run", "client.mjs"], {
+    await execute(process.execPath, [path.join(root, "sdk/dist/cli.js"), "run", "client.mjs"], {
         cwd: project,
         env: {
             ...process.env,
@@ -97,7 +97,7 @@ async function prepareProject(project) {
         await execute("npm", ["install", "--no-audit", "--no-fund", path.resolve(process.env.DURABLE_OBJECT_TEST_PACKAGE)], { cwd: project, timeout: 60_000 })
     } else {
         await mkdir(path.join(project, "node_modules"))
-        await symlink(path.join(root, "npm"), path.join(project, "node_modules/little-actors"), "dir")
+        await symlink(path.join(root, "sdk"), path.join(project, "node_modules/little-actors"), "dir")
     }
     await mkdir(path.join(project, "src"))
     await writeFile(

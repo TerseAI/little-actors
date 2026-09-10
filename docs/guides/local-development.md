@@ -8,7 +8,7 @@ Requires Node.js 20+, pnpm, and Rust 1.89+. From the repository root, install de
 
 ```sh
 pnpm install
-pnpm --dir npm build
+pnpm --dir sdk build
 cargo build --locked
 ```
 
@@ -21,11 +21,11 @@ mkdir chat-example
 cd chat-example
 npm init -y
 npm pkg set type=module
-npm link /absolute/path/to/little-actors/npm
+npm link /absolute/path/to/little-actors/sdk
 mkdir src
 ```
 
-Link the repository's `npm/` directory, which contains the package and CLI. The repository root is a private workspace, not the installable SDK. `npm link` creates a local package link; it does not publish anything.
+Link the repository's `sdk/` directory, which contains the package and CLI. The repository root is a private workspace, not the installable SDK. `npm link` creates a local package link; it does not publish anything.
 
 ## Run the chat tutorial
 
@@ -52,10 +52,10 @@ npx --no-install little-actors run src/chat.ts Bob
 
 ## Rebuild after changes
 
-Rebuild with `pnpm --dir npm build` after SDK or CLI changes, and with `cargo build --locked` after runtime changes. Restart `dev` after actor changes. The link continues to use the rebuilt package.
+Rebuild with `pnpm --dir sdk build` after SDK or CLI changes, and with `cargo build --locked` after runtime changes. Restart `dev` after actor changes. The link continues to use the rebuilt package.
 
 ## Troubleshooting
 
-If the CLI is missing, check that you linked the repository's `npm/` directory and ran `pnpm --dir npm build`. If it tries to download a release, set `DURABLE_OBJECT_BINARY` on the `dev` command to the executable you built.
+If the CLI is missing, check that you linked the repository's `sdk/` directory and ran `pnpm --dir sdk build`. If it tries to download a release, set `DURABLE_OBJECT_BINARY` on the `dev` command to the executable you built.
 
 For server startup, storage, and client connection issues, see the [CLI troubleshooting guide](../reference/cli.md#troubleshooting).

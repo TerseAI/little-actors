@@ -112,13 +112,13 @@ jobs:
               run: pnpm install --frozen-lockfile
 
             - name: Check formatting
-              run: pnpm --dir npm format:check
+              run: pnpm --dir sdk format:check
 
             - name: Run tests
-              run: pnpm --dir npm test
+              run: pnpm --dir sdk test
 
             - name: Verify npm package
-              working-directory: npm
+              working-directory: sdk
               run: npm pack --dry-run
 
     go-ci:
@@ -176,7 +176,7 @@ jobs:
             - name: Build Rust runtime and bundled Go provider
               run: pnpm build
             - name: Pack SDK for the tutorial test
-              run: pnpm --dir npm pack --pack-destination ../.artifacts
+              run: pnpm --dir sdk pack --pack-destination ../.artifacts
             - name: Test the packaged local runtime
               env:
                   DURABLE_OBJECT_TEST_BINARY: ${{ github.workspace }}/target/release/little-actors
@@ -323,7 +323,7 @@ jobs:
             - name: Pack tarball
               run: |
                   mkdir -p dist-tarballs
-                  pnpm --dir npm pack --pack-destination "$PWD/dist-tarballs"
+                  pnpm --dir sdk pack --pack-destination "$PWD/dist-tarballs"
 
             - name: Publish to npm
               env:

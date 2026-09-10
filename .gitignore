@@ -1,8 +1,8 @@
 node_modules/
-npm/node_modules/
-npm/dist/
-npm/.test-dist/
-npm/generated/
+sdk/node_modules/
+sdk/dist/
+sdk/.test-dist/
+sdk/src/generated/
 target/
 dist-runtime/
 .little-actors/

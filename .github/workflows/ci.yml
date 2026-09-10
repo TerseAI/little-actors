@@ -63,7 +63,7 @@ jobs:
                   node-version: "22.19.0"
                   cache: pnpm
             - run: pnpm install --frozen-lockfile
-            - run: pnpm --dir npm build
+            - run: pnpm --dir sdk build
             - run: cargo build --locked
             - name: Test the local tutorial without cloud services
               env:
@@ -83,8 +83,8 @@ jobs:
                   node-version: "22.19.0"
                   cache: pnpm
             - run: pnpm install --frozen-lockfile
-            - run: pnpm --dir npm format:check
-            - run: pnpm --dir npm test
+            - run: pnpm --dir sdk format:check
+            - run: pnpm --dir sdk test
             - name: Verify npm package
-              working-directory: npm
+              working-directory: sdk
               run: npm pack --dry-run
