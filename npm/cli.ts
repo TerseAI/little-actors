@@ -1,34 +1,72 @@
 #!/usr/bin/env node
+import { Command, InvalidArgumentError, Option } from "commander"
 import { spawn } from "node:child_process"
 import { randomUUID } from "node:crypto"
 import { readFile } from "node:fs/promises"
 import { homedir } from "node:os"
 import path from "node:path"
 
-import { DevOptions, LocalCli } from "./local/commands.js"
 import { RuntimeInstaller } from "./local/runtime.js"
 
+interface DevOptions {
+    port: number
+    project: string
+    entrypoint: string
+    storage: "local" | "gcs"
+    dataDir?: string
+}
+
 try {
-    await new LocalCli({
-        dev: async options => {
+    const program = new Command()
+        .name("little-actors")
+        .description("Run durable TypeScript actors locally or in the cloud")
+        .version(await version())
+        .enablePositionalOptions()
+        .showHelpAfterError()
+    program
+        .command("dev")
+        .description("Start local actors with automatic SQLite and file storage")
+        .option("--project <directory>", "actor project directory", ".")
+        .option("--port <number>", "loopback port (0 selects a free port)", portNumber, 7100)
+        .option("--entrypoint <file>", "actor source file, relative to the project", "src/durable-objects.ts")
+        .option("--data-dir <directory>", "state directory (default: <project>/.little-actors)")
+        .addOption(new Option("--storage <backend>", "where to save actor snapshots").choices(["local", "gcs"]).default("local"))
+        .action(async options => {
             process.exitCode = await runRuntime(devArguments(options))
-        },
-        run: async (script, args, options) => {
+        })
+    program
+        .command("run <script> [args...]")
+        .description("Run a TypeScript client with credentials from the local runtime")
+        .option("--data-dir <directory>", "runtime state directory", ".little-actors")
+        .passThroughOptions()
+        .action(async (script, args, options) => {
             process.exitCode = await runClient(script, args, options.dataDir)
-        },
-        token: async options => {
+        })
+    program
+        .command("token")
+        .description("Print a one-hour local session token for tools such as wscat")
+        .option("--data-dir <directory>", "runtime state directory", ".little-actors")
+        .action(async options => {
             const { token } = await localSession(options.dataDir)
             console.log(token)
-        },
-        start: async () => {
+        })
+    program
+        .command("start")
+        .description("Start the packaged runtime using your self-hosting environment settings")
+        .action(async () => {
             process.exitCode = await runRuntime([])
-        }
-    })
-        .program(await version())
-        .parseAsync(process.argv)
+        })
+    program.action(() => program.help())
+    await program.parseAsync(process.argv)
 } catch (error) {
     console.error(error instanceof Error ? error.message : String(error))
     process.exitCode = 1
+}
+
+function portNumber(value: string): number {
+    const port = Number(value)
+    if (!/^\d+$/u.test(value) || !Number.isSafeInteger(port) || port < 0 || port > 65535) throw new InvalidArgumentError("Port must be an integer from 0 to 65535.")
+    return port
 }
 
 function devArguments(options: DevOptions): string[] {
