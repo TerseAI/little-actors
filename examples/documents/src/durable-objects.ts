@@ -1,0 +1,38 @@
+import { fromBase64, toBase64 } from "lib0/buffer"
+import { Actor, Emittable, Persisted } from "little-actors"
+import type { ActorSocket } from "little-actors"
+import * as Y from "yjs"
+
+export class Workspace extends Actor<null, DocumentInfo, never> {
+    @Persisted @Emittable documents: DocumentInfo[] = [{ id: "welcome", title: "Welcome" }]
+
+    async onMessage(_socket: ActorSocket<null, never>, document: DocumentInfo) {
+        if (!this.documents.some(item => item.id === document.id)) this.documents.push(document)
+    }
+}
+
+export class Document extends Actor<null, string, never> {
+    @Persisted @Emittable content = emptyDocument()
+
+    async onMessage(_socket: ActorSocket<null, never>, update: string) {
+        const document = new Y.Doc()
+        try {
+            Y.applyUpdate(document, fromBase64(this.content))
+            Y.applyUpdate(document, fromBase64(update))
+            this.content = toBase64(Y.encodeStateAsUpdate(document))
+        } finally {
+            document.destroy()
+        }
+    }
+}
+
+function emptyDocument() {
+    const document = new Y.Doc()
+    // Seed on the server so simultaneous first joins share the same paragraph.
+    document.getXmlFragment("default").push([new Y.XmlElement("paragraph")])
+    const content = toBase64(Y.encodeStateAsUpdate(document))
+    document.destroy()
+    return content
+}
+
+type DocumentInfo = { id: string; title: string }

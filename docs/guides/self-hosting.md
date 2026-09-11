@@ -170,7 +170,7 @@ export DURABLE_OBJECT_API_KEY='<the-api-key-from-step-1>'
 export DURABLE_OBJECT_CONTROL_PLANE_URL='https://objects.example.com'
 ```
 
-Use the generated `ActorProxy` in the authenticated route from the [browser chat demo](../../examples/chat/src/backend.ts). Generate the client and proxy from the deployed actor source with `little-actors generate`, and point the frontend client at that application route.
+Use the generated `ActorProxy` as shown in the [browser chat demo](../../examples/chat/src/backend.ts), adding your application's authentication before issuing tickets. Generate the client and proxy from the deployed actor source with `little-actors generate`, and point the frontend client at that application route.
 
 Start the web app with its normal tooling and open two signed-in browser sessions. A message in either session updates both histories after persistence. Reloading a page supplies the current snapshot. Hosted state is separate from local demo state.
 
@@ -187,7 +187,7 @@ export GOOGLE_APPLICATION_CREDENTIALS='/absolute/path/to/service-account.json'
 npx little-actors dev --storage gcs --data-dir .gcs-demo
 ```
 
-Generate the [browser demo](../../examples/chat/README.md) SDK, point its authenticated proxy at the local server using `.gcs-demo/runtime.json`, and start your web app normally. Send a message and reload the page to see the saved conversation.
+Generate the [browser demo](../../examples/chat/README.md) SDK, point its proxy at the local server using `.gcs-demo/runtime.json`, and start your web app normally. Send a message and reload the page to see the saved conversation.
 
 Changing backends or buckets requires a separate state directory; existing actors are not migrated. References remain in SQLite, so losing that file still loses access to your actors. Use backed-up PostgreSQL for production.
 

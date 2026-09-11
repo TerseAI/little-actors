@@ -102,13 +102,13 @@ async function validatorsSource(contract: SocketContract, kinds: readonly string
 
 function clientIndex(contracts: readonly SocketContract[]): string {
     const { imports, actors } = actorImports(contracts, "actor")
-    return `import { createClient } from "little-actors/browser"\nimport type { ClientOptions } from "little-actors/browser"\n${imports}\n\nexport function ActorClient(options: ClientOptions) {\n    return createClient({ ${actors} }, options)\n}\n`
+    return `import { createClient } from "little-actors/browser"\nimport type { ClientOptions } from "little-actors/browser"\n${imports}\n\nexport function ActorClient(options: ClientOptions = {}) {\n    return createClient({ ${actors} }, options)\n}\n`
 }
 
 function proxyIndex(contracts: readonly SocketContract[]): string {
     const { imports, actors } = actorImports(contracts, "proxy")
     return `import { SocketProxy } from "little-actors/proxy"
-import type { SocketAuthorization, SocketProxyDependencies, SocketProxyOptions } from "little-actors/proxy"
+import type { SocketAuthorization, SocketGrant, SocketProxyDependencies, SocketProxyOptions } from "little-actors/proxy"
 ${imports}
 
 const actors = { ${actors} }
@@ -119,8 +119,8 @@ export class ActorProxy extends SocketProxy<typeof actors> {
         super(actors, options, dependencies)
     }
 
-    static handle(request: Request, authorization: ActorAuthorization, options: SocketProxyOptions = {}): Promise<Response> {
-        return new ActorProxy(options).handle(request, authorization)
+    static handle(authorization: ActorAuthorization, options: SocketProxyOptions = {}): Promise<SocketGrant> {
+        return new ActorProxy(options).handle(authorization)
     }
 }
 `

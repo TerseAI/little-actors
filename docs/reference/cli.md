@@ -24,7 +24,23 @@ npx little-actors init chat-example
 
 `init <directory>` creates an Express + React chat app from the template bundled in the npm package. It refuses an existing destination. The parent directory must exist. Once the package is installed, copying the template needs no network access.
 
-The app includes actor definitions, session handling, a socket authorization route, and a React interface. Its `little-actors` dependency matches the CLI version. The command prints the next steps: install dependencies, generate the client and proxy once, then start the actor server and app. It does not install dependencies or start processes itself.
+The app includes actor definitions, a socket-ticket route, and a React interface. Its `little-actors` dependency matches the CLI version. The command prints the next steps: install dependencies, generate the client and proxy once, then start the actor server and app. It does not install dependencies or start processes itself.
+
+Use `--template ai-chat` for [Vercel AI SDK with durable chat history](../../examples/ai-chat):
+
+```sh
+npx little-actors init ai-chat-example --template ai-chat
+```
+
+This template uses `useChat` and HTTP streaming, with backend actor calls for persistence. It needs an `OPENAI_API_KEY` in `.env` and does not need generated WebSocket clients.
+
+Use `--template documents` for the [collaborative document editor](../../examples/documents):
+
+```sh
+npx little-actors init documents-example --template documents
+```
+
+This template combines Tiptap, Yjs, and generated WebSocket clients. `--template` accepts `chat` (the default), `ai-chat`, or `documents`.
 
 ## Find your actors
 

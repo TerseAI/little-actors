@@ -1,0 +1,145 @@
+:root {
+    font-family: system-ui, sans-serif;
+    color: #202832;
+    background: #f5f6f8;
+    line-height: 1.5;
+}
+
+* {
+    box-sizing: border-box;
+}
+body {
+    margin: 0;
+}
+button,
+input {
+    font: inherit;
+}
+button {
+    cursor: pointer;
+}
+button,
+input {
+    padding: 0.5rem 0.75rem;
+    border: 1px solid #c1c8d0;
+    border-radius: 0.25rem;
+    background: white;
+    color: inherit;
+}
+button:hover {
+    background: #e9eef5;
+}
+button:disabled,
+input:disabled {
+    opacity: 0.55;
+    cursor: default;
+}
+button:focus-visible,
+input:focus-visible,
+.tiptap:focus-visible {
+    outline: 2px solid #245ec7;
+    outline-offset: 2px;
+}
+button[aria-current],
+button[aria-pressed="true"] {
+    background: #e1ebfb;
+    border-color: #245ec7;
+}
+
+.app {
+    max-width: 72rem;
+    margin: auto;
+    padding: 2rem;
+}
+header {
+    margin-bottom: 2rem;
+}
+h1,
+h2 {
+    margin: 0;
+    font-size: 1.5rem;
+}
+header p {
+    margin: 0.5rem 0 0;
+    color: #526070;
+}
+main {
+    display: grid;
+    grid-template-columns: 14rem minmax(0, 1fr);
+    gap: 2rem;
+}
+aside form,
+nav {
+    display: grid;
+    gap: 0.5rem;
+}
+aside input {
+    min-width: 0;
+    width: 100%;
+}
+nav {
+    margin-top: 1.5rem;
+}
+nav button {
+    text-align: left;
+    overflow-wrap: anywhere;
+}
+section {
+    min-width: 0;
+}
+.document-heading {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 1rem;
+    margin-bottom: 1rem;
+}
+.document-heading h2 {
+    overflow-wrap: anywhere;
+}
+[role="status"] {
+    font-size: 0.875rem;
+    color: #526070;
+}
+.formatting {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.5rem;
+    margin-bottom: 0.75rem;
+}
+.tiptap {
+    min-height: 24rem;
+    padding: 1.5rem;
+    border: 1px solid #c1c8d0;
+    border-radius: 0.25rem;
+    background: white;
+    overflow-wrap: anywhere;
+}
+.tiptap > :first-child {
+    margin-top: 0;
+}
+.tiptap pre {
+    white-space: pre-wrap;
+}
+.tiptap blockquote {
+    margin-left: 0;
+    padding-left: 1rem;
+    border-left: 1px solid #526070;
+}
+
+@media (max-width: 40rem) {
+    .app {
+        padding: 1rem;
+    }
+    main {
+        grid-template-columns: 1fr;
+        gap: 1.5rem;
+    }
+    nav {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+    .document-heading {
+        flex-wrap: wrap;
+        gap: 0.25rem;
+    }
+}

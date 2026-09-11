@@ -1,48 +1,111 @@
 # little-actors
 
-little-actors is a lightweight framework for durable actors, powered by Rust.
+little-actors is a framework for durable actors, powered by Rust. It's the easiest way to get started testing actors locally and can be extended to complex production deployments.
 
 Durable Actors are TypeScript classes that preserve their own state.
+
+## Installation
+
+```sh
+npm install little-actors
+```
+
+See the sample apps:
+
+- [AI Chat](examples/ai-chat)
+- [Collaborative documents](examples/documents)
+- [Chatroom](examples/chat)
 
 ## Define an Actor
 
 ```ts
-import { Actor, Emittable, Persisted } from "little-actors"
-import type { ActorSocket } from "little-actors"
+import type { UIMessage } from "ai"
+import { Actor, Persisted } from "little-actors"
 
-export class ChatRoom extends Actor<Member, ClientEvent, never> {
-    @Persisted @Emittable history: ChatMessage[] = []
+export class ChatHistory extends Actor {
+    @Persisted private messages: UIMessage[] = []
 
-    async onMessage(socket: ActorSocket<Member, never>, message: ClientEvent): Promise<void> {
-        this.history.push({ name: socket.metadata.name, text: message.text })
+    async load() {
+        return this.messages
+    }
+
+    async append(message: UIMessage) {
+        this.messages.push(message)
+        return this.messages
     }
 }
-
-type Member = { name: string }
-type ClientEvent = { type: "post"; text: string }
-type ChatMessage = { name: string; text: string }
 ```
 
-## Complete Tutorial - Chat App with Actors +
+## Stream from the backend (Express)
 
-```sh
-npx little-actors init chat-example && cd chat-example
-npm install
-npx little-actors generate
-npx little-actors dev
+```ts
+import { openai } from "@ai-sdk/openai"
+import { convertToModelMessages, generateId, pipeUIMessageStreamToResponse, streamText, toUIMessageStream, validateUIMessages } from "ai"
+import express from "express"
+
+import { ChatHistory } from "./durable-objects.js"
+
+const app = express()
+app.use(express.json())
+
+app.get("/api/chat/:id", async (request, response) => {
+    response.json(await ChatHistory.get(request.params.id).load())
+})
+
+app.post("/api/chat", async (request, response) => {
+    const [message] = await validateUIMessages({ messages: [request.body.messages.at(-1)] })
+    if (message.role !== "user") return response.sendStatus(400)
+    const chat = ChatHistory.get(request.body.id)
+    const messages = await chat.append(message)
+    const result = streamText({
+        model: openai("gpt-5-mini"),
+        messages: await convertToModelMessages(messages)
+    })
+    await pipeUIMessageStreamToResponse({
+        response,
+        stream: toUIMessageStream({
+            stream: result.stream,
+            originalMessages: messages,
+            generateMessageId: generateId,
+            onEnd: async ({ responseMessage, outcome }) => {
+                if (outcome.status === "completed") await chat.append(responseMessage)
+            }
+        })
+    })
+})
 ```
 
-The last command stats a web server, wait for `Local actors ready at http://127.0.0.1:7100`
+## Connect the frontend (React)
 
-The native runtime downloads automatically. Wait for `Local actors ready at http://127.0.0.1:7100`.
+```tsx
+import { useChat } from "@ai-sdk/react"
+import type { UIMessage } from "ai"
 
-In another terminal, run the web app from `chat-example`:
+const history: UIMessage[] = await fetch("/api/chat/lobby").then(response => response.json())
 
-```sh
-npm run dev
+function Chat() {
+    const { messages, sendMessage, status } = useChat({ id: "lobby", messages: history })
+    const busy = status === "submitted" || status === "streaming"
+
+    return (
+        <>
+            {messages.map(message => (
+                <p key={message.id}>
+                    {message.role}: {message.parts.map(part => (part.type === "text" ? part.text : "")).join("")}
+                </p>
+            ))}
+            <form
+                action={async form => {
+                    await sendMessage({ text: String(form.get("message")) })
+                }}
+            >
+                <input name="message" aria-label="Message" required disabled={busy} />
+                <button disabled={busy}>Send</button>
+            </form>
+        </>
+    )
+}
 ```
-
-Open **[http://127.0.0.1:3000](http://127.0.0.1:3000)** and choose a name. Open a private window to chat with a second user.
 
 ## Host it yourself
 

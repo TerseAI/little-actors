@@ -184,7 +184,10 @@ impl Session {
             .verify_socket(key)
             .map_err(|_| (4401, "socket renewal rejected"))?;
         if ticket.actor != self.ticket.actor
-            || ticket.connection_id.as_deref() != Some(&self.connection.id)
+            || ticket
+                .connection_id
+                .as_deref()
+                .is_some_and(|id| id != self.connection.id)
         {
             return Err((4403, "socket renewal target mismatch"));
         }

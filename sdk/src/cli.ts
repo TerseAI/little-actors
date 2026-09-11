@@ -26,7 +26,10 @@ try {
         .showHelpAfterError()
     program
         .command("init <directory>")
-        .description("Create an Express and React chat app from the bundled template")
+        .description("Create an Express and React app from a bundled template")
+        .addOption(
+            new Option("--template <name>", "example app").choices(["chat", "ai-chat", "documents"]).default("chat")
+        )
         .action(initializeProject)
     program
         .command("generate [entrypoint]")
@@ -80,14 +83,14 @@ try {
     process.exitCode = 1
 }
 
-async function initializeProject(directory: string): Promise<void> {
+async function initializeProject(directory: string, options: { template: string }): Promise<void> {
     const destination = path.resolve(directory)
     await mkdir(destination).catch((error: NodeJS.ErrnoException) => {
         if (error.code === "EEXIST") throw new Error(`${destination} already exists. Choose a new directory.`)
         throw error
     })
     try {
-        await cp(new URL("./templates/chat/", import.meta.url), destination, {
+        await cp(new URL(`./templates/${options.template}/`, import.meta.url), destination, {
             recursive: true,
             force: false,
             errorOnExist: true
@@ -97,11 +100,10 @@ async function initializeProject(directory: string): Promise<void> {
         await rm(destination, { recursive: true, force: true })
         throw error
     }
-    console.log(`Created chat app in ${destination}.
+    console.log(`Created ${options.template} app in ${destination}.
 
 From that directory, run:
-  npm install
-  npx little-actors generate
+  npm install${options.template === "ai-chat" ? "\n  cp .env.example .env\n  # Add your OpenAI API key to .env" : "\n  npx little-actors generate"}
   npx little-actors dev
 
 In another terminal, from the same directory:

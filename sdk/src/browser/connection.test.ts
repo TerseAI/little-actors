@@ -29,7 +29,7 @@ test("hides authorization, validates payloads, and caches field subscriptions", 
     connection.subscribe("messages", value => states.push(value))
     const connecting = connection.connect()
     await setImmediate()
-    assert.deepEqual(env.requests, [{ actorType: "Room", actorId: "lobby" }])
+    assert.deepEqual(env.requests, ["/api/socket/Room/lobby"])
     const socket = env.sockets[0]!
     socket.open()
     assert.deepEqual(socket.sent, [{ type: "authorize", key: "key" }])
@@ -63,7 +63,7 @@ test("renews the existing socket and reconnects with fresh authorization after t
     await connecting
     await env.advance(800)
     assert.equal(env.sockets.length, 1)
-    assert.deepEqual(env.requests.at(-1), { actorType: "Room", actorId: "lobby", connectionId: "connection" })
+    assert.equal(env.requests.at(-1), "/api/socket/Room/lobby")
     assert.deepEqual(env.sockets[0]!.sent.at(-1), { type: "renew", key: "key" })
     env.sockets[0]!.receive({ type: "renewed", expiresInMs: 1000 })
     env.sockets[0]!.disconnect(1006)
@@ -71,7 +71,7 @@ test("renews the existing socket and reconnects with fresh authorization after t
     assert.throws(() => connection.send({ text: "offline" }), /not open/i)
     await env.advance(1000)
     assert.equal(env.sockets.length, 2)
-    assert.deepEqual(env.requests.at(-1), { actorType: "Room", actorId: "lobby" })
+    assert.equal(env.requests.at(-1), "/api/socket/Room/lobby")
     env.ready(env.sockets[1]!)
     assert.equal(connection.status, "open")
     assert.equal(
@@ -167,10 +167,12 @@ function harness(response?: () => Promise<Response>) {
     const requests: unknown[] = []
     const client = createClient(
         { Room: room },
-        { endpoint: "/api/actors" },
+        {},
         {
-            fetch: async (_url, init) => {
-                requests.push(JSON.parse(init!.body as string))
+            fetch: async (url, init) => {
+                assert.equal(init!.body, undefined)
+                assert.equal(init!.method, "POST")
+                requests.push(String(url))
                 return response
                     ? response()
                     : Response.json({ websocketUrl: "ws://example.test/v1/socket", key: "key" })

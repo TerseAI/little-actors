@@ -1,8 +1,7 @@
-import { z } from "zod"
-
 import { validateActorComponent } from "./actor/identity.js"
 import { socketMetadata } from "./actor/socketValidation.js"
 import { decodeGrant } from "./browser/protocol.js"
+import { readLocalSettings } from "./client/localSettings.js"
 
 interface SocketProxyOptions {
     readonly controlPlaneUrl?: string
@@ -12,6 +11,7 @@ interface SocketProxyOptions {
 
 interface SocketProxyDependencies {
     readonly fetch?: typeof globalThis.fetch
+    readonly readLocalSettings?: () => SocketProxyOptions
 }
 
 interface ProxyActor<Metadata = unknown> {
@@ -28,9 +28,7 @@ type SocketAuthorization<Actors extends Record<string, ProxyActor>> = {
     }
 }[keyof Actors & string]
 
-const intentSchema = z
-    .object({ actorType: z.string(), actorId: z.string(), connectionId: z.string().min(1).max(128).optional() })
-    .strict()
+type SocketGrant = ReturnType<typeof decodeGrant>
 
 class SocketProxy<Actors extends Record<string, ProxyActor>> {
     private readonly origin: string
@@ -43,7 +41,8 @@ class SocketProxy<Actors extends Record<string, ProxyActor>> {
         options: SocketProxyOptions = {},
         dependencies: SocketProxyDependencies = {}
     ) {
-        const url = new URL(options.controlPlaneUrl ?? process.env.DURABLE_OBJECT_CONTROL_PLANE_URL ?? "")
+        const settings = proxySettings(options, dependencies.readLocalSettings ?? readLocalSettings)
+        const url = new URL(settings.controlPlaneUrl)
         if (
             !["https:", "http:"].includes(url.protocol) ||
             url.pathname !== "/" ||
@@ -54,25 +53,15 @@ class SocketProxy<Actors extends Record<string, ProxyActor>> {
         )
             throw new Error("Control-plane URL must be an HTTP(S) origin")
         this.origin = url.origin
-        this.apiKey = options.apiKey ?? process.env.DURABLE_OBJECT_API_KEY ?? ""
-        if (!this.apiKey || this.apiKey.trim() !== this.apiKey)
-            throw new Error("A backend API key is required for socket authorization")
-        this.namespace = options.namespaceId ?? process.env.DURABLE_OBJECT_NAMESPACE_ID
+        this.apiKey = settings.apiKey ?? ""
+        if (typeof this.apiKey !== "string" || !this.apiKey || this.apiKey.trim() !== this.apiKey)
+            throw new Error("A backend API key is required; set DURABLE_OBJECT_API_KEY or run npx little-actors dev")
+        this.namespace = settings.namespaceId
         if (this.namespace) validateActorComponent("namespace ID", this.namespace)
         this.fetchRequest = dependencies.fetch ?? globalThis.fetch
     }
 
-    async handle(request: Request, authorization: SocketAuthorization<Actors>): Promise<Response> {
-        if (request.method !== "POST") return responseError(405, "POST is required")
-        let intent: z.infer<typeof intentSchema>
-        try {
-            const document = await readIntent(request)
-            intent = intentSchema.parse(document)
-        } catch {
-            return responseError(400, "Invalid socket connection request")
-        }
-        if (intent.actorType !== authorization.actorType || intent.actorId !== authorization.actorId)
-            return responseError(403, "Socket target was not authorized")
+    async handle(authorization: SocketAuthorization<Actors>): Promise<SocketGrant> {
         const actorType = validateActorComponent("actor type", authorization.actorType)
         const actorId = validateActorComponent("actor ID", authorization.actorId)
         if (!Object.hasOwn(this.actors, actorType)) throw new Error(`Unknown actor type: ${actorType}`)
@@ -86,54 +75,30 @@ class SocketProxy<Actors extends Record<string, ProxyActor>> {
         )
             throw new Error("Socket authorization lifetime must be between one second and one day")
         const scope = this.namespace ? `/namespaces/${encodeURIComponent(this.namespace)}` : ""
-        try {
-            const response = await this.fetchRequest(
-                `${this.origin}/v1${scope}/actors/${encodeURIComponent(actorType)}/${encodeURIComponent(actorId)}/socket-ticket`,
-                {
-                    method: "POST",
-                    headers: { authorization: `Bearer ${this.apiKey}`, "content-type": "application/json" },
-                    body: JSON.stringify({
-                        metadata,
-                        ...(intent.connectionId ? { connectionId: intent.connectionId } : {}),
-                        authorizationLifetimeMs
-                    }),
-                    signal: AbortSignal.any([request.signal, AbortSignal.timeout(10000)])
-                }
-            )
-            if (!response.ok)
-                return responseError(response.status >= 500 ? 503 : 502, "WebSocket authorization could not be issued")
-            return Response.json(decodeGrant(await response.json()), { headers: { "cache-control": "no-store" } })
-        } catch {
-            return responseError(503, "WebSocket authorization is unavailable")
-        }
-    }
-}
-
-async function readIntent(request: Request): Promise<unknown> {
-    if (!request.body) throw new Error("request body is missing")
-    const reader = request.body.getReader()
-    const chunks: Uint8Array[] = []
-    let length = 0
-    try {
-        for (;;) {
-            const { value, done } = await reader.read()
-            if (done) break
-            length += value.byteLength
-            if (length > 4096) {
-                await reader.cancel()
-                throw new Error("request is too large")
+        const response = await this.fetchRequest(
+            `${this.origin}/v1${scope}/actors/${encodeURIComponent(actorType)}/${encodeURIComponent(actorId)}/socket-ticket`,
+            {
+                method: "POST",
+                headers: { authorization: `Bearer ${this.apiKey}`, "content-type": "application/json" },
+                body: JSON.stringify({ metadata, authorizationLifetimeMs }),
+                signal: AbortSignal.timeout(10000)
             }
-            chunks.push(value)
-        }
-    } finally {
-        reader.releaseLock()
+        )
+        if (!response.ok) throw new Error(`WebSocket authorization could not be issued (HTTP ${response.status})`)
+        return decodeGrant(await response.json())
     }
-    return JSON.parse(Buffer.concat(chunks).toString("utf8"))
 }
 
-function responseError(status: number, error: string): Response {
-    return Response.json({ error }, { status, headers: { "cache-control": "no-store" } })
+function proxySettings(options: SocketProxyOptions, readLocal: () => SocketProxyOptions) {
+    const controlPlaneUrl = options.controlPlaneUrl ?? process.env.DURABLE_OBJECT_CONTROL_PLANE_URL
+    const apiKey = options.apiKey ?? process.env.DURABLE_OBJECT_API_KEY
+    const local = controlPlaneUrl === undefined && apiKey === undefined ? readLocal() : {}
+    return {
+        controlPlaneUrl: controlPlaneUrl ?? local.controlPlaneUrl ?? "http://127.0.0.1:7100",
+        apiKey: apiKey ?? local.apiKey,
+        namespaceId: options.namespaceId ?? process.env.DURABLE_OBJECT_NAMESPACE_ID ?? local.namespaceId
+    }
 }
 
 export { SocketProxy }
-export type { ProxyActor, SocketAuthorization, SocketProxyDependencies, SocketProxyOptions }
+export type { ProxyActor, SocketAuthorization, SocketGrant, SocketProxyDependencies, SocketProxyOptions }

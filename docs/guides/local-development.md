@@ -1,10 +1,8 @@
 # Local development
 
-Run actors locally using the published npm package. For a complete application, start with `little-actors init` in the [Express + React chat tutorial](../../README.md#quickstart). The steps below cover adding actors to an existing application.
+Run actors locally using the published npm package. For complete sample applications, start with `little-actors init` in the [Express + React chat tutorial](../../README.md#quickstart). The steps below cover adding actors to an existing application.
 
 ## Install the package
-
-With Node.js 22.19+, install the SDK in your application directory:
 
 ```sh
 npm install little-actors
@@ -32,7 +30,7 @@ Wait for `Local actors ready at http://127.0.0.1:7100`. State is saved in `.litt
 
 ## Connect your application
 
-Configure your backend proxy with the `controlPlaneUrl` and `apiKey` from `.little-actors/runtime.json`. Your backend authenticates users and supplies their metadata to `ActorProxy.handle()`. The frontend's `ActorClient` points to that backend endpoint.
+`ActorProxy` reads the connection settings from `.little-actors/runtime.json` automatically. Your backend authenticates users and supplies their metadata to `ActorProxy.handle()`. `ActorClient()` defaults to `/api/socket/{actorType}/{actorId}` on the current origin.
 
 Start your frontend and application backend with their usual tooling, keeping `little-actors dev` running. The [chat example](../../examples/chat/README.md#run-it) starts Express and React with `npm run dev` and reads the local runtime settings automatically.
 

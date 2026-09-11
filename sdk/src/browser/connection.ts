@@ -37,7 +37,7 @@ class ActorConnection<Incoming, Outgoing, State extends object, Field extends ke
         dependencies: ClientDependencies = {}
     ) {
         this.runtime = {
-            fetch: dependencies.fetch ?? options.fetch ?? globalThis.fetch,
+            fetch: dependencies.fetch ?? options.fetch ?? globalThis.fetch.bind(globalThis),
             connectWebSocket: dependencies.connectWebSocket ?? (url => new WebSocket(url, "little-actors.v1")),
             now: dependencies.now ?? (() => performance.now()),
             random: dependencies.random ?? Math.random,
@@ -212,7 +212,7 @@ class ActorConnection<Incoming, Outgoing, State extends object, Field extends ke
         }
         this.schedule(expired, remaining)
         try {
-            const grant = await this.grant(this.connectionId)
+            const grant = await this.grant()
             if (!this.current(generation) || this.status !== "open") return
             this.renewalPending = true
             this.socket!.send(encodeFrame({ type: "renew", key: grant.key }))
@@ -241,19 +241,21 @@ class ActorConnection<Incoming, Outgoing, State extends object, Field extends ke
         }
     }
 
-    private async grant(connectionId?: string) {
+    private async grant() {
         const controller = new AbortController()
         this.request = controller
         const timer = this.runtime.schedule(() => controller.abort(), 10000)
         this.requestTimer = timer
         try {
             const endpoint =
-                typeof this.options.endpoint === "function" ? this.options.endpoint(this.target) : this.options.endpoint
+                (typeof this.options.endpoint === "function"
+                    ? this.options.endpoint(this.target)
+                    : this.options.endpoint) ??
+                `/api/socket/${encodeURIComponent(this.target.actorType)}/${encodeURIComponent(this.target.actorId)}`
             const response = await this.runtime.fetch(endpoint, {
                 method: "POST",
-                headers: { "content-type": "application/json" },
-                signal: controller.signal,
-                body: JSON.stringify({ ...this.target, ...(connectionId ? { connectionId } : {}) })
+                cache: "no-store",
+                signal: controller.signal
             })
             if (!response.ok)
                 throw new SocketError(

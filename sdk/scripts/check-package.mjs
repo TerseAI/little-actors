@@ -15,10 +15,12 @@ async function checkPackage() {
     )
         throw new Error("package must expose little-actors as its executable CLI")
     await access("dist/generated/durable_object.proto")
-    const template = JSON.parse(await readFile("dist/templates/chat/package.json", "utf8"))
-    if (template.dependencies["little-actors"] !== metadata.version)
-        throw new Error("chat template must use the packaged SDK version")
-    await access("dist/templates/chat/gitignore")
+    for (const name of ["chat", "ai-chat", "documents"]) {
+        const template = JSON.parse(await readFile(`dist/templates/${name}/package.json`, "utf8"))
+        if (template.dependencies["little-actors"] !== metadata.version)
+            throw new Error(`${name} template must use the packaged SDK version`)
+        await access(`dist/templates/${name}/gitignore`)
+    }
     await import("../dist/client/actorHostGrpc.js")
     await Promise.all(metadata.files.filter(path => !path.includes("dist")).map(path => access(path)))
 }

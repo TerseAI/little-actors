@@ -70,6 +70,14 @@ jobs:
               run: |
                   npx --no-install little-actors generate
                   npm run build
+            - name: Check the AI chat example
+              working-directory: examples/ai-chat
+              run: npm run build
+            - name: Check the documents example
+              working-directory: examples/documents
+              run: |
+                  npx --no-install little-actors generate
+                  npm run build
 
     npm:
         name: TypeScript package

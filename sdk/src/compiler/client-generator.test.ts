@@ -38,26 +38,25 @@ test("generates an actor-specific proxy from backend metadata types", async t =>
         `import { ActorProxy } from "./proxy.js"
         import type { ActorAuthorization } from "./proxy.js"
         import { ActorClient } from "./index.js"
-        const request = new Request("https://app.example.com/socket")
-        ActorProxy.handle(request, { actorType: "Room", actorId: "lobby", metadata: { userId: "alice" } })
-        ActorProxy.handle(request, { actorType: "Counter", actorId: "one", metadata: { tenantId: 1, role: "viewer" } })
+        ActorProxy.handle({ actorType: "Room", actorId: "lobby", metadata: { userId: "alice" } })
+        ActorProxy.handle({ actorType: "Counter", actorId: "one", metadata: { tenantId: 1, role: "viewer" } })
         const proxy = new ActorProxy({ controlPlaneUrl: "https://actors.example.com", apiKey: "secret" })
-        proxy.handle(request, { actorType: "Room", actorId: "lobby", metadata: { userId: "alice", profile: { displayName: "Alice" } } })
+        proxy.handle({ actorType: "Room", actorId: "lobby", metadata: { userId: "alice", profile: { displayName: "Alice" } } })
         // @ts-expect-error unknown actor
-        ActorProxy.handle(request, { actorType: "Missing", actorId: "one", metadata: {} })
+        ActorProxy.handle({ actorType: "Missing", actorId: "one", metadata: {} })
         // @ts-expect-error metadata belongs to another actor
-        ActorProxy.handle(request, { actorType: "Room", actorId: "one", metadata: { tenantId: 1, role: "viewer" } })
+        ActorProxy.handle({ actorType: "Room", actorId: "one", metadata: { tenantId: 1, role: "viewer" } })
         // @ts-expect-error required metadata is missing
-        ActorProxy.handle(request, { actorType: "Room", actorId: "one", metadata: {} })
+        ActorProxy.handle({ actorType: "Room", actorId: "one", metadata: {} })
         // @ts-expect-error nested metadata is typed
-        ActorProxy.handle(request, { actorType: "Room", actorId: "one", metadata: { userId: "alice", profile: { displayName: 1 } } })
+        ActorProxy.handle({ actorType: "Room", actorId: "one", metadata: { userId: "alice", profile: { displayName: 1 } } })
         // @ts-expect-error metadata literals are preserved
-        proxy.handle(request, { actorType: "Counter", actorId: "one", metadata: { tenantId: 1, role: "admin" } })
+        proxy.handle({ actorType: "Counter", actorId: "one", metadata: { tenantId: 1, role: "admin" } })
         function authorize(value: ActorAuthorization) {
             if (value.actorType === "Room") value.metadata.userId.toUpperCase()
             else value.metadata.tenantId.toFixed()
         }
-        const client = ActorClient({ endpoint: "/api/socket" })
+        const client = ActorClient()
         client.Room.get("lobby").send({ type: "post", text: "hello" })
         client.Counter.get("one").send(1)
         // @ts-expect-error unknown actor
@@ -84,16 +83,11 @@ test("generates an actor-specific proxy from backend metadata types", async t =>
     }
     const options = { controlPlaneUrl: "https://actors.example.com", apiKey: "secret" }
     const proxy = new ActorProxy(options, { fetch })
-    const request = (actorType: string) =>
-        new Request("https://app.example.com/socket", {
-            method: "POST",
-            body: JSON.stringify({ actorType, actorId: "one" })
-        })
     for (const authorization of [
         { actorType: "Room", actorId: "one", metadata: { userId: "alice" } },
         { actorType: "Counter", actorId: "one", metadata: { tenantId: 1, role: "editor" } }
     ])
-        assert.equal((await proxy.handle(request(authorization.actorType), authorization)).status, 200)
+        assert.equal((await proxy.handle(authorization)).key, "ticket")
     assert.deepEqual(
         requests.map(request => request.metadata),
         [{ userId: "alice" }, { tenantId: 1, role: "editor" }]
@@ -107,7 +101,7 @@ test("generates an actor-specific proxy from backend metadata types", async t =>
         { actorType: "Missing", actorId: "one", metadata: {} },
         { actorType: "toString", actorId: "one", metadata: {} }
     ])
-        await assert.rejects(proxy.handle(request(authorization.actorType), authorization), /metadata|actor type/i)
+        await assert.rejects(proxy.handle(authorization), /metadata|actor type/i)
     assert.equal(requests.length, 2, "invalid authorization must fail before issuing a ticket")
     t.mock.method(globalThis, "fetch", fetch)
     const original = { url: process.env.DURABLE_OBJECT_CONTROL_PLANE_URL, key: process.env.DURABLE_OBJECT_API_KEY }
@@ -123,9 +117,8 @@ test("generates an actor-specific proxy from backend metadata types", async t =>
     process.env.DURABLE_OBJECT_CONTROL_PLANE_URL = options.controlPlaneUrl
     process.env.DURABLE_OBJECT_API_KEY = options.apiKey
     assert.equal(
-        (await ActorProxy.handle(request("Room"), { actorType: "Room", actorId: "one", metadata: { userId: "alice" } }))
-            .status,
-        200
+        (await ActorProxy.handle({ actorType: "Room", actorId: "one", metadata: { userId: "alice" } })).key,
+        "ticket"
     )
 })
 
@@ -254,7 +247,7 @@ test("generates loose browser source and standalone validators without server im
         await writeFile(
             consumer,
             `import { ActorClient } from "./index.js"
-            const room = ActorClient({endpoint:"/api/socket"}).Room.get("lobby")
+            const room = ActorClient().Room.get("lobby")
             room.send({amount: 1})
             room.subscribe("count", value => value.toFixed())
             room.on("message", value => value.toUpperCase())

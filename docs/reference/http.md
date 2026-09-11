@@ -187,7 +187,7 @@ Connect with WebSocket subprotocol `little-actors.v1`. Within 10 seconds, send `
 
 After successful `onConnect` and persistence, the server sends `{"type":"state","state":{...},"version":1}` containing public persisted fields, then `{"type":"ready","protocol":1,"connectionId":"...","expiresInMs":900000}`. Explicit actor messages may also arrive before readiness. Application traffic uses `{"type":"message","data":...}` in both directions. Automatic changes use `{"type":"state_update","changes":{...},"removed":[],"version":2}` and contain changed `@Emittable` fields only.
 
-Renew by obtaining a fresh ticket with the current `connectionId` and sending `{"type":"renew","key":"<renewal-ticket>"}` on the existing connection. The acknowledgment is `{"type":"renewed","expiresInMs":900000}`. Lifetimes are relative milliseconds. Renewal verifies the actor and connection binding. Unchanged authorized metadata preserves actor-modified metadata and tags; changed metadata closes with `4409`, causing the SDK to reconnect and rerun `onConnect`.
+Renew by obtaining a fresh ticket and sending `{"type":"renew","key":"<signed-ticket>"}` on the existing connection. The acknowledgment is `{"type":"renewed","expiresInMs":900000}`. Lifetimes are relative milliseconds. Renewal requires the same actor and, if the ticket specifies a `connectionId`, the same connection. Unchanged authorized metadata preserves actor-modified metadata and tags; changed metadata closes with `4409`, causing the SDK to reconnect and rerun `onConnect`.
 
 Expiry is enforced while idle, receiving messages, and running handlers. Reconnect fetches a new ticket and initial snapshot. Live events have no replay, and the SDK never resends application messages.
 

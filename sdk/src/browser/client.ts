@@ -8,7 +8,7 @@ type ConnectionOf<Descriptor> =
 
 function createClient<Actors extends Record<string, ActorDescriptor<any, any, any, any>>>(
     actors: Actors,
-    options: ClientOptions,
+    options: ClientOptions = {},
     dependencies: ClientDependencies = {}
 ) {
     return Object.fromEntries(

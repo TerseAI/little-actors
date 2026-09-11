@@ -109,10 +109,10 @@ await build({{entryPoints:[directory + '/generated/proxy.ts'],outfile:directory 
 const {{ ActorClient }} = await import(directory + '/browser.mjs');
 const {{ ActorProxy }} = await import(directory + '/proxy.mjs');
 let authorizations = 0;
-const client = ActorClient({{ endpoint:'http://application.test/socket', fetch: async (url, init) => {{
+const client = ActorClient({{ fetch: async () => {{
     authorizations++;
-    return ActorProxy.handle(new Request(url, init), {{actorType:'Counter',actorId:'counter-1',metadata:{{user:'one'}},authorizationLifetimeMs:1000}},
-        {{controlPlaneUrl:{gateway},apiKey:'test-api-key',namespaceId:'project-1'}});
+    return Response.json(await ActorProxy.handle({{actorType:'Counter',actorId:'counter-1',metadata:{{user:'one'}},authorizationLifetimeMs:1000}},
+        {{controlPlaneUrl:{gateway},apiKey:'test-api-key',namespaceId:'project-1'}}));
 }} }});
 const room = client.Counter.get('counter-1');
 const values = [];

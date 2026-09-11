@@ -18,6 +18,10 @@ npx little-actors init chat-example
 
 The command copies the template and prints setup instructions. Its dependencies include the same SDK version as the CLI. In an existing application, install `little-actors` and follow the actor setup below.
 
+For Vercel AI SDK with durable chat history, use `npx little-actors init ai-chat-example --template ai-chat`. The [AI chat example](https://github.com/TerseAI/little-actors/tree/main/examples/ai-chat) uses `useChat`, HTTP streaming, and backend actor calls; it needs an OpenAI API key and no generated clients.
+
+For a collaborative Tiptap editor, use `npx little-actors init documents-example --template documents`. The [documents example](https://github.com/TerseAI/little-actors/tree/main/examples/documents) uses Yjs, generated WebSocket clients, and one durable actor per document.
+
 Export actors from `src/durable-objects.ts`. Annotate every instance field with `@Persisted` or `@Ephemeral`, imported from `little-actors`. Persisted values survive restarts; ephemeral caches last only while the actor instance remains resident. In your project directory:
 
 ```sh
@@ -30,7 +34,7 @@ Wait for `Local actors ready at http://127.0.0.1:7100`. Generate source once for
 npx little-actors generate
 ```
 
-The npm package installs the `little-actors` CLI. On first use, `dev` downloads and caches the matching native runtime automatically. Configure your application proxy with the `controlPlaneUrl` and `apiKey` from `.little-actors/runtime.json`, then start your frontend and application backend with their usual tooling. State survives restarts in `.little-actors/`; refresh the proxy credentials after restarting `dev`.
+The npm package installs the `little-actors` CLI. On first use, `dev` downloads and caches the matching native runtime automatically. `ActorProxy` reads `.little-actors/runtime.json` automatically, including fresh credentials after a restart. Start your frontend and application backend with their usual tooling. State survives restarts in `.little-actors/`.
 
 `little-actors dev --help` lists options. There is no CLI client runner; browser applications use the generated WebSocket SDK below.
 
@@ -105,22 +109,25 @@ export async function POST(request: Request) {
     const user = await requireUser(request) // Your application's authentication.
     const roomId = "lobby"
     await requireRoomAccess(user, roomId) // Runs on every connection and renewal.
-    return ActorProxy.handle(request, {
+    const grant = await ActorProxy.handle({
         actorType: "ChatRoom",
         actorId: roomId,
         metadata: { userId: user.id }
     })
+    return Response.json(grant, { headers: { "cache-control": "no-store" } })
 }
 ```
 
-The generated proxy restricts `actorType` to your actors and types `metadata` for the selected actor. Invalid metadata fails at runtime before ticket issuance, too. `ActorProxy.handle(request, authorization)` reads backend settings from `DURABLE_OBJECT_CONTROL_PLANE_URL`, `DURABLE_OBJECT_API_KEY`, and optional `DURABLE_OBJECT_NAMESPACE_ID`. Pass an optional third argument with `controlPlaneUrl`, `apiKey`, and `namespaceId` to override them. For a configured instance or an injected transport, use `new ActorProxy(options, { fetch })`; its `handle()` method has the same actor-specific types.
+The generated proxy restricts `actorType` to your actors and types `metadata` for the selected actor. Invalid metadata fails before ticket issuance. `ActorProxy.handle(authorization)` returns `{ websocketUrl, key }`; it constructs the control-plane request internally and throws if authorization fails. Return the result as JSON with `Cache-Control: no-store`.
 
-The frontend only knows your endpoint:
+With no configuration, the proxy reads `.little-actors/runtime.json` from the working directory. Set `DURABLE_OBJECT_CONTROL_PLANE_URL`, `DURABLE_OBJECT_API_KEY`, and optional `DURABLE_OBJECT_NAMESPACE_ID` for a remote server. The URL defaults to `http://127.0.0.1:7100` when no local runtime URL is available. An explicit URL or API key skips local-file credentials. An optional second argument overrides these settings. For a configured instance or an injected transport, use `new ActorProxy(options, { fetch })`; its `handle(authorization)` method has the same actor-specific types.
+
+The frontend uses the default application route:
 
 ```ts
 import { ActorClient } from "./generated/index.js"
 
-const client = ActorClient({ endpoint: "/api/socket" })
+const client = ActorClient()
 const room = client.ChatRoom.get("lobby")
 const unsubscribe = room.subscribe("messages", messages => renderMessages(messages))
 room.on("error", error => console.error(error.message))
@@ -131,6 +138,8 @@ room.send({ type: "post", text: "Hello" })
 unsubscribe()
 room.close()
 ```
+
+`ActorClient()` posts to `/api/socket/{actorType}/{actorId}` on the current origin without a request body. Mount your application handler at that route; it authenticates the user and supplies the actor and metadata to `ActorProxy`. Override the route with `ActorClient({ endpoint })`, where `endpoint` is a URL or a function of `{ actorType, actorId }`.
 
 Use `room.on("message", handler)` for explicit actor messages. `room.state` holds the latest snapshot; `subscribe` immediately supplies a cached field value to late listeners. Reconnect supplies a fresh snapshot. `room.on("status", handler)` observes `idle`, `connecting`, `open`, `reconnecting`, `closed`, and `error`.
 

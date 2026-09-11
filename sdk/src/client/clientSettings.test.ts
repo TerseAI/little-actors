@@ -27,6 +27,18 @@ test("environment and explicit client settings normalize routes, tokens, and gat
             metadata: {}
         }
         assert.deepEqual(connections, [expected, expected])
+        if (socketGatewayUrl === undefined) {
+            await new RemoteActorClient(undefined, {
+                ...dependencies,
+                environment: {},
+                readLocalSettings: () => ({
+                    apiKey: "token",
+                    namespaceId: "project-1",
+                    controlPlaneUrl: options.controlPlaneUrl
+                })
+            }).connect("Counter", "one", {})
+            assert.deepEqual(connections, [expected, expected, expected])
+        }
     }
 })
 

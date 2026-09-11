@@ -21,14 +21,12 @@ test("proxy issues socket authorization using only server-selected target and me
             }
         }
     )
-    const response = await proxy.handle(request({ actorType: "Room", actorId: "lobby", connectionId: "connection" }), {
+    const grant = await proxy.handle({
         actorType: "Room",
         actorId: "lobby",
         metadata: { userId: "trusted" }
     })
-    assert.equal(response.status, 200)
-    assert.equal(response.headers.get("cache-control"), "no-store")
-    assert.deepEqual(await response.json(), {
+    assert.deepEqual(grant, {
         websocketUrl: "wss://actors.example.com/v1/socket",
         key: "socket-ticket"
     })
@@ -36,42 +34,22 @@ test("proxy issues socket authorization using only server-selected target and me
     assert.equal(requests[0]!.url, "https://actors.example.com/v1/actors/Room/lobby/socket-ticket")
     assert.deepEqual(requests[0]!.body, {
         metadata: { userId: "trusted" },
-        connectionId: "connection",
         authorizationLifetimeMs: 900000
     })
-    const mismatch = await proxy.handle(request({ actorType: "Room", actorId: "other" }), {
-        actorType: "Room",
-        actorId: "lobby",
-        metadata: {}
-    })
-    assert.equal(mismatch.status, 403)
     assert.equal(requests.length, 1)
 })
 
-test("proxy rejects client-supplied metadata and never falls back to a session credential", async () => {
+test("proxy validates metadata and requires a backend API key", async () => {
     const proxy = new SocketProxy(
-        actors,
+        { Room: { metadata: (value: unknown) => typeof value === "string" } },
         { controlPlaneUrl: "https://actors.example.com", apiKey: "secret" },
         {
             fetch: async () => assert.fail("invalid request reached issuance")
         }
     )
-    const response = await proxy.handle(request({ actorType: "Room", actorId: "lobby", metadata: { role: "admin" } }), {
-        actorType: "Room",
-        actorId: "lobby",
-        metadata: {}
-    })
-    assert.equal(response.status, 400)
+    await assert.rejects(proxy.handle({ actorType: "Room", actorId: "lobby", metadata: {} }), /metadata/)
     assert.throws(
         () => new SocketProxy(actors, { controlPlaneUrl: "https://actors.example.com", apiKey: "" }),
         /API key/
     )
 })
-
-function request(body: unknown): Request {
-    return new Request("https://app.example.com/api/actors", {
-        method: "POST",
-        body: JSON.stringify(body),
-        headers: { "content-type": "application/json" }
-    })
-}

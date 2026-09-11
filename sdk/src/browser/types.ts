@@ -18,7 +18,7 @@ interface ActorTarget {
 }
 
 interface ClientOptions {
-    readonly endpoint: string | ((actor: ActorTarget) => string)
+    readonly endpoint?: string | ((actor: ActorTarget) => string)
     readonly fetch?: typeof globalThis.fetch
 }
 
