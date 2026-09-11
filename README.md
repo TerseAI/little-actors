@@ -2,7 +2,7 @@
 
 little-actors is a lightweight framework for durable actors, powered by Rust.
 
-Actors are TypeScript classes that keep their state.
+Durable Actors are TypeScript classes that preserve their own state.
 
 ## Define an Actor
 
@@ -26,8 +26,7 @@ type ChatMessage = { name: string; text: string }
 ## Complete Tutorial - Chat App with Actors +
 
 ```sh
-npx little-actors init chat-example
-cd chat-example
+npx little-actors init chat-example && cd chat-example
 npm install
 npx little-actors generate
 npx little-actors dev
@@ -43,7 +42,7 @@ In another terminal, run the web app from `chat-example`:
 npm run dev
 ```
 
-Open **http://127.0.0.1:3000** and choose a name. Open a private window to chat with a second user.
+Open **[http://127.0.0.1:3000](http://127.0.0.1:3000)** and choose a name. Open a private window to chat with a second user.
 
 ## Host it yourself
 
