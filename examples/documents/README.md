@@ -4,8 +4,6 @@ A small Tiptap editor with Yjs for concurrent edits and durable actors for saved
 
 ## Run it
 
-With Node.js 22.19+:
-
 ```sh
 npx little-actors init documents-example --template documents
 cd documents-example

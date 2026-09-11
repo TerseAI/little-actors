@@ -4,8 +4,6 @@ Vercel AI SDK streams replies; a durable actor stores the conversation.
 
 ## Run it
 
-With Node.js 22.19+:
-
 ```sh
 npx little-actors init ai-chat-example --template ai-chat
 cd ai-chat-example

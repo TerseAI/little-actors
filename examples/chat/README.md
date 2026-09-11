@@ -4,8 +4,6 @@ The sample bundled with `little-actors init`.
 
 ## Run it
 
-From this directory, with Node.js 22.19+:
-
 ```sh
 npm install
 npx little-actors generate
