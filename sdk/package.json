@@ -31,7 +31,7 @@
     "main": "dist/index.js",
     "types": "dist/index.d.ts",
     "bin": {
-        "lac": "dist/cli.js"
+        "little-actors": "dist/cli.js"
     },
     "exports": {
         "./proxy": {
@@ -61,7 +61,7 @@
         "LICENSE.md"
     ],
     "scripts": {
-        "build": "pnpm run generate:proto && tsc -p tsconfig.build.json && cp ../proto/durable_object.proto dist/generated/durable_object.proto",
+        "build": "pnpm run generate:proto && tsc -p tsconfig.build.json && cp ../proto/durable_object.proto dist/generated/durable_object.proto && node scripts/build-template.mjs",
         "generate:proto": "proto-loader-gen-types --longs=Number --defaults --oneofs --grpcLib=@grpc/grpc-js --importFileExtension=.js --outDir=src/generated ../proto/durable_object.proto",
         "check": "pnpm run format:check && pnpm run test && pnpm run package:check",
         "clean": "rm -rf dist .test-dist",

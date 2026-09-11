@@ -65,10 +65,11 @@ jobs:
             - run: pnpm install --frozen-lockfile
             - run: pnpm --dir sdk build
             - run: cargo build --locked
-            - name: Test the local tutorial without cloud services
-              env:
-                  DURABLE_OBJECT_TEST_BINARY: ${{ github.workspace }}/target/debug/little-actors
-              run: node --test scripts/local-runtime.test.mjs
+            - name: Check the Express and React example
+              working-directory: examples/chat
+              run: |
+                  npx --no-install little-actors generate
+                  npm run build
 
     npm:
         name: TypeScript package

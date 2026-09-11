@@ -96,7 +96,7 @@ pub async fn serve_local(
     let ready = publish_connection(&directory, &origin, &api_key, &storage.region);
     if ready.is_ok() {
         println!(
-            "Local actors ready at {origin}\nState: {}\nGenerate a browser SDK: npx lac generate\nRestart this command after changing actor code.",
+            "Local actors ready at {origin}\nState: {}\nGenerate a browser SDK: npx little-actors generate\nRestart this command after changing actor code.",
             directory.display()
         );
         if matches!(options.storage, DevStorage::Local) {

@@ -6,26 +6,33 @@ Named actors with serial method calls and saved state. Requires Node.js 20+.
 npm install little-actors
 ```
 
-Start with the [browser chat tutorial](https://github.com/TerseAI/little-actors#browser-chat-demo): an authenticated proxy, typed WebSocket subscriptions, and history that survives restarts. It includes complete files and expected output.
+Start with the [quickstart](https://github.com/TerseAI/little-actors#quickstart) to create and run the Express + React chat app.
 
 ## Local CLI
+
+Create the bundled chat app in a new directory:
+
+```sh
+npx little-actors init chat-example
+```
+
+The command copies the template and prints setup instructions. Its dependencies include the same SDK version as the CLI. In an existing application, install `little-actors` and follow the actor setup below.
 
 Export actors from `src/durable-objects.ts`. Annotate every instance field with `@Persisted` or `@Ephemeral`, imported from `little-actors`. Persisted values survive restarts; ephemeral caches last only while the actor instance remains resident. In your project directory:
 
 ```sh
-npx lac dev
+npx little-actors dev
 ```
 
-Wait for `Local actors ready at http://127.0.0.1:7100`. Generate source for your backend and web app:
+Wait for `Local actors ready at http://127.0.0.1:7100`. Generate source once for your backend and web app:
 
 ```sh
-npx lac generate src/durable-objects.ts --out-dir src/generated/actors
-npx lac generate src/durable-objects.ts --out-dir ../web/src/generated/actors
+npx little-actors generate
 ```
 
-The package installs the `lac` CLI. Configure your application proxy with the `controlPlaneUrl` and `apiKey` from `.little-actors/runtime.json`, then start your frontend and application backend with their usual tooling. State survives restarts in `.little-actors/`; refresh the proxy credentials after restarting `dev`.
+The npm package installs the `little-actors` CLI. On first use, `dev` downloads and caches the matching native runtime automatically. Configure your application proxy with the `controlPlaneUrl` and `apiKey` from `.little-actors/runtime.json`, then start your frontend and application backend with their usual tooling. State survives restarts in `.little-actors/`; refresh the proxy credentials after restarting `dev`.
 
-`lac dev --help` lists options. There is no CLI client runner; browser applications use the generated WebSocket SDK below.
+`little-actors dev --help` lists options. There is no CLI client runner; browser applications use the generated WebSocket SDK below.
 
 ## Hosted backends
 
@@ -67,11 +74,10 @@ WebSockets use the control-plane URL unless `DURABLE_OBJECT_SOCKET_GATEWAY_URL` 
 Generate a browser client and backend proxy from your actor entrypoint:
 
 ```sh
-npx lac generate src/durable-objects.ts --out-dir src/generated/actors
-npx lac generate src/durable-objects.ts --out-dir web/src/generated/actors
+npx little-actors generate
 ```
 
-This writes TypeScript source, standalone runtime validators, and `contracts.json` for future language generators. The frontend imports `ActorClient` from the generated `index.ts`, which uses `little-actors/browser`. The backend imports `ActorProxy` from the generated `proxy.ts`, which uses `little-actors/proxy`. Neither entrypoint imports the actor implementation, and the browser entrypoint excludes the proxy. Install `little-actors` in both projects and regenerate both copies when the actor contract changes. Compatible added fields are accepted at runtime.
+This writes TypeScript source and standalone runtime validators. The frontend imports `ActorClient` from the generated `index.ts`, which uses `little-actors/browser`. The backend imports `ActorProxy` from the generated `proxy.ts`, which uses `little-actors/proxy`. Neither entrypoint imports the actor implementation, and the browser entrypoint excludes the proxy. Share this directory between your frontend and backend, or copy the generated files into separate projects. Regenerate when the actor contract changes. Compatible added fields are accepted at runtime.
 
 Stack `@Emittable` with `@Persisted` to publish a field's final value after each successful operation commits:
 
@@ -93,7 +99,7 @@ export class ChatRoom extends Actor<{ userId: string }, { type: "post"; text: st
 Your backend authenticates the user and checks access before calling the proxy helper:
 
 ```ts
-import { ActorProxy } from "./generated/actors/proxy.js"
+import { ActorProxy } from "./generated/proxy.js"
 
 export async function POST(request: Request) {
     const user = await requireUser(request) // Your application's authentication.
@@ -112,7 +118,7 @@ The generated proxy restricts `actorType` to your actors and types `metadata` fo
 The frontend only knows your endpoint:
 
 ```ts
-import { ActorClient } from "./generated/actors/index.js"
+import { ActorClient } from "./generated/index.js"
 
 const client = ActorClient({ endpoint: "/api/socket" })
 const room = client.ChatRoom.get("lobby")
@@ -137,7 +143,7 @@ Network failures use bounded exponential backoff with jitter. HTTP 401/403, prot
 - [CLI reference](https://github.com/TerseAI/little-actors/blob/main/docs/reference/cli.md): commands, options, and environment variables.
 - [TypeScript API reference](https://github.com/TerseAI/little-actors/blob/main/docs/reference/api.md): actors, methods, connections, types, and errors.
 - [HTTP and WebSocket reference](https://github.com/TerseAI/little-actors/blob/main/docs/reference/http.md): deployments, backend access, connections, and callbacks.
-- [Local development](https://github.com/TerseAI/little-actors/blob/main/docs/guides/local-development.md): build and link a source checkout.
+- [Local development](https://github.com/TerseAI/little-actors/blob/main/docs/guides/local-development.md): install from npm and run actors locally.
 - [Advanced access configuration](https://github.com/TerseAI/little-actors/blob/main/docs/guides/advanced-access.md).
 
 ## License

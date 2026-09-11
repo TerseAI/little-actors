@@ -249,8 +249,6 @@ test("generates loose browser source and standalone validators without server im
         assert.equal(module.incoming({ amount: "wrong" }), false)
         assert.equal(module.state({}), false)
         assert.equal(module.outgoing("hello"), true)
-        const manifest = JSON.parse(await readFile(path.join(directory, "contracts.json"), "utf8"))
-        assert.equal(manifest.actors[0].actorType, "Room")
         assert.match(await readFile(path.join(directory, "index.ts"), "utf8"), /ActorClient/)
         const consumer = path.join(directory, "consumer.ts")
         await writeFile(

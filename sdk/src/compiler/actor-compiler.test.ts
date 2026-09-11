@@ -52,7 +52,7 @@ test("validates actors without writing files", async () => {
     }
 })
 
-test("compiles a portable socket contract without importing actor implementation", async () => {
+test("compiles socket validation schemas without importing actor implementation", async () => {
     const root = await createProject()
     try {
         const entrypoint = path.join(root, "src/actors.ts")

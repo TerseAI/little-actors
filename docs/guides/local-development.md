@@ -1,60 +1,49 @@
 # Local development
 
-Run the [chat tutorial](../../README.md#browser-chat-demo) from a source checkout without installing a published package or deploying a server. The SDK and runtime come from the same checkout.
+Run actors locally using the published npm package. For a complete application, start with `little-actors init` in the [Express + React chat tutorial](../../README.md#quickstart). The steps below cover adding actors to an existing application.
 
-## Build the SDK and runtime
+## Install the package
 
-Requires Node.js 20+, pnpm, and Rust 1.89+. From the repository root, install dependencies and build the SDK and local runtime:
-
-```sh
-pnpm install
-pnpm --dir sdk build
-cargo build --locked
-```
-
-## Link the package
-
-In a separate demo directory:
+With Node.js 22.19+, install the SDK in your application directory:
 
 ```sh
-mkdir chat-example
-cd chat-example
-npm init -y
-npm pkg set type=module
-npm link /absolute/path/to/little-actors/sdk
-mkdir src
+npm install little-actors
 ```
 
-Link the repository's `sdk/` directory, which contains the package and CLI. The repository root is a private workspace, not the installable SDK. `npm link` creates a local package link; it does not publish anything.
+The package includes the `little-actors` CLI and TypeScript actor execution support. `little-actors dev` downloads a matching native runtime on first use and caches it for later runs. You do not need Rust or a manually configured binary path.
 
-## Connect the browser demo
+## Define actors and generate clients
 
-Create the backend actor and web application code from the [chat tutorial](../../README.md#browser-chat-demo), then start the server from the demo directory:
+Export your actor classes from `src/durable-objects.ts`, as shown in the [quickstart](../../README.md#quickstart). Generate the frontend client and backend proxy together:
 
 ```sh
-DURABLE_OBJECT_BINARY=/absolute/path/to/little-actors/target/debug/little-actors \
-  npx --no-install lac dev
+npx little-actors generate
 ```
 
-The binary override is needed for `dev`: linking the JavaScript package alone does not select a locally built runtime. `--no-install` keeps `npx` from installing a package if the link is missing.
+Both sides use this output: the frontend imports `ActorClient` from `generated/index.ts`, and the backend imports `ActorProxy` from `generated/proxy.ts`.
 
-After the ready message, generate the client and proxy into their projects:
+## Start the actor server
 
 ```sh
-npx --no-install lac generate src/durable-objects.ts --out-dir src/generated/actors
-npx --no-install lac generate src/durable-objects.ts --out-dir ../web/src/generated/actors
+npx little-actors dev
 ```
 
-Configure the application proxy using the backend URL and API key from `.little-actors/runtime.json`. Add the authenticated proxy route and browser UI from the [main-page demo](../../README.md#browser-chat-demo), then start the web app with its normal development server. Open two signed-in browser sessions to try chat.
+Wait for `Local actors ready at http://127.0.0.1:7100`. State is saved in `.little-actors/` and survives restarts.
 
-The frontend never imports the actor implementation. Generated SDK requests go to your proxy for credentials, and socket messages go directly to the actor gateway. `generate` and `token` do not need `DURABLE_OBJECT_BINARY`.
+## Connect your application
 
-## Rebuild after changes
+Configure your backend proxy with the `controlPlaneUrl` and `apiKey` from `.little-actors/runtime.json`. Your backend authenticates users and supplies their metadata to `ActorProxy.handle()`. The frontend's `ActorClient` points to that backend endpoint.
 
-Rebuild with `pnpm --dir sdk build` after SDK or CLI changes, and with `cargo build --locked` after runtime changes. Restart `dev` after actor changes. The link continues to use the rebuilt package.
+Start your frontend and application backend with their usual tooling, keeping `little-actors dev` running. The [chat example](../../examples/chat/README.md#run-it) starts Express and React with `npm run dev` and reads the local runtime settings automatically.
+
+The frontend never imports the actor implementation. Generated SDK requests go to your proxy for credentials, and socket messages go directly to the actor gateway.
+
+## Update after changes
+
+Restart `little-actors dev` after changing actor code. Regenerate the shared SDK when the actor contract changes. Local credentials refresh at startup, so your backend must read the current runtime settings after each restart.
 
 ## Troubleshooting
 
-If the CLI is missing, check that you linked the repository's `sdk/` directory and ran `pnpm --dir sdk build`. If it tries to download a release, set `DURABLE_OBJECT_BINARY` on the `dev` command to the executable you built.
+If the CLI is missing, run `npm install little-actors` in your application directory before invoking `npx little-actors`. The first actor-server startup needs network access to download the runtime; later runs reuse the cached version.
 
 For server startup, storage, and client connection issues, see the [CLI troubleshooting guide](../reference/cli.md#troubleshooting).

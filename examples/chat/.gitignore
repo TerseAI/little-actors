@@ -1,0 +1,7 @@
+node_modules/
+dist/
+generated/
+.little-actors/
+.env
+.env.*
+!.env.example

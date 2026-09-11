@@ -7,14 +7,18 @@ async function checkPackage() {
     if (metadata.name !== "little-actors") throw new Error("unexpected package name")
     if (metadata.license !== "MIT") throw new Error("package license must be MIT")
     for (const entry of Object.values(metadata.exports)) await checkExport(entry)
-    const cli = metadata.bin?.lac
+    const cli = metadata.bin?.["little-actors"]
     if (
-        Object.keys(metadata.bin ?? {}).join() !== "lac" ||
+        Object.keys(metadata.bin ?? {}).join() !== "little-actors" ||
         !cli ||
         !(await readFile(cli, "utf8")).startsWith("#!/usr/bin/env node\n")
     )
-        throw new Error("package must expose lac as its executable CLI")
+        throw new Error("package must expose little-actors as its executable CLI")
     await access("dist/generated/durable_object.proto")
+    const template = JSON.parse(await readFile("dist/templates/chat/package.json", "utf8"))
+    if (template.dependencies["little-actors"] !== metadata.version)
+        throw new Error("chat template must use the packaged SDK version")
+    await access("dist/templates/chat/gitignore")
     await import("../dist/client/actorHostGrpc.js")
     await Promise.all(metadata.files.filter(path => !path.includes("dist")).map(path => access(path)))
 }

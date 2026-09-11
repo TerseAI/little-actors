@@ -1,6 +1,6 @@
 # TypeScript API reference
 
-This page documents the public exports of `little-actors`. Requires Node.js 20+ and an ES module project. For a working application, see the [chat tutorial](../../README.md#browser-chat-demo).
+This page documents the public exports of `little-actors`. Requires Node.js 20+ and an ES module project. For a working application, see the [chat tutorial](../../examples/chat/README.md).
 
 - [Actor](#actor)
 - [Actor references](#actor-references)
@@ -49,6 +49,8 @@ Actor<Metadata = JsonValue, Incoming = JsonValue, Outgoing = Incoming, Tag exten
 ```
 
 Declare socket types once on the base class: `class ChatRoom extends Actor<ChatroomMetadata>`. The first parameter types `connect()` metadata, hook sockets, and `this.connections`. The remaining parameters type incoming messages, outgoing messages, and connection tags. Outgoing messages default to the incoming type.
+
+Use `never` for a message type with no possible values: `Actor<Member, ClientEvent, never>` has no outgoing application events. Automatic state subscriptions still work.
 
 For runtime validation, install `zod@^4` and declare static schemas. Derive types with `z.infer` so schemas and TypeScript share one definition:
 
@@ -199,7 +201,7 @@ Optional lifecycle hook called for incoming application messages. The runtime pa
 
 **Returns:** `Promise<void>`. Successful state changes are saved.
 
-The [chat tutorial](../../README.md#2-define-the-backend-actor) shows a complete implementation that saves and broadcasts each message.
+The [chat tutorial](../../examples/chat/src/durable-objects.ts) shows a complete implementation that saves and broadcasts each message.
 
 ### Actor.onDisconnect
 
@@ -742,7 +744,7 @@ export DURABLE_OBJECT_API_KEY='<your-api-key>'
 export DURABLE_OBJECT_CONTROL_PLANE_URL='https://objects.example.com'
 ```
 
-For local development, use `controlPlaneUrl` and `apiKey` from the running actor server's `.little-actors/runtime.json`. Keep these settings in trusted backend processes. Browser applications use a generated SDK and an authenticated proxy; see the [browser demo](../../README.md#browser-chat-demo).
+For local development, use `controlPlaneUrl` and `apiKey` from the running actor server's `.little-actors/runtime.json`. Keep these settings in trusted backend processes. Browser applications use a generated SDK and an authenticated proxy; see the [browser demo](../../examples/chat/README.md).
 
 ### DURABLE_OBJECT_API_KEY
 

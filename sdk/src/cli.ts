@@ -2,7 +2,7 @@
 import { Command, InvalidArgumentError, Option } from "commander"
 import { spawn } from "node:child_process"
 import { randomUUID } from "node:crypto"
-import { readFile } from "node:fs/promises"
+import { cp, mkdir, readFile, rename, rm } from "node:fs/promises"
 import { homedir } from "node:os"
 import path from "node:path"
 
@@ -18,16 +18,20 @@ interface DevOptions {
 
 try {
     const program = new Command()
-        .name("lac")
+        .name("little-actors")
         .description("Run durable TypeScript actors locally or in the cloud")
         .version(await version())
         .enablePositionalOptions()
         .addHelpCommand(false)
         .showHelpAfterError()
     program
+        .command("init <directory>")
+        .description("Create an Express and React chat app from the bundled template")
+        .action(initializeProject)
+    program
         .command("generate [entrypoint]")
-        .description("Generate typed browser clients, backend proxies, and a portable socket contract")
-        .option("--out-dir <directory>", "generated source directory", "generated/actors")
+        .description("Generate typed browser clients and backend proxies")
+        .option("--out-dir <directory>", "generated source directory", "generated")
         .option("--config <file>", "TypeScript configuration file")
         .action(async (entrypoint: string | undefined, options: { outDir: string; config?: string }) => {
             const { ActorCompiler } = await import("./compiler/actor-compiler.js")
@@ -74,6 +78,36 @@ try {
 } catch (error) {
     console.error(error instanceof Error ? error.message : String(error))
     process.exitCode = 1
+}
+
+async function initializeProject(directory: string): Promise<void> {
+    const destination = path.resolve(directory)
+    await mkdir(destination).catch((error: NodeJS.ErrnoException) => {
+        if (error.code === "EEXIST") throw new Error(`${destination} already exists. Choose a new directory.`)
+        throw error
+    })
+    try {
+        await cp(new URL("./templates/chat/", import.meta.url), destination, {
+            recursive: true,
+            force: false,
+            errorOnExist: true
+        })
+        await rename(path.join(destination, "gitignore"), path.join(destination, ".gitignore"))
+    } catch (error) {
+        await rm(destination, { recursive: true, force: true })
+        throw error
+    }
+    console.log(`Created chat app in ${destination}.
+
+From that directory, run:
+  npm install
+  npx little-actors generate
+  npx little-actors dev
+
+In another terminal, from the same directory:
+  npm run dev
+
+Open http://127.0.0.1:3000. The README walks through the app.`)
 }
 
 function portNumber(value: string): number {
@@ -136,7 +170,7 @@ async function localSession(directory: string) {
             signal: AbortSignal.timeout(10_000)
         }
     ).catch(() => {
-        throw new Error("Cannot reach the local runtime. Start `npx lac dev` again.")
+        throw new Error("Cannot reach the local runtime. Start `npx little-actors dev` again.")
     })
     if (!response.ok)
         throw new Error(
@@ -151,7 +185,7 @@ async function localConnection(directory: string) {
         .then(JSON.parse)
         .catch(() => {
             throw new Error(
-                "No local runtime found. Start `npx lac dev` in this project first; use the same --data-dir for both commands."
+                "No local runtime found. Start `npx little-actors dev` in this project first; use the same --data-dir for both commands."
             )
         })
 }

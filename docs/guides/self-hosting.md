@@ -1,6 +1,6 @@
 # Self-hosting
 
-After the [local tutorial](../../README.md#browser-chat-demo), use this guide to deploy with Modal and GCS.
+After the [local tutorial](../../examples/chat/README.md), use this guide to deploy with Modal and GCS.
 
 Recommended setup:
 
@@ -170,7 +170,7 @@ export DURABLE_OBJECT_API_KEY='<the-api-key-from-step-1>'
 export DURABLE_OBJECT_CONTROL_PLANE_URL='https://objects.example.com'
 ```
 
-Use the generated `ActorProxy` in the authenticated route from the [browser chat demo](../../README.md#5-authorize-connections-in-your-application). Generate the client and proxy from the deployed actor source with `lac generate`, and point the frontend client at that application route.
+Use the generated `ActorProxy` in the authenticated route from the [browser chat demo](../../examples/chat/src/backend.ts). Generate the client and proxy from the deployed actor source with `little-actors generate`, and point the frontend client at that application route.
 
 Start the web app with its normal tooling and open two signed-in browser sessions. A message in either session updates both histories after persistence. Reloading a page supplies the current snapshot. Hosted state is separate from local demo state.
 
@@ -184,10 +184,10 @@ To save snapshots in GCS while running actors locally:
 export DURABLE_OBJECT_STANDARD_BUCKETS='{"north-america-east":"my-actor-state-bucket"}'
 export GOOGLE_APPLICATION_CREDENTIALS='/absolute/path/to/service-account.json'
 
-npx lac dev --storage gcs --data-dir .gcs-demo
+npx little-actors dev --storage gcs --data-dir .gcs-demo
 ```
 
-Generate the [browser demo](../../README.md#browser-chat-demo) SDK, point its authenticated proxy at the local server using `.gcs-demo/runtime.json`, and start your web app normally. Send a message and reload the page to see the saved conversation.
+Generate the [browser demo](../../examples/chat/README.md) SDK, point its authenticated proxy at the local server using `.gcs-demo/runtime.json`, and start your web app normally. Send a message and reload the page to see the saved conversation.
 
 Changing backends or buckets requires a separate state directory; existing actors are not migrated. References remain in SQLite, so losing that file still loses access to your actors. Use backed-up PostgreSQL for production.
 
@@ -195,7 +195,7 @@ Changing backends or buckets requires a separate state directory; existing actor
 
 WebSockets use the control-plane origin by default. For a separate gateway, set `DURABLE_OBJECT_SOCKET_GATEWAY_URL` for clients and `socketGatewayUrl` in the deployment.
 
-For browser clients, generate the typed client and proxy with `lac generate`. Expose an application endpoint that authenticates the user and checks access, then calls `ActorProxy.handle()` from the generated `proxy.ts`. Keep `DURABLE_OBJECT_API_KEY` on that backend. The helper obtains an actor-scoped ticket from the control plane, and the browser SDK connects directly to the gateway.
+For browser clients, generate the typed client and proxy with `little-actors generate`. Expose an application endpoint that authenticates the user and checks access, then calls `ActorProxy.handle()` from the generated `proxy.ts`. Keep `DURABLE_OBJECT_API_KEY` on that backend. The helper obtains an actor-scoped ticket from the control plane, and the browser SDK connects directly to the gateway.
 
 Connection and renewal use the same application endpoint. The SDK renews authorization over the existing socket; unchanged authorized metadata preserves actor-modified metadata and tags. Changed metadata reconnects through `onConnect`. The gateway enforces expiration even while idle or running a handler.
 

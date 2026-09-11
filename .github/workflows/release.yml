@@ -177,11 +177,14 @@ jobs:
               run: pnpm build
             - name: Pack SDK for the tutorial test
               run: pnpm --dir sdk pack --pack-destination ../.artifacts
-            - name: Test the packaged local runtime
+            - name: Check the packaged SDK and native bundle
               env:
-                  DURABLE_OBJECT_TEST_BINARY: ${{ github.workspace }}/target/release/little-actors
                   DURABLE_OBJECT_TEST_PACKAGE: ${{ github.workspace }}/.artifacts/little-actors-${{ needs.preflight.outputs.version }}.tgz
-              run: node --test scripts/build-runtime.test.mjs scripts/local-runtime.test.mjs
+              run: |
+                  node --test scripts/build-runtime.test.mjs
+                  pnpm --dir examples/chat add --ignore-scripts "$DURABLE_OBJECT_TEST_PACKAGE"
+                  pnpm --dir examples/chat exec little-actors generate
+                  pnpm --dir examples/chat build
             - name: Upload native bundles and checksums
               env:
                   GH_TOKEN: ${{ github.token }}

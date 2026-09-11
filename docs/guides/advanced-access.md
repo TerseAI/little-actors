@@ -1,6 +1,6 @@
 # Advanced access configuration
 
-The [browser demo](../../README.md#browser-chat-demo) uses an authenticated application proxy. A [hosted backend](self-hosting.md) needs an API key and server URL. Use the options below when an integration needs separate actor groups or delegated access.
+The [browser demo](../../examples/chat/README.md) uses an authenticated application proxy. A [hosted backend](self-hosting.md) needs an API key and server URL. Use the options below when an integration needs separate actor groups or delegated access.
 
 ## Explicit namespaces
 
@@ -74,7 +74,7 @@ The SDK does not renew session tokens. Use the response's `expiresAtMs` and star
 With `dev` running, request a session token:
 
 ```sh
-npx lac token
+npx little-actors token
 ```
 
 For a trusted backend script, configure its credentials and launch it with your application tooling:

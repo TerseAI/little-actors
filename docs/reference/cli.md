@@ -1,9 +1,10 @@
 # Command Line Interface
 
-The `lac` command runs backend actors and generates typed browser clients and backend proxies. It is installed with the Node.js package. For a complete example, see the [chat tutorial](../../README.md#browser-chat-demo).
+The `little-actors` command creates example apps, runs backend actors, and generates typed browser clients and backend proxies. It is installed with the Node.js package. For a complete example, see the [chat tutorial](../../README.md#quickstart).
 
-These commands describe the CLI in this checkout. Follow [local development](../guides/local-development.md) to build and link a source checkout.
+Install it with `npm install little-actors`, then run `npx little-actors` from your application directory. Follow [local development](../guides/local-development.md) for setup with the npm package.
 
+- [Create a chat app](#create-a-chat-app)
 - [Find your actors](#find-your-actors)
 - [Run the development server](#run-the-development-server)
 - [Generate a client and proxy](#generate-a-client-and-proxy)
@@ -15,6 +16,16 @@ These commands describe the CLI in this checkout. Follow [local development](../
 - [Output and exit codes](#output-and-exit-codes)
 - [Troubleshooting](#troubleshooting)
 
+## Create a chat app
+
+```sh
+npx little-actors init chat-example
+```
+
+`init <directory>` creates an Express + React chat app from the template bundled in the npm package. It refuses an existing destination. The parent directory must exist. Once the package is installed, copying the template needs no network access.
+
+The app includes actor definitions, session handling, a socket authorization route, and a React interface. Its `little-actors` dependency matches the CLI version. The command prints the next steps: install dependencies, generate the client and proxy once, then start the actor server and app. It does not install dependencies or start processes itself.
+
 ## Find your actors
 
 The development server looks for `src/durable-objects.ts` in the current directory. The file must exist before startup and export named actor classes. See [actor definitions](api.md#actor) for class and export requirements.
@@ -22,15 +33,15 @@ The development server looks for `src/durable-objects.ts` in the current directo
 Select a different project or actor file with `--project` and `--entrypoint`:
 
 ```sh
-npx lac dev --project ./chat-example --entrypoint src/actors.ts
+npx little-actors dev --project ./chat-example --entrypoint src/actors.ts
 ```
 
-The entrypoint resolves relative to the project. In this example, the server loads `chat-example/src/actors.ts`. The project must have the SDK installed or linked. Source loading validates field annotations automatically; see [explicit persistence](api.md#saved-state-and-serialization).
+The entrypoint resolves relative to the project. In this example, the server loads `chat-example/src/actors.ts`. The project must have `little-actors` installed. Source loading validates field annotations automatically; see [explicit persistence](api.md#saved-state-and-serialization).
 
 ## Run the development server
 
 ```sh
-npx lac dev
+npx little-actors dev
 ```
 
 Starts a server on IPv4 loopback, loads the actor entrypoint, and registers your actors. Keep it running while using clients. Wait for the ready message before connecting:
@@ -44,7 +55,7 @@ Local mode needs no cloud credentials, database URL, bucket, or signing key. SQL
 ### dev options
 
 ```text
-lac dev [options]
+little-actors dev [options]
 ```
 
 - `--project <directory>` — Project containing the actor code and installed SDK. Defaults to `.`.
@@ -57,7 +68,7 @@ lac dev [options]
 ### Choose a port
 
 ```sh
-npx lac dev --port 7200
+npx little-actors dev --port 7200
 ```
 
 Use `--port 0` to select an available port. The ready message prints the selected origin; `token` reads it automatically from the data directory. Configure your application proxy using `.little-actors/runtime.json`.
@@ -65,7 +76,7 @@ Use `--port 0` to select an available port. The ready message prints the selecte
 ### Keep state across restarts
 
 ```sh
-npx lac dev --data-dir ./chat-state
+npx little-actors dev --data-dir ./chat-state
 ```
 
 Keep the entire data directory to preserve actors across restarts. Only one `dev` process can use it at a time. Separate projects can run with different data directories and ports.
@@ -79,7 +90,7 @@ Local storage is intended for development. Deleting the directory or losing its 
 ```sh
 export DURABLE_OBJECT_STANDARD_BUCKETS='{"north-america-east":"my-actor-state-bucket"}'
 export GOOGLE_APPLICATION_CREDENTIALS='/absolute/path/to/service-account.json'
-npx lac dev --storage gcs --data-dir .gcs-demo
+npx little-actors dev --storage gcs --data-dir .gcs-demo
 ```
 
 GCS mode uses Google Application Default Credentials and a nonempty region-to-bucket map. Bucket values are names without `gs://` or slashes. Local metadata still lives in the data directory and must be preserved.
@@ -89,17 +100,17 @@ Changing the storage backend or bucket map requires a separate data directory; s
 ## Generate a client and proxy
 
 ```sh
-npx lac generate [entrypoint] --out-dir web/src/generated/actors
+npx little-actors generate
 ```
 
-The entrypoint defaults to `src/durable-objects.ts`; output defaults to `generated/actors`. Use `--config <file>` to select a TypeScript configuration. Generation checks the actor dependency graph without executing it and fails immediately on unsupported socket or public-state types.
+The entrypoint defaults to `src/durable-objects.ts`; output defaults to `generated/`. Pass a different entrypoint as a positional argument, `--out-dir <directory>` to change the output location, or `--config <file>` to select a TypeScript configuration. Generation checks the actor dependency graph without executing it and fails immediately on unsupported socket or public-state types.
 
-Output contains TypeScript descriptors, standalone validators, `ActorClient` in `index.ts`, `ActorProxy` in `proxy.ts`, and a portable `contracts.json`. Generate or copy these source files into both projects and install `little-actors` in each. Import `index.ts` from the frontend and `proxy.ts` from the backend. The proxy restricts actor names and metadata to the original actor definitions. This does not publish a separate SDK package. Regenerate both copies when the actor contract changes. See [browser clients](../../sdk/README.md#browser-clients) for the proxy and frontend integration.
+Output contains TypeScript descriptors, standalone validators, `ActorClient` in `index.ts`, and `ActorProxy` in `proxy.ts`. Generate these source files once in a shared directory, or copy the output into separate projects. Each project needs `little-actors` installed. Import `index.ts` from the frontend and `proxy.ts` from the backend. The proxy restricts actor names and metadata to the original actor definitions. This does not publish a separate SDK package. Regenerate when the actor contract changes. See [browser clients](../../sdk/README.md#browser-clients) for the proxy and frontend integration.
 
 ## Start a hosted server
 
 ```sh
-npx lac start
+npx little-actors start
 ```
 
 Starts the packaged server using self-hosting settings from the environment. It takes no positional arguments or command-specific options beyond `-h` / `--help`.
@@ -116,7 +127,7 @@ Local actor processes inherit ordinary application environment variables from th
 
 **Default:** Downloaded runtime.
 
-Path to an existing native executable used by `dev` and `start`. Relative paths resolve from the current working directory. This bypasses runtime downloads; see [local development](../guides/local-development.md) for building from source.
+Optional path to an existing native executable used by `dev` and `start`. Relative paths resolve from the current working directory. This bypasses runtime downloads. Normal npm installs select and download the runtime automatically.
 
 ### DURABLE_OBJECT_CACHE_DIR
 
@@ -142,25 +153,25 @@ Runtime log filter, for example `warn` or `debug`.
 
 ## Runtime installation
 
-Install the package before invoking its `lac` executable:
+Install the package before invoking its `little-actors` executable:
 
 ```sh
 npm install little-actors
-npx lac --help
+npx little-actors --help
 ```
 
-The package includes the SDK, CLI, and TypeScript actor execution support. `dev` and `start` download a native runtime matching the installed package version if it is not cached. Downloads are verified against the release's SHA-256 checksum; `generate`, `token`, and help do not download a runtime.
+The package includes the SDK, CLI, chat template, and TypeScript actor execution support. `dev` and `start` download a native runtime matching the installed package version if it is not cached. Downloads are verified against the release's SHA-256 checksum; `init`, `generate`, `token`, and help do not download a runtime.
 
 Prebuilt platforms are macOS and Linux on ARM64 and x64. Linux requires glibc 2.35+ and OpenSSL 3, such as Ubuntu 22.04+. Windows users can run the Linux distribution in WSL 2.
 
-A prebuilt runtime does not require Rust. For source builds, see [local development](../guides/local-development.md#build-the-sdk-and-runtime).
+A prebuilt runtime does not require Rust or a manually configured binary path.
 
-The default cache path is `~/.cache/little-actors/<version>/<platform>-<arch>/`. Override its root with `DURABLE_OBJECT_CACHE_DIR`, or select an existing executable with `DURABLE_OBJECT_BINARY`.
+The default cache path is `~/.cache/little-actors/<version>/<platform>-<arch>/`. `DURABLE_OBJECT_CACHE_DIR` changes the download cache location.
 
 ## Issue a local token
 
 ```sh
-npx lac token
+npx little-actors token
 ```
 
 Requests a session token from the running local server. Standard output contains only the token followed by a newline. Errors go to standard error.
@@ -168,7 +179,7 @@ Requests a session token from the running local server. Standard output contains
 ### token options
 
 ```text
-lac token [options]
+little-actors token [options]
 ```
 
 - `--data-dir <directory>` — Directory belonging to the running local server. Defaults to `.little-actors`, relative to the current directory.
@@ -183,7 +194,7 @@ The token permits application access throughout the `local` namespace. It is nei
 ### Connect with a WebSocket tool
 
 ```sh
-TOKEN="$(npx lac token)"
+TOKEN="$(npx little-actors token)"
 npx --yes wscat \
     -c ws://127.0.0.1:7100/v1/namespaces/local/actors/ChatRoom/lobby/websocket \
     -H "Authorization: Bearer $TOKEN" \
@@ -196,9 +207,9 @@ Use the server's actual port, and pass `--data-dir` to `token` if the server use
 ## Help and version
 
 ```sh
-npx lac --help
-npx lac dev --help
-npx lac --version
+npx little-actors --help
+npx little-actors dev --help
+npx little-actors --version
 ```
 
 - `-h`, `--help` — Print help. Available on the root command and each subcommand.
@@ -206,7 +217,7 @@ npx lac --version
 
 Invoking the npm CLI without a command prints help. There is no separate `help` command.
 
-The commands on this page use the npm CLI. The native executable supports `dev`, `--help`, and `--version`; `generate`, `token`, and `start` are npm CLI commands.
+The commands on this page use the npm CLI. The native executable supports `dev`, `--help`, and `--version`; `init`, `generate`, `token`, and `start` are npm CLI commands.
 
 ## Output and exit codes
 
@@ -228,7 +239,7 @@ Restart `dev`, wait for the ready message, and refresh the proxy credentials. To
 
 ### Actor file is missing or changes do not appear
 
-Create the entrypoint before starting `dev`, or select it with `--entrypoint`. Restart `dev` after actor code changes. Rebuild the SDK if you changed its source in a linked checkout.
+Create the entrypoint before starting `dev`, or select it with `--entrypoint`. Restart `dev` after actor code changes, and regenerate clients if the actor contract changed.
 
 ### Port or data directory is in use
 
@@ -240,6 +251,6 @@ Use a separate `--data-dir` for a different backend or bucket map. Existing acto
 
 ### Runtime download fails
 
-Confirm that the installed package version has matching native release assets, or use a [local build](../guides/local-development.md). For a checksum mismatch, retry the download; the rejected archive is not usable.
+Check your network connection and confirm that the installed package version has matching native release assets. For a checksum mismatch, retry the download; the rejected archive is not usable.
 
-For linking or source-build issues, see [local development troubleshooting](../guides/local-development.md#troubleshooting).
+For application setup, see [local development](../guides/local-development.md).
