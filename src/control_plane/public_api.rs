@@ -361,7 +361,7 @@ impl ActorPath {
     }
 }
 
-fn authorized_admin(admin: &AdminService, headers: &HeaderMap) -> Result<(), ApiError> {
+pub(super) fn authorized_admin(admin: &AdminService, headers: &HeaderMap) -> Result<(), ApiError> {
     let authorization = authorization(headers)?;
     admin
         .authenticate(authorization)
@@ -426,14 +426,14 @@ struct ActorTargetReply {
     expires_at_ms: i64,
 }
 
-struct ApiError {
+pub(super) struct ApiError {
     status: StatusCode,
     code: String,
     message: String,
 }
 
 impl ApiError {
-    fn bad_request(error: impl std::fmt::Display) -> Self {
+    pub(super) fn bad_request(error: impl std::fmt::Display) -> Self {
         Self::new(
             StatusCode::BAD_REQUEST,
             "invalid_request",
@@ -453,11 +453,11 @@ impl ApiError {
         Self::new(StatusCode::CONFLICT, "conflict", message)
     }
 
-    fn unavailable(message: impl Into<String>) -> Self {
+    pub(super) fn unavailable(message: impl Into<String>) -> Self {
         Self::new(StatusCode::SERVICE_UNAVAILABLE, "unavailable", message)
     }
 
-    fn internal(error: impl std::fmt::Display) -> Self {
+    pub(super) fn internal(error: impl std::fmt::Display) -> Self {
         Self::new(
             StatusCode::INTERNAL_SERVER_ERROR,
             "internal",
@@ -465,7 +465,11 @@ impl ApiError {
         )
     }
 
-    fn new(status: StatusCode, code: impl Into<String>, message: impl Into<String>) -> Self {
+    pub(super) fn new(
+        status: StatusCode,
+        code: impl Into<String>,
+        message: impl Into<String>,
+    ) -> Self {
         Self {
             status,
             code: code.into(),

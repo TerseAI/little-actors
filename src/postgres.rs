@@ -42,6 +42,20 @@ impl PostgresDatabase {
         Ok(client.query_opt(&statement, params).await?)
     }
 
+    pub(crate) async fn query(
+        &self,
+        query: &str,
+        params: &[&(dyn ToSql + Sync)],
+    ) -> Result<Vec<Row>> {
+        let client = self
+            .pool
+            .get()
+            .await
+            .context("acquire PostgreSQL connection")?;
+        let statement = client.prepare_cached(query).await?;
+        Ok(client.query(&statement, params).await?)
+    }
+
     pub(crate) async fn query_one(
         &self,
         query: &str,

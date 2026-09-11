@@ -45,6 +45,13 @@ pub enum StateCommit {
 pub trait ObjectPlacementStore: Send + Sync {
     async fn get(&self, object: &ActorStorageKey) -> Result<Option<ObjectPlacement>>;
 
+    async fn list_committed(
+        &self,
+        namespace: Option<&str>,
+        after: Option<&str>,
+        limit: u32,
+    ) -> Result<Vec<ObjectPlacement>>;
+
     async fn claim(
         &self,
         object: &ActorStorageKey,
@@ -72,6 +79,22 @@ impl PostgresObjectPlacementStore {
 
 #[async_trait]
 impl ObjectPlacementStore for PostgresObjectPlacementStore {
+    async fn list_committed(
+        &self,
+        namespace: Option<&str>,
+        after: Option<&str>,
+        limit: u32,
+    ) -> Result<Vec<ObjectPlacement>> {
+        self.database.query(
+            "SELECT owner_host_id, owner_epoch, home_region, state_version, state_object, last_request_id, object_id \
+             FROM durable_object_placements WHERE state_version > 0 AND state_object IS NOT NULL \
+               AND ($1::text IS NULL OR split_part(state_object, '/', 4) = $1) \
+               AND ($2::text IS NULL OR object_id COLLATE \"C\" > $2) \
+             ORDER BY object_id COLLATE \"C\" LIMIT $3",
+            &[&namespace, &after, &i64::from(limit)],
+        ).await?.iter().map(|row| placement_from_row(&ActorStorageKey::new(row.get::<_, String>(6)), row)).collect()
+    }
+
     async fn get(&self, object: &ActorStorageKey) -> Result<Option<ObjectPlacement>> {
         let row = self
             .database

@@ -4,6 +4,7 @@ This page documents deployment management, backend access, WebSocket connections
 
 - [Authentication](#authentication)
 - [Deployments](#deployments)
+- [Object inspection](#object-inspection)
 - [Storage regions](#storage-regions)
 - [Public signing keys](#public-signing-keys)
 - [Direct WebSocket connections](#direct-websocket-connections)
@@ -27,6 +28,8 @@ Use the server's `DURABLE_OBJECT_API_KEY` on your trusted backend to manage depl
 | Register or replace deployment | `PUT /v1/deployment`                                  | API key.                                      |
 | Read deployment                | `GET /v1/deployment`                                  | API key.                                      |
 | Remove deployment              | `DELETE /v1/deployment`                               | API key.                                      |
+| List saved objects             | `GET /v1/objects`                                    | API key only.                                 |
+| Inspect committed state        | `GET /v1/actors/{actorType}/{actorId}/state`          | API key only.                                 |
 | Read public signing keys       | `GET /.well-known/jwks.json`                          | None.                                         |
 | Connect from a backend         | `GET /v1/actors/{actorType}/{actorId}/websocket`      | API key; WebSocket upgrade.                   |
 | Issue a socket ticket          | `POST /v1/actors/{actorType}/{actorId}/socket-ticket` | API key only.                                 |
@@ -108,7 +111,57 @@ Stops the deployment's cloud hosts and removes the active deployment registratio
 
 **Errors:** `401` for a rejected admin credential; `500` if removal fails.
 
-There is no public actor-state deletion, actor-listing, or individual actor reset API. Expose application-specific reset behavior as an actor method if needed.
+There is no public actor-state deletion or individual actor reset API. Expose application-specific reset behavior as an actor method if needed.
+
+## Object inspection
+
+These read-only endpoints require the admin API key. Session tokens and socket tickets are rejected. Successful responses use `Cache-Control: no-store`. The [CLI](cli.md#inspect-saved-objects) uses the same endpoints for local and cloud runtimes.
+
+### GET /v1/objects
+
+Lists objects with committed state across all namespaces, including stopped objects and objects without a current deployment. Objects with no committed state are omitted.
+
+Optional query parameters:
+
+- `namespace` — Exact namespace filter. Omitting it lists all namespaces.
+- `limit` — Page size from 1 to 500; defaults to 100.
+- `after` — The previous response's `nextCursor`, URL-encoded.
+
+**Response:** `200 OK` with JSON:
+
+```json
+{
+    "objects": [
+        {
+            "namespaceId": "default",
+            "actorType": "ChatRoom",
+            "actorId": "lobby",
+            "objectId": "object.v1.default.ChatRoom.lobby",
+            "homeRegion": "north-america-east",
+            "stateVersion": 3,
+            "stateObject": "snapshots/01/0123456789abcdef0123456789abcdef/default/ChatRoom/lobby/3.json",
+            "lastRequestId": "request-3"
+        }
+    ],
+    "nextCursor": null
+}
+```
+
+Results are ordered by storage identity. `nextCursor` is `null` on the last page; otherwise repeat the request with that cursor and the same filter. Each page reads current database records, so the list is not a single snapshot across concurrent commits.
+
+### GET /v1/actors/{actorType}/{actorId}/state
+
+Reads the default namespace. To select a namespace, use:
+
+```http
+GET /v1/namespaces/{namespaceId}/actors/{actorType}/{actorId}/state
+```
+
+**Response:** `200 OK` with the same object fields as listing, plus `state`, a JSON object containing all committed persisted fields, including internal fields. An existing placement with no committed snapshot has `stateVersion: 0`, `stateObject: null`, `lastRequestId: null`, and `state: null`.
+
+Reads the immutable snapshot referenced by the database record and verifies its identity, version, and request ID. It does not start a host, invoke actor code, or expose an uncommitted upload. Transient in-memory fields are unavailable. The response represents the committed record when read; a later commit can occur during inspection.
+
+**Errors:** `400` for invalid input, `401` for a rejected admin credential, `404` for an unknown object, `500` if committed state is unavailable or inconsistent, and `503` if snapshot inspection times out.
 
 ## Storage regions
 

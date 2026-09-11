@@ -3,6 +3,9 @@ mod auth;
 mod browser_socket;
 mod client;
 mod event_sink;
+mod inspection;
+#[cfg(test)]
+mod inspection_tests;
 mod issuer;
 mod local;
 mod process;

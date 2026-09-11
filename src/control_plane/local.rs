@@ -282,10 +282,17 @@ async fn local_routes(
         issuer.clone(),
         provisioner,
     );
-    let admin = AdminService::new(api_key.to_owned(), database, issuer)?
+    let admin = AdminService::new(api_key.to_owned(), database.clone(), issuer)?
         .with_default_namespace("local")?
         .with_socket_origin(origin)?;
-    let public = public_api::router(service.clone(), admin).merge(storage.routes.clone());
+    let inspector = super::inspection::ActorInspector::new(
+        database,
+        storage.signer.clone(),
+        Arc::new(crate::state_transport::HttpStateTransport::new()),
+    );
+    let public = public_api::router(service.clone(), admin.clone())
+        .merge(super::inspection::router(inspector, admin))
+        .merge(storage.routes.clone());
     Ok(tonic::service::Routes::from(public).add_service(service.into_internal_service()))
 }
 

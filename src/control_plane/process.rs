@@ -116,8 +116,8 @@ async fn control_plane_routes(config: ControlPlaneProcessConfig) -> Result<tonic
         .map(|sink| Arc::new(sink) as Arc<dyn super::event_sink::SocketMessageEventSink>);
     let service = ControlPlaneService::new(
         leases,
-        placements,
-        storage_urls,
+        placements.clone(),
+        storage_urls.clone(),
         auth,
         registry.clone(),
         issuer.clone(),
@@ -126,7 +126,13 @@ async fn control_plane_routes(config: ControlPlaneProcessConfig) -> Result<tonic
     .with_socket_event_sink(socket_events);
     let admin = super::admin::AdminService::new(config.api_key, registry, issuer)?
         .with_socket_origin(&socket_origin)?;
-    let public_api = super::public_api::router(service.clone(), admin);
+    let inspector = super::inspection::ActorInspector::new(
+        placements,
+        storage_urls,
+        Arc::new(crate::state_transport::HttpStateTransport::new()),
+    );
+    let public_api = super::public_api::router(service.clone(), admin.clone())
+        .merge(super::inspection::router(inspector, admin));
     let internal_api = service.into_internal_service();
     Ok(tonic::service::Routes::from(public_api).add_service(internal_api))
 }

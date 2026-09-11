@@ -127,6 +127,34 @@ impl HostLeaseStore for SqliteStore {
 
 #[async_trait]
 impl ObjectPlacementStore for SqliteStore {
+    async fn list_committed(
+        &self,
+        namespace: Option<&str>,
+        after: Option<&str>,
+        limit: u32,
+    ) -> Result<Vec<ObjectPlacement>> {
+        if let Some(namespace_id) = namespace {
+            ActorScope {
+                namespace_id: namespace_id.to_owned(),
+            }
+            .validate()?;
+        }
+        let pattern =
+            namespace.map(|namespace| format!("snapshots/??/{}/{namespace}/*", "?".repeat(32)));
+        let after = after.map(str::to_owned);
+        Ok(self.connection.call(move |connection| -> rusqlite::Result<_> {
+            let mut statement = connection.prepare(
+                "SELECT owner_host_id, owner_epoch, home_region, state_version, state_object, last_request_id, object_id \
+                 FROM placements WHERE state_version > 0 AND state_object IS NOT NULL \
+                   AND (?1 IS NULL OR state_object GLOB ?1) AND (?2 IS NULL OR object_id > ?2) \
+                 ORDER BY object_id LIMIT ?3"
+            )?;
+            statement.query_map(params![pattern, after, limit], |row| {
+                placement_from_row(&ActorStorageKey::new(row.get::<_, String>(6)?), row)
+            })?.collect::<rusqlite::Result<Vec<_>>>()
+        }).await?)
+    }
+
     async fn get(&self, object: &ActorStorageKey) -> Result<Option<ObjectPlacement>> {
         object.validate()?;
         let object = object.clone();

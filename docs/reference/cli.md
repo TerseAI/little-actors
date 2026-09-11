@@ -1,12 +1,13 @@
 # Command Line Interface
 
-The `little-actors` command creates example apps, runs backend actors, and generates typed browser clients and backend proxies. It is installed with the Node.js package. For a complete example, see the [chat tutorial](../../README.md#quickstart).
+The `little-actors` command creates example apps, runs backend actors, inspects saved objects, and generates typed browser clients and backend proxies. It is installed with the Node.js package. For a complete example, see the [chat tutorial](../../README.md#quickstart).
 
 Install it with `npm install little-actors`, then run `npx little-actors` from your application directory. Follow [local development](../guides/local-development.md) for setup with the npm package.
 
 - [Create a chat app](#create-a-chat-app)
 - [Find your actors](#find-your-actors)
 - [Run the development server](#run-the-development-server)
+- [Inspect saved objects](#inspect-saved-objects)
 - [Generate a client and proxy](#generate-a-client-and-proxy)
 - [Start a hosted server](#start-a-hosted-server)
 - [Environment variables](#environment-variables)
@@ -113,6 +114,57 @@ GCS mode uses Google Application Default Credentials and a nonempty region-to-bu
 
 Changing the storage backend or bucket map requires a separate data directory; startup rejects a changed configuration for an existing directory. See [local execution with GCS](../guides/self-hosting.md#local-execution-with-gcs) for storage and credential setup.
 
+## Inspect saved objects
+
+```sh
+npx little-actors objects list
+npx little-actors objects list --namespace local
+npx little-actors objects list --namespace local --limit 20
+npx little-actors objects inspect ChatRoom lobby
+```
+
+`objects list` shows up to 50 saved objects across all namespaces on the connected server, with their namespace, actor type, ID, committed version, and storage region. `--namespace <id>` filters the list. Objects appear after their first successful state commit, including objects whose hosts have stopped or whose deployment has been removed. `--json` prints a JSON array with snapshot paths and request IDs as well.
+
+Use `--limit <rows>` to choose a page size from 1 to 500. When more objects remain, the CLI prints an `--after` cursor to stderr. Repeat the same command with that cursor to get the next page, keeping the namespace and connection options:
+
+```sh
+npx little-actors objects list --namespace local --limit 20 --after 'CURSOR_FROM_PREVIOUS_PAGE'
+```
+
+`--all` fetches every page automatically. It cannot be combined with `--limit` or `--after`. Pagination hints stay on stderr so `--json` output remains a valid JSON array. To scroll the full table in a terminal pager, use `npx little-actors objects list --all | less -S`; press `q` to exit.
+
+`objects inspect <actor-type> <actor-id>` prints JSON containing the object's identity, committed version, snapshot path, last request ID, and `state`. This includes all `@Persisted` fields, including internal fields. `@Ephemeral` fields are not stored. Inspection reads the snapshot referenced by the committed database record, without starting the actor or running its code. Concurrent writes may commit a newer version after that record is read.
+
+An existing object with no committed snapshot returns `stateVersion: 0` and `state: null`. An unknown object returns an error.
+
+### Local inspection
+
+Keep `little-actors dev` running. The commands read its URL, API key, and default namespace from `.little-actors/runtime.json`. Use `--data-dir <directory>` for a custom state directory:
+
+```sh
+npx little-actors objects inspect ChatRoom lobby --data-dir ./chat-state
+```
+
+This works with both local snapshots and `dev --storage gcs`.
+
+### Cloud inspection
+
+Set the control-plane origin and its admin API key:
+
+```sh
+export DURABLE_OBJECT_CONTROL_PLANE_URL='https://objects.example.com'
+export DURABLE_OBJECT_API_KEY='<your-api-key>'
+npx little-actors objects list
+npx little-actors objects list --namespace my-project --json
+npx little-actors objects inspect ChatRoom lobby --namespace my-project
+```
+
+Both commands also accept `--url <origin>` and `--api-key <key>`, which override the corresponding environment variables. A remote URL requires a remote API key; local credentials are never used as a fallback. These commands require a server version that provides the [object inspection API](http.md#object-inspection).
+
+For inspection, `--namespace` overrides the connection's default: `local` for local dev, or `DURABLE_OBJECT_NAMESPACE_ID` (otherwise `default`) for cloud. Listing always covers all namespaces unless `--namespace` is supplied. Cloud URL or API-key settings select the cloud connection instead of `--data-dir`.
+
+Inspection requires the admin API key. Session tokens and browser socket tickets cannot read saved internal state. These commands do not download a native runtime.
+
 ## Generate a client and proxy
 
 ```sh
@@ -176,7 +228,7 @@ npm install little-actors
 npx little-actors --help
 ```
 
-The package includes the SDK, CLI, chat template, and TypeScript actor execution support. `dev` and `start` download a native runtime matching the installed package version if it is not cached. Downloads are verified against the release's SHA-256 checksum; `init`, `generate`, `token`, and help do not download a runtime.
+The package includes the SDK, CLI, chat template, and TypeScript actor execution support. `dev` and `start` download a native runtime matching the installed package version if it is not cached. Downloads are verified against the release's SHA-256 checksum; `init`, `generate`, `token`, `objects`, and help do not download a runtime.
 
 Prebuilt platforms are macOS and Linux on ARM64 and x64. Linux requires glibc 2.35+ and OpenSSL 3, such as Ubuntu 22.04+. Windows users can run the Linux distribution in WSL 2.
 
@@ -233,11 +285,11 @@ npx little-actors --version
 
 Invoking the npm CLI without a command prints help. There is no separate `help` command.
 
-The commands on this page use the npm CLI. The native executable supports `dev`, `--help`, and `--version`; `init`, `generate`, `token`, and `start` are npm CLI commands.
+The commands on this page use the npm CLI. The native executable supports `dev`, `--help`, and `--version`; `init`, `generate`, `token`, `objects`, and `start` are npm CLI commands.
 
 ## Output and exit codes
 
-`dev` writes the ready origin, state directory, and runtime logs. `token` writes its credential to stdout and errors to stderr; help and version commands exit successfully.
+`dev` writes the ready origin, state directory, and runtime logs. `token` writes its credential to stdout and errors to stderr. `objects list` writes a table, or a JSON array with `--json`; `objects inspect` writes JSON. Inspection errors go to stderr and exit with code 1. Help and version commands exit successfully.
 
 Setup and argument errors return a nonzero exit code, normally `1`. `dev` and `start` forward the child process's numeric exit code. A child terminated by SIGINT maps to `130`; another terminating signal maps to `1`.
 

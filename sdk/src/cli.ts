@@ -6,6 +6,7 @@ import { cp, mkdir, readFile, rename, rm } from "node:fs/promises"
 import { homedir } from "node:os"
 import path from "node:path"
 
+import { registerObjectCommands } from "./cli/objects.js"
 import { RuntimeInstaller } from "./runtimeInstaller.js"
 
 interface DevOptions {
@@ -76,6 +77,7 @@ try {
         .action(async () => {
             process.exitCode = await runRuntime([])
         })
+    registerObjectCommands(program)
     if (process.argv.length === 2) program.help()
     await program.parseAsync(process.argv)
 } catch (error) {

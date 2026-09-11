@@ -2,7 +2,7 @@
 
 little-actors is a framework for durable actors, powered by Rust. It's the easiest way to get started testing actors locally and can be extended to complex production deployments.
 
-Durable Actors are TypeScript classes that preserve their own state.
+Durable Actors are TypeScript classes that persist their own state.
 
 ## Installation
 
