@@ -1,9 +1,5 @@
 # Command Line Interface
 
-The `little-actors` command creates example apps, runs backend actors, inspects saved objects, and generates typed browser clients and backend proxies. It is installed with the Node.js package. For a complete example, see the [chat tutorial](../../README.md#quickstart).
-
-Install it with `npm install little-actors`, then run `npx little-actors` from your application directory. Follow [local development](../guides/local-development.md) for setup with the npm package.
-
 - [Create a chat app](#create-a-chat-app)
 - [Find your actors](#find-your-actors)
 - [Run the development server](#run-the-development-server)
